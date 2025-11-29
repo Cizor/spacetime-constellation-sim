@@ -1,0 +1,22 @@
+[
+  {
+    "ID": "trx-ku",
+    "Name": "Ku-Band Radio",
+    "Band": { "MinGHz": 12.0, "MaxGHz": 18.0 },
+    "MaxRangeKm": 1500,
+    "TxPowerDBw": 40,
+    "GainTxDBi": 30,
+    "GainRxDBi": 30,
+    "SystemNoiseFigureDB": 5
+  },
+  {
+    "ID": "trx-ka",
+    "Name": "Ka-Band Radio",
+    "Band": { "MinGHz": 26.5, "MaxGHz": 40.0 },
+    "MaxRangeKm": 1200,
+    "TxPowerDBw": 40,
+    "GainTxDBi": 35,
+    "GainRxDBi": 35,
+    "SystemNoiseFigureDB": 5
+  }
+]

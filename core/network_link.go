@@ -1,0 +1,40 @@
+package core
+
+// LinkQuality is a coarse, human-readable classification of link
+// quality derived from the SNR estimate.
+type LinkQuality string
+
+const (
+	LinkQualityDown      LinkQuality = "down"
+	LinkQualityPoor      LinkQuality = "poor"
+	LinkQualityFair      LinkQuality = "fair"
+	LinkQualityGood      LinkQuality = "good"
+	LinkQualityExcellent LinkQuality = "excellent"
+)
+
+// NetworkLink connects two NetworkInterfaces. In Scope 2 this is
+// used for both static (scenario-defined) links and dynamic wireless
+// links that are discovered by the ConnectivityService.
+type NetworkLink struct {
+	ID         string     `json:"ID"`
+	InterfaceA string     `json:"InterfaceA"`
+	InterfaceB string     `json:"InterfaceB"`
+	Medium     MediumType `json:"Medium"`
+
+	// Administrative / health status flags.
+	IsUp       bool `json:"IsUp"`
+	IsImpaired bool `json:"IsImpaired"`
+
+	// Performance metadata. Latency and data rate are primarily
+	// interesting for wired links, but can also be used as a rough
+	// classification for wireless links.
+	LatencyMs       float64     `json:"LatencyMs,omitempty"`
+	MaxDataRateMbps float64     `json:"MaxDataRateMbps,omitempty"`
+	Quality         LinkQuality `json:"Quality,omitempty"`
+	SNRdB           float64     `json:"SNRdB,omitempty"`
+
+	// IsStatic marks links that came from a scenario / config file
+	// as opposed to dynamic wireless links that are rebuilt on every
+	// connectivity update.
+	IsStatic bool `json:"IsStatic"`
+}

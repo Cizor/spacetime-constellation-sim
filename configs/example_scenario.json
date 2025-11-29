@@ -1,0 +1,26 @@
+{
+  "interfaces": [
+    {
+      "ID": "if-sat1-ku",
+      "Name": "SAT1-Ku",
+      "Medium": "wireless",
+      "TransceiverID": "trx-ku",
+      "ParentNodeID": "sat1",
+      "IsOperational": true,
+      "IPAddress": "10.0.0.1"
+    },
+    {
+      "ID": "if-ground1-ku",
+      "Name": "GS1-Ku",
+      "Medium": "wireless",
+      "TransceiverID": "trx-ku",
+      "ParentNodeID": "ground1",
+      "IsOperational": true,
+      "IPAddress": "10.0.0.2"
+    }
+  ],
+  "links": [
+  ],
+  "positions": {
+  }
+}
