@@ -1,79 +1,159 @@
-# Spacetime-Compatible Constellation Simulator
+# Spacetime-Compatible Constellation Simulator (Go)
 
-This repository implements a **Spacetime-compatible constellation simulator** in Go.
+An experimental backend for simulating satellite constellations and ground networks in Go, designed to be **API-compatible with Aalyria Spacetime’s concepts** (platforms, nodes, links, service requests, etc.).
 
-It currently covers:
+The goal is to provide a **local, headless engine** you can run on your own infrastructure to:
 
-- ✅ **Scope 1 – Core entities & orbital dynamics**
-  - Platform & network node models
-  - Thread-safe in-memory Knowledge Base
-  - Time Controller for driving simulation time
-  - Motion models including SGP4-based orbital propagation
-  - CLI that runs a demo scenario (1 LEO + 1 ground station)
+- Model satellites, ground stations, and other platforms
+- Propagate their motion over time (e.g. using TLE + SGP4)
+- Attach network nodes and interfaces to those platforms
+- Evaluate when links are geometrically possible (line-of-sight, horizon limits, Earth occlusion)
+- Eventually expose all of this via a Spacetime-style gRPC Northbound Interface (NBI)
 
-- ✅ **Scope 2 – Network interfaces & connectivity evaluation**
-  - Network interfaces attached to nodes
-  - Basic link / connectivity modelling between interfaces
-  - Evaluation of link availability based on geometry and motion
+It is intended for:
 
-- 🚧 **Scope 3 – Northbound API & scenario configuration (planned)**
-  - Aalyria-compatible NBI services over gRPC
-  - Scenario-level snapshot / load / clear
-  - Validation, observability, and end-to-end tests
-
-The design follows the **requirements, roadmap, architecture**, and **Scope 1/2/3 implementation plans** you wrote separately.
+- Developers who want a **Spacetime-like sandbox** for testing higher-level logic
+- Researchers and engineers who need a **programmable constellation model** without relying on a closed service
+- People experimenting with satellite + terrestrial network design and automation
 
 ---
 
-## Project Layout
+## Current Capabilities
 
-> Note: exact package names may evolve, but this is the current intent.
+At the moment, the simulator focuses on **core constellation modelling and basic connectivity**.
+
+### Constellation model
+
+- **Platforms**: physical objects like satellites, ground stations, airborne relays, etc.
+  - Unique IDs, names, type tags
+  - Motion data in Earth-centred, Earth-fixed (ECEF) coordinates
+  - Support for:
+    - Orbital platforms using **TLE + SGP4** propagation
+    - Static platforms (e.g. ground stations)
+
+- **Network nodes**: logical endpoints hosted on platforms
+  - Nodes can be attached to platforms to **inherit their position**
+  - Node state is kept in sync as platforms move
+
+- **In-memory Knowledge Base**
+  - Thread-safe store for platforms and nodes
+  - Simple CRUD-style operations
+  - Designed to be accessed from both the simulation loop and future APIs
+
+### Time-stepped simulation
+
+- **Time Controller**
+  - Drives the simulation with a configurable tick interval
+  - Emits ticks to subscribers (motion models, connectivity evaluator, etc.)
+  - Can be run in “accelerated” mode for fast-forward scenarios
+
+- **Motion models**
+  - Static: fixed ECEF coordinates
+  - Orbital:
+    - Uses an SGP4 implementation to propagate satellites from TLE
+    - Updates platform positions every tick
+    - Positions are stored in a consistent coordinate frame for downstream use
+
+### Network interfaces & connectivity (early)
+
+- **Network interfaces per node**
+  - Multiple interfaces per node (wired and wireless)
+  - Fields for IDs, type, attachment to a node, and basic addressing / metadata
+
+- **Transceiver models (wireless)**
+  - Separate model for RF characteristics:
+    - Frequency band, antenna parameters (e.g. gain / pattern placeholders)
+    - Power, sensitivity, etc. (as required by the current connectivity logic)
+  - Wireless interfaces reference a transceiver model
+
+- **Links & connectivity evaluation**
+  - Support for:
+    - **Wired links** (e.g. terrestrial fiber/Ethernet) treated as always-available, with fixed characteristics
+    - **Wireless links** evaluated on each tick:
+      - Line-of-sight checks between platforms
+      - Horizon angle constraints for ground stations
+      - Earth occlusion checks for space-space links
+    - (Currently assumes simple omni-directional coverage by default)
+  - Produces a **time-varying connectivity map**:
+    - At any given tick, the engine knows which links are geometrically “up”
+    - This is the foundation for later routing/scheduling logic
+
+---
+
+## Planned / In Progress
+
+The next major step is to add a **Spacetime-style Northbound Interface (NBI)** and richer scenario controls:
+
+- gRPC services for:
+  - Defining platforms, nodes, interfaces, links, service requests
+  - Bulk load / snapshot / clear of entire scenarios
+- Validation & referential integrity:
+  - Strong checks for IDs, references, and motion sources
+- Observability:
+  - Structured logging, metrics (Prometheus-friendly), and optional tracing
+- End-to-end tests and example clients:
+  - Spin up the engine + gRPC server and drive it via generated clients
+
+These are being tracked as “Scope 3” internally, but from the outside you can just think of it as “add NBI + scenario API on top of the current engine”.
+
+---
+
+## Repository Layout
+
+> Names may evolve a bit as things grow, but this is the current structure.
 
 - `cmd/simulator/`  
-  CLI entrypoint that wires Scope 1 & 2 pieces together and runs a demo scenario.
+  CLI entrypoint that wires the core engine together and runs a demo scenario.
 
 - `model/`  
-  Core data models for **Scope 1**:
-  - `PlatformDefinition`
-  - `NetworkNode`
-  - Motion / orbit-related structs, etc.
+  Core data structures:
+  - `PlatformDefinition`, `NetworkNode`, motion/orbit-related structs
+  - Pure data containers; no heavy logic
 
 - `kb/`  
-  Thread-safe Knowledge Base:
-  - Stores platforms and nodes (Scope 1).
-  - Extended to track network-related state used by Scope 2.
+  Thread-safe in-memory state store:
+  - Platforms, nodes, and other entities the sim tracks
+  - Designed for concurrent reads/writes from sim loop and APIs
 
 - `timectrl/`  
   Time Controller that:
-  - Emits ticks at a configured interval.
-  - Drives the motion & connectivity updates.
+  - Emits ticks on a configured schedule
+  - Coordinates time advancement for motion and connectivity evaluation
 
 - `core/`  
-  Simulation “engine” layer:
-  - Motion models (static + SGP4-based orbital propagation).
-  - Orchestration helpers that connect TimeController, KnowledgeBase, and connectivity evaluation.
-  - Scope 2 logic for evaluating connectivity based on node/platform positions and interfaces.
+  Simulation engine layer:
+  - Motion models (SGP4, static)
+  - Connectivity / link evaluation
+  - Orchestration glue between TimeController, KnowledgeBase, and entity models
 
 - `testdata/`  
-  Sample TLEs and other fixtures used by tests and demo scenarios.
+  Sample TLEs and fixtures used by tests and demo runs.
 
 - `docs/adr/`  
-  Architecture Decision Records:
-  - `0001-aalyria-proto-integration.md` – how we will integrate Aalyria Spacetime API protos for Scope 3.
+  Architecture Decision Records, capturing high-level design choices over time:
+  - `0001-aalyria-proto-integration.md` – how Aalyria Spacetime API protos will be integrated for future NBI work.
 
-As Scope 3 is implemented, you’ll also see:
+As the NBI work lands, you will also see:
 
-- `third_party/aalyria/` – vendored Aalyria `.proto` files (NBI + common types).
-- `nbi/gen/` – generated Go code from those protos.
-- `cmd/nbi-server/` – NBI gRPC server binary (Scope 3).
+- `third_party/aalyria/` – vendored Aalyria `.proto` files (NBI + common types)
+- `nbi/gen/` – generated Go code from those protos
+- `cmd/nbi-server/` – a standalone gRPC server that exposes the simulator via NBI
 
 ---
 
-## Building
+## Getting Started
 
-From the repo root:
+### Prerequisites
+
+- Go 1.21+ (or a reasonably recent Go toolchain)
+- Git
+- Internet access for `go mod tidy` (to pull dependencies like SGP4)
+
+### Clone and build
 
 ```bash
-go mod tidy   # fetch external dependencies (e.g. go-satellite)
-go build ./cmd/simulator
+git clone https://github.com/<your-username>/spacetime-constellation-sim.git
+cd spacetime-constellation-sim
 
+go mod tidy          # fetch dependencies
+go build ./cmd/simulator
