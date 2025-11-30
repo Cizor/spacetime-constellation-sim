@@ -1,15 +1,38 @@
 # Simple Makefile for spacetime-constellation-sim
 
 # Go toolchain configuration
-GO       ?= go
-GOMOD    ?= ./...
-SIM_CMD  ?= ./cmd/simulator
+GO        ?= go
+GOMOD     ?= ./...
+SIM_CMD   ?= ./cmd/simulator
 
 # Optional: override these via env if you want
-GOFLAGS  ?=
+GOFLAGS   ?=
 RACEFLAGS ?= -race
 
-.PHONY: all build run-sim test race lint protos run-nbi clean
+# --- Proto / Aalyria NBI code generation ---
+
+# Root where vendored Aalyria protos live
+PROTO_API_ROOT    := third_party/aalyria
+# Root where googleapis protos are cloned (local-only dependency)
+PROTO_GOOGLE_ROOT := third_party/googleapis
+# Where generated Go code will be written
+PROTO_OUT_DIR     := internal/genproto/aalyria
+
+# Directories under api/ that we care about
+PROTO_SRC_DIRS := \
+  $(PROTO_API_ROOT)/api/common \
+  $(PROTO_API_ROOT)/api/nbi/v1alpha \
+  $(PROTO_API_ROOT)/api/nbi/v1alpha/resources \
+  $(PROTO_API_ROOT)/api/types
+
+# All .proto files in those directories
+PROTO_FILES := $(foreach dir,$(PROTO_SRC_DIRS),$(wildcard $(dir)/*.proto))
+
+# Convert to paths relative to PROTO_API_ROOT so protoc writes
+# files under $(PROTO_OUT_DIR)/api/...
+PROTO_FILES_REL := $(patsubst $(PROTO_API_ROOT)/%,%,$(PROTO_FILES))
+
+.PHONY: all build run-sim test race lint proto protos run-nbi clean
 
 ## Default: build simulator
 all: build
@@ -38,11 +61,16 @@ lint:
 	}
 	golangci-lint run ./...
 
-## Generate protobuf / gRPC code for Scope 3 (future)
-## This assumes you'll add scripts/gen_protos.sh and third_party/aalyria later.
-protos:
-	@echo "Generating protobuf code (Scope 3)…"
-	@./scripts/gen_protos.sh
+## Generate protobuf / gRPC code for Aalyria APIs (Scope 3)
+proto:
+	@if not exist "$(PROTO_OUT_DIR)" mkdir "$(PROTO_OUT_DIR)"
+	protoc -I $(PROTO_API_ROOT) -I $(PROTO_GOOGLE_ROOT) \
+	  --go_out=$(PROTO_OUT_DIR) --go_opt=paths=source_relative \
+	  --go-grpc_out=$(PROTO_OUT_DIR) --go-grpc_opt=paths=source_relative \
+	  $(PROTO_FILES_REL)
+
+## Backwards-compatible alias
+protos: proto
 
 ## Run the NBI gRPC server (Scope 3, future cmd/nbi-server)
 run-nbi:
