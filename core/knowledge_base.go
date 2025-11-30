@@ -383,8 +383,9 @@ func (kb *KnowledgeBase) GetNodeECEFPosition(nodeID string) (Vec3, bool) {
 
 // SetInterfaceImpaired marks a network interface as administratively impaired
 // or not. We currently model this by toggling IsOperational:
-//   impaired = true  -> IsOperational = false
-//   impaired = false -> IsOperational = true
+//
+//	impaired = true  -> IsOperational = false
+//	impaired = false -> IsOperational = true
 func (kb *KnowledgeBase) SetInterfaceImpaired(ifID string, impaired bool) error {
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
