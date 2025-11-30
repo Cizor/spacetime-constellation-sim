@@ -138,7 +138,6 @@ func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
 	return nil
 }
 
-
 // UpdateNetworkLink overwrites the stored link with the same ID.
 // For Scope 2 we assume endpoints do not change at runtime, so we
 // don’t need to rebuild adjacency here.

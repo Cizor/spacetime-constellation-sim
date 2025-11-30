@@ -17,22 +17,22 @@ func TestAddInterface_DuplicateIDFails(t *testing.T) {
 	kb := NewKnowledgeBase()
 
 	err := kb.AddInterface(&NetworkInterface{
-		ID:           "if-1",
-		Name:         "First",
-		Medium:       MediumWireless,
+		ID:            "if-1",
+		Name:          "First",
+		Medium:        MediumWireless,
 		TransceiverID: "",
-		ParentNodeID: "nodeA",
+		ParentNodeID:  "nodeA",
 	})
 	if err != nil {
 		t.Fatalf("first AddInterface returned error: %v", err)
 	}
 
 	err = kb.AddInterface(&NetworkInterface{
-		ID:           "if-1",
-		Name:         "Duplicate",
-		Medium:       MediumWireless,
+		ID:            "if-1",
+		Name:          "Duplicate",
+		Medium:        MediumWireless,
 		TransceiverID: "",
-		ParentNodeID: "nodeB",
+		ParentNodeID:  "nodeB",
 	})
 	if err == nil {
 		t.Fatalf("expected error when adding interface with duplicate ID, got nil")
@@ -45,11 +45,11 @@ func TestAddNetworkLink_UnknownInterfaceFails(t *testing.T) {
 
 	// Only one interface exists.
 	if err := kb.AddInterface(&NetworkInterface{
-		ID:           "ifA",
-		Name:         "If-A",
-		Medium:       MediumWireless,
+		ID:            "ifA",
+		Name:          "If-A",
+		Medium:        MediumWireless,
 		TransceiverID: "",
-		ParentNodeID: "nodeA",
+		ParentNodeID:  "nodeA",
 	}); err != nil {
 		t.Fatalf("AddInterface(ifA) failed: %v", err)
 	}
@@ -72,20 +72,20 @@ func TestInterfaceLinkIDsStayConsistent(t *testing.T) {
 	kb := NewKnowledgeBase()
 
 	if err := kb.AddInterface(&NetworkInterface{
-		ID:           "ifA",
-		Name:         "If-A",
-		Medium:       MediumWireless,
+		ID:            "ifA",
+		Name:          "If-A",
+		Medium:        MediumWireless,
 		TransceiverID: "",
-		ParentNodeID: "nodeA",
+		ParentNodeID:  "nodeA",
 	}); err != nil {
 		t.Fatalf("AddInterface(ifA) failed: %v", err)
 	}
 	if err := kb.AddInterface(&NetworkInterface{
-		ID:           "ifB",
-		Name:         "If-B",
-		Medium:       MediumWireless,
+		ID:            "ifB",
+		Name:          "If-B",
+		Medium:        MediumWireless,
 		TransceiverID: "",
-		ParentNodeID: "nodeB",
+		ParentNodeID:  "nodeB",
 	}); err != nil {
 		t.Fatalf("AddInterface(ifB) failed: %v", err)
 	}
