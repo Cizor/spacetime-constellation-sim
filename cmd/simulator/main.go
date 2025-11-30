@@ -113,7 +113,6 @@ func main() {
 		}
 	}
 
-
 	// Optional: one-liner so we know what was loaded.
 	fmt.Printf("Loaded network scenario: %d interfaces, %d links, %d nodes with positions\n",
 		len(netScenario.InterfaceIDs), len(netScenario.LinkIDs), len(netScenario.NodeIDs))
