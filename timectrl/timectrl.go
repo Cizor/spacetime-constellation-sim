@@ -1,69 +1,69 @@
 package timectrl
 
 import (
-    "time"
+	"time"
 )
 
 // Mode describes how the TimeController advances simulation time.
 type Mode int
 
 const (
-    // RealTime advances according to wall-clock time.
-    RealTime Mode = iota
-    // Accelerated advances as quickly as the loop can run while still stepping by Tick.
-    Accelerated
+	// RealTime advances according to wall-clock time.
+	RealTime Mode = iota
+	// Accelerated advances as quickly as the loop can run while still stepping by Tick.
+	Accelerated
 )
 
 // TimeController drives simulation time and notifies registered listeners.
 type TimeController struct {
-    StartTime time.Time
-    Tick      time.Duration
-    Mode      Mode
+	StartTime time.Time
+	Tick      time.Duration
+	Mode      Mode
 
-    listeners []func(time.Time)
+	listeners []func(time.Time)
 }
 
 // NewTimeController constructs a controller.
 func NewTimeController(start time.Time, tick time.Duration, mode Mode) *TimeController {
-    return &TimeController{
-        StartTime: start,
-        Tick:      tick,
-        Mode:      mode,
-    }
+	return &TimeController{
+		StartTime: start,
+		Tick:      tick,
+		Mode:      mode,
+	}
 }
 
 // AddListener registers a callback invoked on every tick.
 func (tc *TimeController) AddListener(fn func(time.Time)) {
-    tc.listeners = append(tc.listeners, fn)
+	tc.listeners = append(tc.listeners, fn)
 }
 
 // Start runs the controller for the specified duration in a separate goroutine.
 // It returns a channel that is closed when the controller finishes.
 func (tc *TimeController) Start(duration time.Duration) <-chan struct{} {
-    done := make(chan struct{})
-    go func() {
-        defer close(done)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
 
-        simTime := tc.StartTime
-        elapsed := time.Duration(0)
+		simTime := tc.StartTime
+		elapsed := time.Duration(0)
 
-        // In both modes we use a ticker for simplicity and determinism.
-        ticker := time.NewTicker(tc.Tick)
-        defer ticker.Stop()
+		// In both modes we use a ticker for simplicity and determinism.
+		ticker := time.NewTicker(tc.Tick)
+		defer ticker.Stop()
 
-        for {
-            if duration > 0 && elapsed >= duration {
-                return
-            }
+		for {
+			if duration > 0 && elapsed >= duration {
+				return
+			}
 
-            <-ticker.C
-            simTime = simTime.Add(tc.Tick)
-            elapsed += tc.Tick
+			<-ticker.C
+			simTime = simTime.Add(tc.Tick)
+			elapsed += tc.Tick
 
-            for _, fn := range tc.listeners {
-                fn(simTime)
-            }
-        }
-    }()
-    return done
+			for _, fn := range tc.listeners {
+				fn(simTime)
+			}
+		}
+	}()
+	return done
 }

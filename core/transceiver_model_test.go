@@ -4,15 +4,15 @@ import "testing"
 
 func TestTransceiverCompatibility(t *testing.T) {
 	a := &TransceiverModel{
-		ID: "a",
+		ID:   "a",
 		Band: FrequencyBand{MinGHz: 10, MaxGHz: 15},
 	}
 	b := &TransceiverModel{
-		ID: "b",
+		ID:   "b",
 		Band: FrequencyBand{MinGHz: 14, MaxGHz: 18},
 	}
 	c := &TransceiverModel{
-		ID: "c",
+		ID:   "c",
 		Band: FrequencyBand{MinGHz: 16, MaxGHz: 20},
 	}
 
