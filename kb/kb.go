@@ -1,10 +1,18 @@
 package kb
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/signalsfoundry/constellation-simulator/model"
+)
+
+var (
+	// ErrPlatformExists indicates a platform already exists.
+	ErrPlatformExists = errors.New("platform already exists")
+	// ErrPlatformNotFound indicates a platform is missing.
+	ErrPlatformNotFound = errors.New("platform not found")
 )
 
 // EventType indicates what kind of change happened in the KB.
@@ -40,14 +48,50 @@ func NewKnowledgeBase() *KnowledgeBase {
 
 // AddPlatform adds a new platform. It returns an error if the ID already exists.
 func (kb *KnowledgeBase) AddPlatform(p *model.PlatformDefinition) error {
+	if p == nil || p.ID == "" {
+		return fmt.Errorf("nil or empty platform")
+	}
+
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
 	if _, exists := kb.platforms[p.ID]; exists {
-		return fmt.Errorf("platform with ID %q already exists", p.ID)
+		return fmt.Errorf("%w: %q", ErrPlatformExists, p.ID)
 	}
 	// store pointer so that motion models can update in-place
 	kb.platforms[p.ID] = p
+	return nil
+}
+
+// UpdatePlatform replaces an existing platform entry by ID.
+func (kb *KnowledgeBase) UpdatePlatform(p *model.PlatformDefinition) error {
+	if p == nil || p.ID == "" {
+		return fmt.Errorf("nil or empty platform")
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	if _, exists := kb.platforms[p.ID]; !exists {
+		return fmt.Errorf("%w: %q", ErrPlatformNotFound, p.ID)
+	}
+	kb.platforms[p.ID] = p
+	return nil
+}
+
+// DeletePlatform removes a platform by ID.
+func (kb *KnowledgeBase) DeletePlatform(id string) error {
+	if id == "" {
+		return fmt.Errorf("empty platform ID")
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	if _, exists := kb.platforms[id]; !exists {
+		return fmt.Errorf("%w: %q", ErrPlatformNotFound, id)
+	}
+	delete(kb.platforms, id)
 	return nil
 }
 
