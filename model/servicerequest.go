@@ -1,41 +1,35 @@
+// model/servicerequest.go
+
 package model
 
-// ServiceRequest describes a request to provision a network flow between two
-// nodes, along with QoS / timing constraints.
-//
-// This mirrors the intent of Aalyria's ServiceRequest proto but is simplified
-// for the simulator domain model.
 type ServiceRequest struct {
-	ID        string
-	SrcNodeID string
-	DstNodeID string
+    // ID is the simulator's stable identifier for this request.
+    // It is intended to be unique within a Scenario and is what
+    // the NBI layer will use as `request_id` in CRUD operations.
+    ID string
 
-	FlowRequirements []FlowRequirement
+    // Type is a human-readable classification / label for this request
+    // (e.g. "video", "backhaul"), and maps directly to the Aalyria
+    // ServiceRequest.type field in the proto.
+    Type string
 
-	// Higher value => higher priority.
-	Priority int32
+    SrcNodeID             string
+    DstNodeID             string
+    FlowRequirements      []FlowRequirement
+    Priority              int32
+    IsDisruptionTolerant  bool
+    AllowPartnerResources bool
 
-	// Whether this flow can tolerate temporary disruptions.
-	IsDisruptionTolerant bool
-
-	// Whether resources from partner networks may be used.
-	AllowPartnerResources bool
-
-	// Future: status / scheduling details.
-	// IsProvisionedNow     bool
-	// ProvisionedIntervals []TimeInterval
+    // status fields for future scopes, e.g.:
+    // IsProvisionedNow    bool
+    // ProvisionedIntervals []TimeInterval
 }
 
-// FlowRequirement captures basic QoS constraints for a single flow.
 type FlowRequirement struct {
-	// Requested and minimum acceptable bandwidth (in Mbps, for example).
-	RequestedBandwidthMbps float64
-	MinBandwidthMbps       float64
-
-	// Maximum acceptable one-way latency in milliseconds.
-	MaxLatencyMs float64
-
-	// Optional validity window; zero values can mean "always valid".
-	ValidFromUnixSec int64
-	ValidToUnixSec   int64
+    RequestedBandwidthMbps float64
+    MinBandwidthMbps       float64
+    MaxLatencyMs           float64
+    ValidFromUnixSec       int64
+    ValidToUnixSec         int64
+    // (we can add per-flow DTN flags later if needed)
 }

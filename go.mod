@@ -13,7 +13,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	google.golang.org/genproto v0.0.0-20251124214823-79d6a2a48846 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251124214823-79d6a2a48846 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
+	google.golang.org/protobuf v1.36.10
 )
 
 replace aalyria.com/spacetime v0.0.0 => ./internal/genproto/aalyria
