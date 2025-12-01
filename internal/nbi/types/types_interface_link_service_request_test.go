@@ -7,8 +7,10 @@ import (
 	core "github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/model"
 
+	common "aalyria.com/spacetime/api/common"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 )
+
 
 func TestInterfaceMappingRoundTrip(t *testing.T) {
 	orig := &core.NetworkInterface{
@@ -171,3 +173,155 @@ func TestServiceRequestMappingRoundTrip(t *testing.T) {
         t.Errorf("ValidToUnixSec mismatch: got %d, want %d", got.ValidToUnixSec, want.ValidToUnixSec)
     }
 }
+
+func TestPlatformMappingRoundTrip(t *testing.T) {
+	name := "platform-1"
+	typ := "SATELLITE"
+	category := "LEO"
+	var norad uint32 = 12345
+	ms := common.PlatformDefinition_SPACETRACK_ORG
+
+	x := 1000.0
+	y := 2000.0
+	z := 3000.0
+
+	// Start from proto → domain → proto, as per issue text.
+	p := &PlatformDefinition{
+		Name:        &name,
+		Type:        &typ,
+		CategoryTag: &category,
+		NoradId:     &norad,
+		MotionSource: &ms,
+		Coordinates: &common.Motion{
+			Type: &common.Motion_EcefFixed{
+				EcefFixed: &common.PointAxes{
+					Point: &common.Cartesian{
+						XM: &x,
+						YM: &y,
+						ZM: &z,
+					},
+				},
+			},
+		},
+	}
+
+	dom, err := PlatformFromProto(p)
+	if err != nil {
+		t.Fatalf("PlatformFromProto returned error: %v", err)
+	}
+
+	// Domain checks.
+	if dom.ID != name {
+		t.Errorf("ID mismatch: got %q, want %q", dom.ID, name)
+	}
+	if dom.Name != name {
+		t.Errorf("Name mismatch: got %q, want %q", dom.Name, name)
+	}
+	if dom.Type != typ {
+		t.Errorf("Type mismatch: got %q, want %q", dom.Type, typ)
+	}
+	if dom.CategoryTag != category {
+		t.Errorf("CategoryTag mismatch: got %q, want %q", dom.CategoryTag, category)
+	}
+	if dom.NoradID != norad {
+		t.Errorf("NoradID mismatch: got %d, want %d", dom.NoradID, norad)
+	}
+	if dom.MotionSource != model.MotionSourceSpacetrack {
+		t.Errorf("MotionSource mismatch: got %v, want %v", dom.MotionSource, model.MotionSourceSpacetrack)
+	}
+	if diff := math.Abs(dom.Coordinates.X - x); diff > 1e-6 {
+		t.Errorf("X mismatch: got %f, want %f", dom.Coordinates.X, x)
+	}
+	if diff := math.Abs(dom.Coordinates.Y - y); diff > 1e-6 {
+		t.Errorf("Y mismatch: got %f, want %f", dom.Coordinates.Y, y)
+	}
+	if diff := math.Abs(dom.Coordinates.Z - z); diff > 1e-6 {
+		t.Errorf("Z mismatch: got %f, want %f", dom.Coordinates.Z, z)
+	}
+
+	// Roundtrip back to proto.
+	p2 := PlatformToProto(dom)
+	if p2 == nil {
+		t.Fatalf("PlatformToProto returned nil")
+	}
+
+	if got := p2.GetName(); got != name {
+		t.Errorf("Name roundtrip mismatch: got %q, want %q", got, name)
+	}
+	if got := p2.GetType(); got != typ {
+		t.Errorf("Type roundtrip mismatch: got %q, want %q", got, typ)
+	}
+	if got := p2.GetCategoryTag(); got != category {
+		t.Errorf("CategoryTag roundtrip mismatch: got %q, want %q", got, category)
+	}
+	if got := p2.GetNoradId(); got != norad {
+		t.Errorf("NoradID roundtrip mismatch: got %d, want %d", got, norad)
+	}
+	if got := p2.GetMotionSource(); got != ms {
+		t.Errorf("MotionSource roundtrip mismatch: got %v, want %v", got, ms)
+	}
+
+	coords := p2.GetCoordinates().GetEcefFixed().GetPoint()
+	if coords == nil {
+		t.Fatalf("Coordinates missing after roundtrip")
+	}
+	if diff := math.Abs(coords.GetXM() - x); diff > 1e-6 {
+		t.Errorf("XM roundtrip mismatch: got %f, want %f", coords.GetXM(), x)
+	}
+	if diff := math.Abs(coords.GetYM() - y); diff > 1e-6 {
+		t.Errorf("YM roundtrip mismatch: got %f, want %f", coords.GetYM(), y)
+	}
+	if diff := math.Abs(coords.GetZM() - z); diff > 1e-6 {
+		t.Errorf("ZM roundtrip mismatch: got %f, want %f", coords.GetZM(), z)
+	}
+}
+
+func TestNetworkNodeMappingRoundTrip(t *testing.T) {
+	id := "node-1"
+	name := "Node-1"
+	typ := "ROUTER"
+
+	// Start from proto → domain → proto.
+	p := &NetworkNode{
+		NodeId: &id,
+		Name:   &name,
+		Type:   &typ,
+	}
+
+	dom, err := NodeFromProto(p)
+	if err != nil {
+		t.Fatalf("NodeFromProto returned error: %v", err)
+	}
+
+	// Domain checks.
+	if dom.ID != id {
+		t.Errorf("ID mismatch: got %q, want %q", dom.ID, id)
+	}
+	if dom.Name != name {
+		t.Errorf("Name mismatch: got %q, want %q", dom.Name, name)
+	}
+	if dom.Type != typ {
+		t.Errorf("Type mismatch: got %q, want %q", dom.Type, typ)
+	}
+	// PlatformID is intentionally not mapped from the proto.
+	if dom.PlatformID != "" {
+		t.Errorf("expected PlatformID to be empty, got %q", dom.PlatformID)
+	}
+
+	// Roundtrip back to proto.
+	p2 := NodeToProto(dom)
+	if p2 == nil {
+		t.Fatalf("NodeToProto returned nil")
+	}
+
+	if got := p2.GetNodeId(); got != id {
+		t.Errorf("NodeId roundtrip mismatch: got %q, want %q", got, id)
+	}
+	if got := p2.GetName(); got != name {
+		t.Errorf("Name roundtrip mismatch: got %q, want %q", got, name)
+	}
+	if got := p2.GetType(); got != typ {
+		t.Errorf("Type roundtrip mismatch: got %q, want %q", got, typ)
+	}
+}
+
