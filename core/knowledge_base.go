@@ -112,8 +112,6 @@ func (kb *KnowledgeBase) GetAllInterfaces() []*NetworkInterface {
 
 // AddNetworkLink inserts a new (typically static / scenario-defined)
 // link and updates adjacency maps and per-interface LinkIDs.
-// AddNetworkLink inserts a new (typically static / scenario-defined)
-// link and updates adjacency maps and per-interface LinkIDs.
 func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
 	if link == nil {
 		return fmt.Errorf("%w", ErrLinkBadInput)
@@ -143,7 +141,7 @@ func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
 
 	kb.links[link.ID] = link
 
-	// Adjacency: linksByInterface and interface.LinkIDs
+	// Adjacency: linksByInterface and interface.LinkIDs.
 	kb.attachLinkToInterface(link.ID, link.InterfaceA)
 	kb.attachLinkToInterface(link.ID, link.InterfaceB)
 
@@ -162,7 +160,6 @@ func (kb *KnowledgeBase) UpdateNetworkLink(link *NetworkLink) error {
 	defer kb.mu.Unlock()
 
 	if _, exists := kb.links[link.ID]; !exists {
-		// You *could* auto-add here, but for now be strict.
 		return fmt.Errorf("%w: %q", ErrLinkNotFound, link.ID)
 	}
 	kb.links[link.ID] = link
@@ -277,6 +274,18 @@ func (kb *KnowledgeBase) GetNeighbours(nodeID string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Clear removes interfaces, links, adjacency maps, and node positions,
+// leaving transceiver models untouched.
+func (kb *KnowledgeBase) Clear() {
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	kb.interfaces = make(map[string]*NetworkInterface)
+	kb.links = make(map[string]*NetworkLink)
+	kb.linksByInterface = make(map[string]map[string]*NetworkLink)
+	kb.nodePositions = make(map[string]Vec3)
 }
 
 // attachLinkToInterface updates linksByInterface and the interface's
