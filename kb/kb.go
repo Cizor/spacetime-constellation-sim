@@ -95,6 +95,16 @@ func (kb *KnowledgeBase) DeletePlatform(id string) error {
 	return nil
 }
 
+// Clear removes all platforms and nodes from the KB, leaving any
+// subscribers intact.
+func (kb *KnowledgeBase) Clear() {
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	kb.platforms = make(map[string]*model.PlatformDefinition)
+	kb.nodes = make(map[string]*model.NetworkNode)
+}
+
 // AddNetworkNode adds a new network node. It returns an error if the ID already exists
 // or if the referenced platform does not exist.
 func (kb *KnowledgeBase) AddNetworkNode(n *model.NetworkNode) error {

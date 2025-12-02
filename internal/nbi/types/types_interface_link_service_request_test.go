@@ -11,7 +11,6 @@ import (
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 )
 
-
 func TestInterfaceMappingRoundTrip(t *testing.T) {
 	orig := &core.NetworkInterface{
 		ID:            "if-1",
@@ -97,81 +96,81 @@ func TestLinkMappingRoundTrip(t *testing.T) {
 }
 
 func TestServiceRequestMappingRoundTrip(t *testing.T) {
-    orig := &model.ServiceRequest{
-        // ID is intentionally NOT part of the proto mapping; it is owned by NBI.
-        // For this roundtrip test we leave it empty.
-        Type:                  "sr-type",
-        SrcNodeID:             "node-1",
-        DstNodeID:             "node-2",
-        Priority:              3,
-        IsDisruptionTolerant:  true,
-        AllowPartnerResources: true,
-        FlowRequirements: []model.FlowRequirement{
-            {
-                RequestedBandwidthMbps: 150,
-                MinBandwidthMbps:       50,
-                MaxLatencyMs:           25,
-                ValidFromUnixSec:       1_000,
-                ValidToUnixSec:         2_000,
-            },
-        },
-    }
+	orig := &model.ServiceRequest{
+		// ID is intentionally NOT part of the proto mapping; it is owned by NBI.
+		// For this roundtrip test we leave it empty.
+		Type:                  "sr-type",
+		SrcNodeID:             "node-1",
+		DstNodeID:             "node-2",
+		Priority:              3,
+		IsDisruptionTolerant:  true,
+		AllowPartnerResources: true,
+		FlowRequirements: []model.FlowRequirement{
+			{
+				RequestedBandwidthMbps: 150,
+				MinBandwidthMbps:       50,
+				MaxLatencyMs:           25,
+				ValidFromUnixSec:       1_000,
+				ValidToUnixSec:         2_000,
+			},
+		},
+	}
 
-    p := ServiceRequestToProto(orig)
-    if p == nil {
-        t.Fatalf("ServiceRequestToProto returned nil")
-    }
+	p := ServiceRequestToProto(orig)
+	if p == nil {
+		t.Fatalf("ServiceRequestToProto returned nil")
+	}
 
-    back, err := ServiceRequestFromProto(p)
-    if err != nil {
-        t.Fatalf("ServiceRequestFromProto returned error: %v", err)
-    }
+	back, err := ServiceRequestFromProto(p)
+	if err != nil {
+		t.Fatalf("ServiceRequestFromProto returned error: %v", err)
+	}
 
-    // Type should roundtrip through the proto.
-    if back.Type != orig.Type {
-        t.Errorf("Type mismatch: got %q, want %q", back.Type, orig.Type)
-    }
+	// Type should roundtrip through the proto.
+	if back.Type != orig.Type {
+		t.Errorf("Type mismatch: got %q, want %q", back.Type, orig.Type)
+	}
 
-    // ID is not derived from the proto; we do NOT assert on back.ID here.
+	// ID is not derived from the proto; we do NOT assert on back.ID here.
 
-    if back.SrcNodeID != orig.SrcNodeID {
-        t.Errorf("SrcNodeID mismatch: got %q, want %q", back.SrcNodeID, orig.SrcNodeID)
-    }
-    if back.DstNodeID != orig.DstNodeID {
-        t.Errorf("DstNodeID mismatch: got %q, want %q", back.DstNodeID, orig.DstNodeID)
-    }
-    if back.Priority != orig.Priority {
-        t.Errorf("Priority mismatch: got %d, want %d", back.Priority, orig.Priority)
-    }
-    if back.AllowPartnerResources != orig.AllowPartnerResources {
-        t.Errorf("AllowPartnerResources mismatch: got %v, want %v", back.AllowPartnerResources, orig.AllowPartnerResources)
-    }
-    if back.IsDisruptionTolerant != orig.IsDisruptionTolerant {
-        t.Errorf("IsDisruptionTolerant mismatch: got %v, want %v", back.IsDisruptionTolerant, orig.IsDisruptionTolerant)
-    }
+	if back.SrcNodeID != orig.SrcNodeID {
+		t.Errorf("SrcNodeID mismatch: got %q, want %q", back.SrcNodeID, orig.SrcNodeID)
+	}
+	if back.DstNodeID != orig.DstNodeID {
+		t.Errorf("DstNodeID mismatch: got %q, want %q", back.DstNodeID, orig.DstNodeID)
+	}
+	if back.Priority != orig.Priority {
+		t.Errorf("Priority mismatch: got %d, want %d", back.Priority, orig.Priority)
+	}
+	if back.AllowPartnerResources != orig.AllowPartnerResources {
+		t.Errorf("AllowPartnerResources mismatch: got %v, want %v", back.AllowPartnerResources, orig.AllowPartnerResources)
+	}
+	if back.IsDisruptionTolerant != orig.IsDisruptionTolerant {
+		t.Errorf("IsDisruptionTolerant mismatch: got %v, want %v", back.IsDisruptionTolerant, orig.IsDisruptionTolerant)
+	}
 
-    if len(back.FlowRequirements) != 1 {
-        t.Fatalf("expected 1 flow requirement, got %d", len(back.FlowRequirements))
-    }
+	if len(back.FlowRequirements) != 1 {
+		t.Fatalf("expected 1 flow requirement, got %d", len(back.FlowRequirements))
+	}
 
-    got := back.FlowRequirements[0]
-    want := orig.FlowRequirements[0]
+	got := back.FlowRequirements[0]
+	want := orig.FlowRequirements[0]
 
-    if diff := math.Abs(got.RequestedBandwidthMbps - want.RequestedBandwidthMbps); diff > 1e-6 {
-        t.Errorf("RequestedBandwidth mismatch: got %f, want %f", got.RequestedBandwidthMbps, want.RequestedBandwidthMbps)
-    }
-    if diff := math.Abs(got.MinBandwidthMbps - want.MinBandwidthMbps); diff > 1e-6 {
-        t.Errorf("MinBandwidth mismatch: got %f, want %f", got.MinBandwidthMbps, want.MinBandwidthMbps)
-    }
-    if diff := math.Abs(got.MaxLatencyMs - want.MaxLatencyMs); diff > 1e-6 {
-        t.Errorf("MaxLatencyMs mismatch: got %f, want %f", got.MaxLatencyMs, want.MaxLatencyMs)
-    }
-    if got.ValidFromUnixSec != want.ValidFromUnixSec {
-        t.Errorf("ValidFromUnixSec mismatch: got %d, want %d", got.ValidFromUnixSec, want.ValidFromUnixSec)
-    }
-    if got.ValidToUnixSec != want.ValidToUnixSec {
-        t.Errorf("ValidToUnixSec mismatch: got %d, want %d", got.ValidToUnixSec, want.ValidToUnixSec)
-    }
+	if diff := math.Abs(got.RequestedBandwidthMbps - want.RequestedBandwidthMbps); diff > 1e-6 {
+		t.Errorf("RequestedBandwidth mismatch: got %f, want %f", got.RequestedBandwidthMbps, want.RequestedBandwidthMbps)
+	}
+	if diff := math.Abs(got.MinBandwidthMbps - want.MinBandwidthMbps); diff > 1e-6 {
+		t.Errorf("MinBandwidth mismatch: got %f, want %f", got.MinBandwidthMbps, want.MinBandwidthMbps)
+	}
+	if diff := math.Abs(got.MaxLatencyMs - want.MaxLatencyMs); diff > 1e-6 {
+		t.Errorf("MaxLatencyMs mismatch: got %f, want %f", got.MaxLatencyMs, want.MaxLatencyMs)
+	}
+	if got.ValidFromUnixSec != want.ValidFromUnixSec {
+		t.Errorf("ValidFromUnixSec mismatch: got %d, want %d", got.ValidFromUnixSec, want.ValidFromUnixSec)
+	}
+	if got.ValidToUnixSec != want.ValidToUnixSec {
+		t.Errorf("ValidToUnixSec mismatch: got %d, want %d", got.ValidToUnixSec, want.ValidToUnixSec)
+	}
 }
 
 func TestPlatformMappingRoundTrip(t *testing.T) {
@@ -187,10 +186,10 @@ func TestPlatformMappingRoundTrip(t *testing.T) {
 
 	// Start from proto → domain → proto, as per issue text.
 	p := &PlatformDefinition{
-		Name:        &name,
-		Type:        &typ,
-		CategoryTag: &category,
-		NoradId:     &norad,
+		Name:         &name,
+		Type:         &typ,
+		CategoryTag:  &category,
+		NoradId:      &norad,
 		MotionSource: &ms,
 		Coordinates: &common.Motion{
 			Type: &common.Motion_EcefFixed{
@@ -324,4 +323,3 @@ func TestNetworkNodeMappingRoundTrip(t *testing.T) {
 		t.Errorf("Type roundtrip mismatch: got %q, want %q", got, typ)
 	}
 }
-
