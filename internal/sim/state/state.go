@@ -41,6 +41,19 @@ type ScenarioState struct {
 	serviceRequests map[string]*model.ServiceRequest
 }
 
+// ScenarioSnapshot captures a consistent view of all in-memory state
+// managed by ScenarioState.
+//
+// The slices contain pointers owned by the underlying KBs / state;
+// callers MUST treat them as read-only.
+type ScenarioSnapshot struct {
+	Platforms       []*model.PlatformDefinition
+	Nodes           []*model.NetworkNode
+	Interfaces      []*network.NetworkInterface
+	Links           []*network.NetworkLink
+	ServiceRequests []*model.ServiceRequest
+}
+
 // NewScenarioState wires together the scope-1 and scope-2 knowledge bases
 // and prepares an empty ServiceRequest store.
 func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase) *ScenarioState {
@@ -59,6 +72,29 @@ func (s *ScenarioState) PhysicalKB() *kb.KnowledgeBase {
 // NetworkKB exposes the scope-2 knowledge base for interfaces/links.
 func (s *ScenarioState) NetworkKB() *network.KnowledgeBase {
 	return s.netKB
+}
+
+// Snapshot returns a coherent view of the current scenario state.
+//
+// It acquires the ScenarioState read lock so that the Scope-1 and
+// Scope-2 KBs plus the ServiceRequest map are observed atomically
+// from the perspective of ScenarioState callers.
+func (s *ScenarioState) Snapshot() *ScenarioSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	srs := make([]*model.ServiceRequest, 0, len(s.serviceRequests))
+	for _, sr := range s.serviceRequests {
+		srs = append(srs, sr)
+	}
+
+	return &ScenarioSnapshot{
+		Platforms:       s.physKB.ListPlatforms(),
+		Nodes:           s.physKB.ListNetworkNodes(),
+		Interfaces:      s.netKB.GetAllInterfaces(),
+		Links:           s.netKB.GetAllNetworkLinks(),
+		ServiceRequests: srs,
+	}
 }
 
 // CreatePlatform inserts a new platform into the scenario.
@@ -196,13 +232,11 @@ func (s *ScenarioState) UpdateLink(link *network.NetworkLink) error {
 	return nil
 }
 
-
 // ServiceRequests returns a snapshot of all stored ServiceRequests.
 //
 // The returned slice is a shallow copy of the internal map values.
 // Callers MUST treat the returned ServiceRequests as read-only and
-// perform any mutations via ScenarioState methods (to be added in
-// later Scope-3 chunks).
+// perform any mutations via Create/Update/DeleteServiceRequest.
 func (s *ScenarioState) ServiceRequests() []*model.ServiceRequest {
 	return s.ListServiceRequests()
 }
@@ -278,5 +312,22 @@ func (s *ScenarioState) DeleteServiceRequest(id string) error {
 		return ErrServiceRequestNotFound
 	}
 	delete(s.serviceRequests, id)
+	return nil
+}
+
+// ClearScenario wipes all in-memory scenario data so a fresh scenario
+// can be loaded without dangling references.
+func (s *ScenarioState) ClearScenario() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.physKB != nil {
+		s.physKB.Clear()
+	}
+	if s.netKB != nil {
+		s.netKB.Clear()
+	}
+	s.serviceRequests = make(map[string]*model.ServiceRequest)
+
 	return nil
 }

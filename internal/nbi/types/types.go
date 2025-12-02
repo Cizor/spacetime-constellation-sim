@@ -361,43 +361,43 @@ func LinkToProto(link *core.NetworkLink) *NetworkLink {
 // `type` field as a human-readable label and map it onto ServiceRequest.Type.
 // The stable ID is owned by the NBI / ScenarioState layer and is not set here.
 func ServiceRequestFromProto(sr *ServiceRequest) (*model.ServiceRequest, error) {
-    if sr == nil {
-        return nil, errors.New("nil ServiceRequest proto")
-    }
+	if sr == nil {
+		return nil, errors.New("nil ServiceRequest proto")
+	}
 
-    dom := &model.ServiceRequest{
-        ID:                    "",              // ID is intentionally NOT derived from proto.type
-        Type:                  sr.GetType(),    // type label from proto
-        SrcNodeID:             sr.GetSrcNodeId(),
-        DstNodeID:             sr.GetDstNodeId(),
-        Priority:              int32(sr.GetPriority()),
-        AllowPartnerResources: sr.GetAllowPartnerResources(),
-    }
+	dom := &model.ServiceRequest{
+		ID:                    "",           // ID is intentionally NOT derived from proto.type
+		Type:                  sr.GetType(), // type label from proto
+		SrcNodeID:             sr.GetSrcNodeId(),
+		DstNodeID:             sr.GetDstNodeId(),
+		Priority:              int32(sr.GetPriority()),
+		AllowPartnerResources: sr.GetAllowPartnerResources(),
+	}
 
-    for _, req := range sr.GetRequirements() {
-        if req == nil {
-            continue
-        }
+	for _, req := range sr.GetRequirements() {
+		if req == nil {
+			continue
+		}
 
-        fr := model.FlowRequirement{
-            RequestedBandwidthMbps: req.GetBandwidthBpsRequested() / 1e6,
-            MinBandwidthMbps:       req.GetBandwidthBpsMinimum() / 1e6,
-            MaxLatencyMs:           durationToMilliseconds(req.GetLatencyMaximum()),
-        }
+		fr := model.FlowRequirement{
+			RequestedBandwidthMbps: req.GetBandwidthBpsRequested() / 1e6,
+			MinBandwidthMbps:       req.GetBandwidthBpsMinimum() / 1e6,
+			MaxLatencyMs:           durationToMilliseconds(req.GetLatencyMaximum()),
+		}
 
-        if ti := req.GetTimeInterval(); ti != nil {
-            fr.ValidFromUnixSec = dateTimeToUnixSeconds(ti.GetStartTime())
-            fr.ValidToUnixSec = dateTimeToUnixSeconds(ti.GetEndTime())
-        }
+		if ti := req.GetTimeInterval(); ti != nil {
+			fr.ValidFromUnixSec = dateTimeToUnixSeconds(ti.GetStartTime())
+			fr.ValidToUnixSec = dateTimeToUnixSeconds(ti.GetEndTime())
+		}
 
-        if req.GetIsDisruptionTolerant() {
-            dom.IsDisruptionTolerant = true
-        }
+		if req.GetIsDisruptionTolerant() {
+			dom.IsDisruptionTolerant = true
+		}
 
-        dom.FlowRequirements = append(dom.FlowRequirements, fr)
-    }
+		dom.FlowRequirements = append(dom.FlowRequirements, fr)
+	}
 
-    return dom, nil
+	return dom, nil
 }
 
 // ServiceRequestToProto converts a domain ServiceRequest back into the
@@ -407,67 +407,66 @@ func ServiceRequestFromProto(sr *ServiceRequest) (*model.ServiceRequest, error) 
 // The internal ID is not exposed on the wire here; it is used by NBI
 // request messages (request_id) and ScenarioState storage.
 func ServiceRequestToProto(sr *model.ServiceRequest) *ServiceRequest {
-    if sr == nil {
-        return nil
-    }
+	if sr == nil {
+		return nil
+	}
 
-    p := &resources.ServiceRequest{}
+	p := &resources.ServiceRequest{}
 
-    if sr.Type != "" {
-        typ := sr.Type
-        p.Type = &typ
-    }
+	if sr.Type != "" {
+		typ := sr.Type
+		p.Type = &typ
+	}
 
-    if sr.SrcNodeID != "" {
-        src := sr.SrcNodeID
-        p.SrcType = &resources.ServiceRequest_SrcNodeId{SrcNodeId: src}
-    }
-    if sr.DstNodeID != "" {
-        dst := sr.DstNodeID
-        p.DstType = &resources.ServiceRequest_DstNodeId{DstNodeId: dst}
-    }
+	if sr.SrcNodeID != "" {
+		src := sr.SrcNodeID
+		p.SrcType = &resources.ServiceRequest_SrcNodeId{SrcNodeId: src}
+	}
+	if sr.DstNodeID != "" {
+		dst := sr.DstNodeID
+		p.DstType = &resources.ServiceRequest_DstNodeId{DstNodeId: dst}
+	}
 
-    if sr.Priority != 0 {
-        pr := float64(sr.Priority)
-        p.Priority = &pr
-    }
+	if sr.Priority != 0 {
+		pr := float64(sr.Priority)
+		p.Priority = &pr
+	}
 
-    for _, fr := range sr.FlowRequirements {
-        req := &resources.ServiceRequest_FlowRequirements{}
+	for _, fr := range sr.FlowRequirements {
+		req := &resources.ServiceRequest_FlowRequirements{}
 
-        if fr.RequestedBandwidthMbps != 0 {
-            bps := fr.RequestedBandwidthMbps * 1e6
-            req.BandwidthBpsRequested = &bps
-        }
-        if fr.MinBandwidthMbps != 0 {
-            min := fr.MinBandwidthMbps * 1e6
-            req.BandwidthBpsMinimum = &min
-        }
-        if fr.MaxLatencyMs != 0 {
-            req.LatencyMaximum = millisecondsToDuration(fr.MaxLatencyMs)
-        }
-        if fr.ValidFromUnixSec != 0 || fr.ValidToUnixSec != 0 {
-            req.TimeInterval = &common.TimeInterval{
-                StartTime: unixSecondsToDateTime(fr.ValidFromUnixSec),
-                EndTime:   unixSecondsToDateTime(fr.ValidToUnixSec),
-            }
-        }
-        if sr.IsDisruptionTolerant {
-            dtn := sr.IsDisruptionTolerant
-            req.IsDisruptionTolerant = &dtn
-        }
+		if fr.RequestedBandwidthMbps != 0 {
+			bps := fr.RequestedBandwidthMbps * 1e6
+			req.BandwidthBpsRequested = &bps
+		}
+		if fr.MinBandwidthMbps != 0 {
+			min := fr.MinBandwidthMbps * 1e6
+			req.BandwidthBpsMinimum = &min
+		}
+		if fr.MaxLatencyMs != 0 {
+			req.LatencyMaximum = millisecondsToDuration(fr.MaxLatencyMs)
+		}
+		if fr.ValidFromUnixSec != 0 || fr.ValidToUnixSec != 0 {
+			req.TimeInterval = &common.TimeInterval{
+				StartTime: unixSecondsToDateTime(fr.ValidFromUnixSec),
+				EndTime:   unixSecondsToDateTime(fr.ValidToUnixSec),
+			}
+		}
+		if sr.IsDisruptionTolerant {
+			dtn := sr.IsDisruptionTolerant
+			req.IsDisruptionTolerant = &dtn
+		}
 
-        p.Requirements = append(p.Requirements, req)
-    }
+		p.Requirements = append(p.Requirements, req)
+	}
 
-    if sr.AllowPartnerResources {
-        apr := sr.AllowPartnerResources
-        p.AllowPartnerResources = &apr
-    }
+	if sr.AllowPartnerResources {
+		apr := sr.AllowPartnerResources
+		p.AllowPartnerResources = &apr
+	}
 
-    return p
+	return p
 }
-
 
 func combineInterfaceRef(nodeID, ifaceID string) string {
 	switch {
