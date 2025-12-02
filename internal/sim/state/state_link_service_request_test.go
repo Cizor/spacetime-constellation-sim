@@ -115,7 +115,7 @@ func TestScenarioStateUpdateLink(t *testing.T) {
 		t.Fatalf("AddInterface(ifB) failed: %v", err)
 	}
 
-		link := &network.NetworkLink{
+	link := &network.NetworkLink{
 		ID:         "link-1",
 		InterfaceA: "ifA",
 		InterfaceB: "ifB",
