@@ -17,6 +17,12 @@ var (
 	ErrPlatformExists = kb.ErrPlatformExists
 	// ErrPlatformNotFound indicates a requested platform was not found.
 	ErrPlatformNotFound = kb.ErrPlatformNotFound
+	// ErrLinkNotFound indicates a requested link was not found.
+	ErrLinkNotFound = network.ErrLinkNotFound
+	// ErrServiceRequestExists indicates a service request already exists.
+	ErrServiceRequestExists = errors.New("service request already exists")
+	// ErrServiceRequestNotFound indicates a service request was not found.
+	ErrServiceRequestNotFound = errors.New("service request not found")
 )
 
 // ScenarioState coordinates the simulator's major knowledge bases and
@@ -127,6 +133,70 @@ func (s *ScenarioState) DeletePlatform(id string) error {
 	return nil
 }
 
+// CreateLink inserts a new network link into the Scope-2 knowledge base.
+func (s *ScenarioState) CreateLink(link *network.NetworkLink) error {
+	if link == nil {
+		return errors.New("link is nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.netKB.AddNetworkLink(link)
+}
+
+// GetLink returns a network link by ID.
+func (s *ScenarioState) GetLink(id string) (*network.NetworkLink, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	link := s.netKB.GetNetworkLink(id)
+	if link == nil {
+		return nil, ErrLinkNotFound
+	}
+	return link, nil
+}
+
+// ListLinks returns all network links in the Scope-2 KB.
+func (s *ScenarioState) ListLinks() []*network.NetworkLink {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.netKB.GetAllNetworkLinks()
+}
+
+// DeleteLink removes a link and updates adjacency.
+func (s *ScenarioState) DeleteLink(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.netKB.DeleteNetworkLink(id); err != nil {
+		if errors.Is(err, network.ErrLinkNotFound) {
+			return ErrLinkNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// UpdateLink replaces an existing network link in the Scope-2 knowledge base.
+func (s *ScenarioState) UpdateLink(link *network.NetworkLink) error {
+	if link == nil {
+		return errors.New("link is nil")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.netKB.UpdateNetworkLink(link); err != nil {
+		if errors.Is(err, network.ErrLinkNotFound) {
+			return ErrLinkNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+
 // ServiceRequests returns a snapshot of all stored ServiceRequests.
 //
 // The returned slice is a shallow copy of the internal map values.
@@ -134,6 +204,42 @@ func (s *ScenarioState) DeletePlatform(id string) error {
 // perform any mutations via ScenarioState methods (to be added in
 // later Scope-3 chunks).
 func (s *ScenarioState) ServiceRequests() []*model.ServiceRequest {
+	return s.ListServiceRequests()
+}
+
+// CreateServiceRequest inserts a new ServiceRequest.
+func (s *ScenarioState) CreateServiceRequest(sr *model.ServiceRequest) error {
+	if sr == nil {
+		return errors.New("service request is nil")
+	}
+	if sr.ID == "" {
+		return errors.New("service request ID is empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.serviceRequests[sr.ID]; exists {
+		return ErrServiceRequestExists
+	}
+	s.serviceRequests[sr.ID] = sr
+	return nil
+}
+
+// GetServiceRequest retrieves a ServiceRequest by ID.
+func (s *ScenarioState) GetServiceRequest(id string) (*model.ServiceRequest, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sr, ok := s.serviceRequests[id]
+	if !ok {
+		return nil, ErrServiceRequestNotFound
+	}
+	return sr, nil
+}
+
+// ListServiceRequests returns a snapshot of ServiceRequests.
+func (s *ScenarioState) ListServiceRequests() []*model.ServiceRequest {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -142,4 +248,35 @@ func (s *ScenarioState) ServiceRequests() []*model.ServiceRequest {
 		out = append(out, sr)
 	}
 	return out
+}
+
+// UpdateServiceRequest replaces an existing ServiceRequest entry.
+func (s *ScenarioState) UpdateServiceRequest(sr *model.ServiceRequest) error {
+	if sr == nil {
+		return errors.New("service request is nil")
+	}
+	if sr.ID == "" {
+		return errors.New("service request ID is empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.serviceRequests[sr.ID]; !exists {
+		return ErrServiceRequestNotFound
+	}
+	s.serviceRequests[sr.ID] = sr
+	return nil
+}
+
+// DeleteServiceRequest removes a ServiceRequest by ID.
+func (s *ScenarioState) DeleteServiceRequest(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.serviceRequests[id]; !exists {
+		return ErrServiceRequestNotFound
+	}
+	delete(s.serviceRequests, id)
+	return nil
 }
