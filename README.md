@@ -141,6 +141,10 @@ As the NBI work lands, you will also see:
 
 ---
 
+## Scenario State
+
+ScenarioState is the central in-memory facade that keeps the Scope 1 physical KB, Scope 2 network KB, and in-memory service request store consistent for the simulator and future NBI handlers. It is the expected entry point for scenario CRUD, snapshots, and clears; see [docs/architecture/scenario-state.md](docs/architecture/scenario-state.md) for design and usage guidance.
+
 ## Getting Started
 
 ### Prerequisites
@@ -157,3 +161,4 @@ cd spacetime-constellation-sim
 
 go mod tidy          # fetch dependencies
 go build ./cmd/simulator
+
