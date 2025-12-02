@@ -1,10 +1,19 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+)
+
+var (
+	ErrLinkExists    = errors.New("link already exists")
+	ErrLinkNotFound  = errors.New("link not found")
+	ErrLinkBadInput  = errors.New("invalid link")
+	ErrEmptyLinkID   = errors.New("empty link ID")
+	ErrInterfaceMiss = errors.New("link references unknown interface")
 )
 
 // KnowledgeBase is the Scope-2 network KB: it stores network
@@ -106,26 +115,29 @@ func (kb *KnowledgeBase) GetAllInterfaces() []*NetworkInterface {
 // AddNetworkLink inserts a new (typically static / scenario-defined)
 // link and updates adjacency maps and per-interface LinkIDs.
 func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
-	if link == nil || link.ID == "" {
-		return fmt.Errorf("nil or empty link")
+	if link == nil {
+		return fmt.Errorf("%w", ErrLinkBadInput)
+	}
+	if link.ID == "" {
+		return fmt.Errorf("%w", ErrEmptyLinkID)
 	}
 
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
 	if _, exists := kb.links[link.ID]; exists {
-		return fmt.Errorf("link %q already exists", link.ID)
+		return fmt.Errorf("%w: %q", ErrLinkExists, link.ID)
 	}
 
 	// Validate that the referenced interfaces exist (when specified).
 	if link.InterfaceA != "" {
 		if _, ok := kb.interfaces[link.InterfaceA]; !ok {
-			return fmt.Errorf("link %q references unknown interface %q", link.ID, link.InterfaceA)
+			return fmt.Errorf("%w: %q references unknown interface %q", ErrInterfaceMiss, link.ID, link.InterfaceA)
 		}
 	}
 	if link.InterfaceB != "" {
 		if _, ok := kb.interfaces[link.InterfaceB]; !ok {
-			return fmt.Errorf("link %q references unknown interface %q", link.ID, link.InterfaceB)
+			return fmt.Errorf("%w: %q references unknown interface %q", ErrInterfaceMiss, link.ID, link.InterfaceB)
 		}
 	}
 
@@ -151,9 +163,30 @@ func (kb *KnowledgeBase) UpdateNetworkLink(link *NetworkLink) error {
 
 	if _, exists := kb.links[link.ID]; !exists {
 		// You *could* auto-add here, but for now be strict.
-		return fmt.Errorf("link %q does not exist", link.ID)
+		return fmt.Errorf("%w: %q", ErrLinkNotFound, link.ID)
 	}
 	kb.links[link.ID] = link
+	return nil
+}
+
+// DeleteNetworkLink removes a link by ID and cleans up adjacency state.
+func (kb *KnowledgeBase) DeleteNetworkLink(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w", ErrEmptyLinkID)
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	link, exists := kb.links[id]
+	if !exists {
+		return fmt.Errorf("%w: %q", ErrLinkNotFound, id)
+	}
+
+	// Remove adjacency before deleting the link entry.
+	kb.detachLinkFromInterface(id, link.InterfaceA)
+	kb.detachLinkFromInterface(id, link.InterfaceB)
+	delete(kb.links, id)
 	return nil
 }
 
