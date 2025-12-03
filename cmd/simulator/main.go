@@ -56,6 +56,25 @@ func main() {
 		panic(err)
 	}
 
+	tle1 := "1 25544U 98067A   21275.59097222  .00000204  00000-0  10270-4 0  9990"
+	tle2 := "2 25544  51.6459 115.9059 0001817  61.3028  35.9198 15.49370953257760"
+
+	motionModel := core.NewMotionModel(
+		core.WithPositionUpdater(store),
+		core.WithTLEFetcher(func(pd *model.PlatformDefinition) (string, string) {
+			if pd.ID == sat.ID {
+				return tle1, tle2
+			}
+			return "", ""
+		}),
+	)
+	if err := motionModel.AddPlatform(sat); err != nil {
+		panic(err)
+	}
+	if err := motionModel.AddPlatform(ground); err != nil {
+		panic(err)
+	}
+
 	// Network nodes attached to platforms (Scope 1)
 	if err := store.AddNetworkNode(&model.NetworkNode{
 		ID:         "node-sat1",
@@ -71,12 +90,6 @@ func main() {
 	}); err != nil {
 		panic(err)
 	}
-
-	// Motion models
-	tle1 := "1 25544U 98067A   21275.59097222  .00000204  00000-0  10270-4 0  9990"
-	tle2 := "2 25544  51.6459 115.9059 0001817  61.3028  35.9198 15.49370953257760"
-	satModel := core.NewMotionModel(sat, tle1, tle2)
-	groundModel := core.NewMotionModel(ground, "", "")
 
 	// ==== Scope 2: Network KB + connectivity service ====
 
@@ -134,14 +147,8 @@ func main() {
 	tc.AddListener(func(simTime time.Time) {
 		// --- Update platform positions (Scope 1) ---
 
-		satModel.UpdatePosition(simTime, sat)
-		if err := store.UpdatePlatformPosition(sat.ID, sat.Coordinates); err != nil {
-			fmt.Printf("update sat position error: %v\n", err)
-		}
-
-		groundModel.UpdatePosition(simTime, ground)
-		if err := store.UpdatePlatformPosition(ground.ID, ground.Coordinates); err != nil {
-			fmt.Printf("update ground position error: %v\n", err)
+		if err := motionModel.UpdatePositions(simTime); err != nil {
+			fmt.Printf("update motion error: %v\n", err)
 		}
 
 		// --- Push ECEF positions into network KB (Scope 2) ---

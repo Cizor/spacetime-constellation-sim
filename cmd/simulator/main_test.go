@@ -37,8 +37,21 @@ func TestIntegration_SingleSatAndGround(t *testing.T) {
 	tle1 := "1 25544U 98067A   21275.59097222  .00000204  00000-0  10270-4 0  9990"
 	tle2 := "2 25544  51.6459 115.9059 0001817  61.3028  35.9198 15.49370953257760"
 
-	satModel := core.NewMotionModel(sat, tle1, tle2)
-	groundModel := core.NewMotionModel(ground, "", "")
+	motionModel := core.NewMotionModel(
+		core.WithPositionUpdater(store),
+		core.WithTLEFetcher(func(pd *model.PlatformDefinition) (string, string) {
+			if pd.ID == sat.ID {
+				return tle1, tle2
+			}
+			return "", ""
+		}),
+	)
+	if err := motionModel.AddPlatform(sat); err != nil {
+		t.Fatalf("AddPlatform sat motion: %v", err)
+	}
+	if err := motionModel.AddPlatform(ground); err != nil {
+		t.Fatalf("AddPlatform ground motion: %v", err)
+	}
 
 	// Run a short accelerated simulation.
 	start := time.Date(2021, 10, 2, 0, 0, 0, 0, time.UTC)
@@ -48,10 +61,7 @@ func TestIntegration_SingleSatAndGround(t *testing.T) {
 	ticks := 0
 
 	tc.AddListener(func(simTime time.Time) {
-		satModel.UpdatePosition(simTime, sat)
-		_ = store.UpdatePlatformPosition(sat.ID, sat.Coordinates)
-		groundModel.UpdatePosition(simTime, ground)
-		_ = store.UpdatePlatformPosition(ground.ID, ground.Coordinates)
+		_ = motionModel.UpdatePositions(simTime)
 
 		if ticks == 0 {
 			satFirst = sat.Coordinates

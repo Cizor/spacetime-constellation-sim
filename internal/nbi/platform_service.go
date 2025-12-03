@@ -11,6 +11,7 @@ import (
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
+	"github.com/signalsfoundry/constellation-simulator/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -25,21 +26,29 @@ type Logger interface {
 	Errorw(msg string, keysAndValues ...interface{})
 }
 
+// MotionModel describes the subset of motion functionality PlatformService needs.
+type MotionModel interface {
+	AddPlatform(pd *model.PlatformDefinition) error
+	RemovePlatform(platformID string) error
+}
+
 // PlatformService implements the PlatformService gRPC server backed by a
 // ScenarioState instance for persistence.
 type PlatformService struct {
 	v1alpha.UnimplementedPlatformServiceServer
 
-	state *sim.ScenarioState
-	log   Logger
+	state  *sim.ScenarioState
+	motion MotionModel
+	log    Logger
 }
 
 // NewPlatformService wires a PlatformService to the shared ScenarioState and
 // optional logger.
-func NewPlatformService(state *sim.ScenarioState, log Logger) *PlatformService {
+func NewPlatformService(state *sim.ScenarioState, motion MotionModel, log Logger) *PlatformService {
 	return &PlatformService{
-		state: state,
-		log:   log,
+		state:  state,
+		motion: motion,
+		log:    log,
 	}
 }
 
@@ -79,6 +88,25 @@ func (s *PlatformService) CreatePlatform(
 			return nil, status.Error(codes.AlreadyExists, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	if s.motion != nil {
+		if err := s.motion.AddPlatform(dom); err != nil {
+			if s.log != nil {
+				s.log.Errorw("failed to register platform with motion model",
+					"platform_id", dom.ID,
+					"err", err,
+				)
+			}
+			// Try to roll back state to keep it consistent with motion model.
+			if delErr := s.state.DeletePlatform(dom.ID); delErr != nil && s.log != nil {
+				s.log.Warnw("failed to roll back platform after motion model error",
+					"platform_id", dom.ID,
+					"err", delErr,
+				)
+			}
+			return nil, status.Error(codes.Internal, "failed to register platform in motion model")
+		}
 	}
 
 	return types.PlatformToProto(dom), nil
@@ -139,6 +167,7 @@ func (s *PlatformService) UpdatePlatform(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+
 	// You must know which platform to update.
 	if dom.ID == "" {
 		return nil, status.Error(codes.InvalidArgument, "platform ID is required")
@@ -162,6 +191,10 @@ func (s *PlatformService) UpdatePlatform(
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
+	// Note: we *could* update the motion model here if motion-related
+	// parameters change (e.g. TLE, motion source), but that’s out of scope
+	// for this chunk. For now we assume motion-related fields are stable.
+
 	return types.PlatformToProto(dom), nil
 }
 
@@ -184,6 +217,18 @@ func (s *PlatformService) DeletePlatform(
 			return nil, status.Error(codes.NotFound, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	if s.motion != nil {
+		if err := s.motion.RemovePlatform(req.GetPlatformId()); err != nil {
+			if s.log != nil {
+				s.log.Errorw("failed to unregister platform from motion model",
+					"platform_id", req.GetPlatformId(),
+					"err", err,
+				)
+			}
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 	}
 
 	return &emptypb.Empty{}, nil
