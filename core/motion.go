@@ -1,6 +1,8 @@
 package core
 
 import (
+	"errors"
+	"sync"
 	"time"
 
 	satellite "github.com/joshuaferrara/go-satellite"
@@ -8,8 +10,123 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
-// MotionModel updates a platform's position for a given simulation time.
-type MotionModel interface {
+// MotionModel manages propagators for a set of platforms and updates
+// their positions as simulation time advances.
+type MotionModel struct {
+	mu sync.RWMutex
+
+	entries map[string]motionEntry
+
+	posUpdater positionUpdater
+	tleFetcher TLEFetcher
+}
+
+// positionUpdater is satisfied by KnowledgeBase (and any other type)
+// that can persist updated platform coordinates.
+type positionUpdater interface {
+	UpdatePlatformPosition(id string, pos model.Motion) error
+}
+
+// TLEFetcher provides TLE lines for a platform, enabling SGP4 motion
+// when MotionSourceSpacetrack is set.
+type TLEFetcher func(pd *model.PlatformDefinition) (line1, line2 string)
+
+// MotionModelOption customises MotionModel construction.
+type MotionModelOption func(*MotionModel)
+
+// WithPositionUpdater wires an optional sink for persisted coordinates.
+func WithPositionUpdater(updater positionUpdater) MotionModelOption {
+	return func(mm *MotionModel) {
+		mm.posUpdater = updater
+	}
+}
+
+// WithTLEFetcher supplies a function that returns TLE lines for a platform.
+func WithTLEFetcher(fetcher TLEFetcher) MotionModelOption {
+	return func(mm *MotionModel) {
+		mm.tleFetcher = fetcher
+	}
+}
+
+// NewMotionModel constructs an empty motion model with optional hooks.
+func NewMotionModel(opts ...MotionModelOption) *MotionModel {
+	mm := &MotionModel{
+		entries: make(map[string]motionEntry),
+	}
+	for _, opt := range opts {
+		opt(mm)
+	}
+	return mm
+}
+
+// AddPlatform registers a platform for motion propagation.
+func (m *MotionModel) AddPlatform(pd *model.PlatformDefinition) error {
+	if pd == nil || pd.ID == "" {
+		return errors.New("platform is nil or missing ID")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.entries[pd.ID]; exists {
+		return errors.New("platform already registered in motion model: " + pd.ID)
+	}
+
+	prop := newPlatformPropagator(pd, m.tleFetcher)
+	m.entries[pd.ID] = motionEntry{
+		platform:   pd,
+		propagator: prop,
+	}
+	return nil
+}
+
+// RemovePlatform unregisters a platform from motion propagation.
+func (m *MotionModel) RemovePlatform(platformID string) error {
+	if platformID == "" {
+		return errors.New("platform ID is required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.entries[platformID]; !exists {
+		return errors.New("platform not registered in motion model: " + platformID)
+	}
+	delete(m.entries, platformID)
+	return nil
+}
+
+// UpdatePositions advances all registered platforms to simTime.
+func (m *MotionModel) UpdatePositions(simTime time.Time) error {
+	m.mu.RLock()
+	entries := make([]motionEntry, 0, len(m.entries))
+	for _, entry := range m.entries {
+		entries = append(entries, entry)
+	}
+	updater := m.posUpdater
+	m.mu.RUnlock()
+
+	var lastErr error
+	for _, entry := range entries {
+		if entry.propagator == nil || entry.platform == nil {
+			continue
+		}
+		entry.propagator.UpdatePosition(simTime, entry.platform)
+		if updater != nil {
+			if err := updater.UpdatePlatformPosition(entry.platform.ID, entry.platform.Coordinates); err != nil {
+				lastErr = err
+			}
+		}
+	}
+	return lastErr
+}
+
+type motionEntry struct {
+	platform   *model.PlatformDefinition
+	propagator platformPropagator
+}
+
+type platformPropagator interface {
 	UpdatePosition(simTime time.Time, p *model.PlatformDefinition)
 }
 
@@ -51,9 +168,23 @@ func (m *OrbitalSGP4MotionModel) UpdatePosition(simTime time.Time, p *model.Plat
 	}
 }
 
-// NewMotionModel chooses an appropriate MotionModel for the platform.
-// For now, MotionSourceSpacetrack with non-empty TLE uses SGP4, otherwise static.
-func NewMotionModel(p *model.PlatformDefinition, tle1, tle2 string) MotionModel {
+// NewPlatformPropagator chooses a per-platform propagator based on the
+// platform's MotionSource. MotionSourceSpacetrack with non-empty TLE uses
+// SGP4, otherwise a static model is used.
+//
+// This helper exists mostly for compatibility with earlier code.
+func NewPlatformPropagator(p *model.PlatformDefinition, tle1, tle2 string) platformPropagator {
+	return newPlatformPropagator(p, func(_ *model.PlatformDefinition) (string, string) {
+		return tle1, tle2
+	})
+}
+
+func newPlatformPropagator(p *model.PlatformDefinition, fetcher TLEFetcher) platformPropagator {
+	var tle1, tle2 string
+	if fetcher != nil {
+		tle1, tle2 = fetcher(p)
+	}
+
 	if p.MotionSource == model.MotionSourceSpacetrack && tle1 != "" && tle2 != "" {
 		return NewOrbitalModelFromTLE(tle1, tle2)
 	}
