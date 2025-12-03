@@ -83,6 +83,11 @@ func (s *PlatformService) CreatePlatform(
 		return nil, status.Error(codes.InvalidArgument, "platform type is required")
 	}
 
+	// Orbital platforms need a valid motion source (e.g. TLE-backed propagation).
+	if dom.Type == "SATELLITE" && dom.MotionSource == model.MotionSourceUnknown {
+		return nil, status.Error(codes.InvalidArgument, "motion source is required for orbital platforms")
+	}
+
 	if err := s.state.CreatePlatform(dom); err != nil {
 		if errors.Is(err, sim.ErrPlatformExists) {
 			return nil, status.Error(codes.AlreadyExists, err.Error())
