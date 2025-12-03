@@ -8,6 +8,7 @@ import (
 	common "aalyria.com/spacetime/api/common"
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -15,6 +16,9 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// fakeMotionModel is a minimal MotionModel implementation used by tests.
+// It records added/removed platform IDs and can be configured to return
+// errors for AddPlatform / RemovePlatform.
 type fakeMotionModel struct {
 	added     []string
 	removed   []string
@@ -38,9 +42,168 @@ func (f *fakeMotionModel) RemovePlatform(platformID string) error {
 	return nil
 }
 
+// newScenarioStateForTest constructs an in-memory ScenarioState backed by
+// in-memory Scope-1 and Scope-2 knowledge bases.
 func newScenarioStateForTest() *sim.ScenarioState {
 	return sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase())
 }
+
+// platformProto builds a proto PlatformDefinition from a domain object using
+// the real mapping functions.
+func platformProto(t *testing.T, dom *model.PlatformDefinition) *common.PlatformDefinition {
+	t.Helper()
+	pd := types.PlatformToProto(dom)
+	if pd == nil {
+		t.Fatalf("PlatformToProto returned nil for %+v", dom)
+	}
+	return pd
+}
+
+// --- Happy-path CRUD ---
+
+func TestPlatformServiceCRUDHappyPath(t *testing.T) {
+	state := newScenarioStateForTest()
+	motion := &fakeMotionModel{}
+	svc := NewPlatformService(state, motion, nil)
+
+	ctx := context.Background()
+	base := &model.PlatformDefinition{
+		ID:           "platform-crud",
+		Name:         "platform-crud",
+		Type:         "SATELLITE",
+		MotionSource: model.MotionSourceSpacetrack,
+	}
+
+	// Create
+	createResp, err := svc.CreatePlatform(ctx, platformProto(t, base))
+	if err != nil {
+		t.Fatalf("CreatePlatform error: %v", err)
+	}
+	if createResp.GetName() != base.ID || createResp.GetType() != base.Type {
+		t.Fatalf("CreatePlatform response = %#v, want name/type %s/%s", createResp, base.ID, base.Type)
+	}
+	if len(motion.added) != 1 || motion.added[0] != base.ID {
+		t.Fatalf("motion AddPlatform calls = %#v, want [%s]", motion.added, base.ID)
+	}
+	if stored, err := state.GetPlatform(base.ID); err != nil || stored.Type != base.Type {
+		t.Fatalf("scenario state platform = (%#v, %v), want type %s", stored, err, base.Type)
+	}
+
+	// Get
+	getResp, err := svc.GetPlatform(ctx, &v1alpha.GetPlatformRequest{PlatformId: &base.ID})
+	if err != nil {
+		t.Fatalf("GetPlatform error: %v", err)
+	}
+	if getResp.GetName() != base.ID || getResp.GetType() != base.Type {
+		t.Fatalf("GetPlatform response = %#v, want name/type %s/%s", getResp, base.ID, base.Type)
+	}
+
+	// List
+	listResp, err := svc.ListPlatforms(ctx, &v1alpha.ListPlatformsRequest{})
+	if err != nil {
+		t.Fatalf("ListPlatforms error: %v", err)
+	}
+	if len(listResp.GetPlatforms()) != 1 || listResp.GetPlatforms()[0].GetName() != base.ID {
+		t.Fatalf("ListPlatforms = %#v, want single platform %s", listResp.GetPlatforms(), base.ID)
+	}
+
+	// Update
+	updated := &model.PlatformDefinition{
+		ID:           base.ID,
+		Name:         base.Name,
+		Type:         "AIRCRAFT",
+		MotionSource: model.MotionSourceSpacetrack,
+	}
+	updateResp, err := svc.UpdatePlatform(ctx, &v1alpha.UpdatePlatformRequest{
+		Platform: platformProto(t, updated),
+	})
+	if err != nil {
+		t.Fatalf("UpdatePlatform error: %v", err)
+	}
+	if updateResp.GetName() != updated.Name || updateResp.GetType() != updated.Type {
+		t.Fatalf("UpdatePlatform response = %#v, want name/type %s/%s", updateResp, updated.Name, updated.Type)
+	}
+	if stored, err := state.GetPlatform(base.ID); err != nil || stored.Name != updated.Name || stored.Type != updated.Type {
+		t.Fatalf("scenario state after update = (%#v, %v), want name/type %s/%s", stored, err, updated.Name, updated.Type)
+	}
+
+	// Delete
+	if _, err := svc.DeletePlatform(ctx, &v1alpha.DeletePlatformRequest{PlatformId: &base.ID}); err != nil {
+		t.Fatalf("DeletePlatform error: %v", err)
+	}
+	if len(motion.removed) != 1 || motion.removed[0] != base.ID {
+		t.Fatalf("motion RemovePlatform calls = %#v, want [%s]", motion.removed, base.ID)
+	}
+	if _, err := state.GetPlatform(base.ID); !errors.Is(err, sim.ErrPlatformNotFound) {
+		t.Fatalf("platform should be removed from state, err=%v", err)
+	}
+}
+
+// --- Validation and error cases ---
+
+func TestCreatePlatformValidationErrors(t *testing.T) {
+	svc := NewPlatformService(newScenarioStateForTest(), &fakeMotionModel{}, nil)
+	ctx := context.Background()
+
+	missingType := platformProto(t, &model.PlatformDefinition{
+		ID:   "no-type",
+		Name: "no-type",
+	})
+	unknownMotion := platformProto(t, &model.PlatformDefinition{
+		ID:           "sat-unknown-motion",
+		Name:         "sat-unknown-motion",
+		Type:         "SATELLITE",
+		MotionSource: model.MotionSourceUnknown,
+	})
+
+	tests := []struct {
+		name string
+		pd   *common.PlatformDefinition
+		code codes.Code
+	}{
+		{name: "nil proto", pd: nil, code: codes.InvalidArgument},
+		{name: "missing type", pd: missingType, code: codes.InvalidArgument},
+		{name: "satellite missing motion source", pd: unknownMotion, code: codes.InvalidArgument},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.CreatePlatform(ctx, tc.pd)
+			if status.Code(err) != tc.code {
+				t.Fatalf("CreatePlatform(%s) code = %v, want %v (err=%v)", tc.name, status.Code(err), tc.code, err)
+			}
+		})
+	}
+}
+
+func TestPlatformNotFoundErrors(t *testing.T) {
+	svc := NewPlatformService(newScenarioStateForTest(), &fakeMotionModel{}, nil)
+	ctx := context.Background()
+
+	pid := "missing"
+
+	if _, err := svc.GetPlatform(ctx, &v1alpha.GetPlatformRequest{PlatformId: &pid}); status.Code(err) != codes.NotFound {
+		t.Fatalf("GetPlatform missing code = %v, want NotFound (err=%v)", status.Code(err), err)
+	}
+
+	updateReq := &v1alpha.UpdatePlatformRequest{
+		Platform: platformProto(t, &model.PlatformDefinition{
+			ID:           pid,
+			Name:         pid,
+			Type:         "SATELLITE",
+			MotionSource: model.MotionSourceSpacetrack,
+		}),
+	}
+	if _, err := svc.UpdatePlatform(ctx, updateReq); status.Code(err) != codes.NotFound {
+		t.Fatalf("UpdatePlatform missing code = %v, want NotFound (err=%v)", status.Code(err), err)
+	}
+
+	if _, err := svc.DeletePlatform(ctx, &v1alpha.DeletePlatformRequest{PlatformId: &pid}); status.Code(err) != codes.NotFound {
+		t.Fatalf("DeletePlatform missing code = %v, want NotFound (err=%v)", status.Code(err), err)
+	}
+}
+
+// --- Motion-model specific behaviours ---
 
 func TestCreatePlatformRegistersMotionModel(t *testing.T) {
 	motion := &fakeMotionModel{}
@@ -88,10 +251,12 @@ func TestCreatePlatformMotionModelErrorRollsBack(t *testing.T) {
 
 	name := "platform-2"
 	typ := "SATELLITE"
+	ms := common.PlatformDefinition_SPACETRACK_ORG
 
 	_, err := svc.CreatePlatform(context.Background(), &common.PlatformDefinition{
-		Name: &name,
-		Type: &typ,
+		Name:         &name,
+		Type:         &typ,
+		MotionSource: &ms,
 	})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("expected internal error from motion model failure, got %v", err)
