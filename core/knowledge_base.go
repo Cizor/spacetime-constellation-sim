@@ -9,11 +9,14 @@ import (
 )
 
 var (
-	ErrLinkExists    = errors.New("link already exists")
-	ErrLinkNotFound  = errors.New("link not found")
-	ErrLinkBadInput  = errors.New("invalid link")
-	ErrEmptyLinkID   = errors.New("empty link ID")
-	ErrInterfaceMiss = errors.New("link references unknown interface")
+	ErrLinkExists        = errors.New("link already exists")
+	ErrLinkNotFound      = errors.New("link not found")
+	ErrLinkBadInput      = errors.New("invalid link")
+	ErrEmptyLinkID       = errors.New("empty link ID")
+	ErrInterfaceMiss     = errors.New("link references unknown interface")
+	ErrInterfaceExists   = errors.New("interface already exists")
+	ErrInterfaceNotFound = errors.New("interface not found")
+	ErrInterfaceBadInput = errors.New("invalid interface")
 )
 
 // KnowledgeBase is the Scope-2 network KB: it stores network
@@ -74,14 +77,14 @@ func (kb *KnowledgeBase) GetTransceiverModel(id string) *TransceiverModel {
 
 func (kb *KnowledgeBase) AddInterface(intf *NetworkInterface) error {
 	if intf == nil || intf.ID == "" {
-		return fmt.Errorf("nil or empty interface")
+		return fmt.Errorf("%w", ErrInterfaceBadInput)
 	}
 
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
 	if _, exists := kb.interfaces[intf.ID]; exists {
-		return fmt.Errorf("interface %q already exists", intf.ID)
+		return fmt.Errorf("%w: %q", ErrInterfaceExists, intf.ID)
 	}
 	kb.interfaces[intf.ID] = intf
 	return nil
@@ -104,6 +107,73 @@ func (kb *KnowledgeBase) GetAllInterfaces() []*NetworkInterface {
 		out = append(out, intf)
 	}
 	return out
+}
+
+// GetInterfacesForNode returns interfaces whose ParentNodeID matches nodeID.
+func (kb *KnowledgeBase) GetInterfacesForNode(nodeID string) []*NetworkInterface {
+	kb.mu.RLock()
+	defer kb.mu.RUnlock()
+
+	var out []*NetworkInterface
+	for _, intf := range kb.interfaces {
+		if intf != nil && intf.ParentNodeID == nodeID {
+			out = append(out, intf)
+		}
+	}
+	return out
+}
+
+// ReplaceInterfacesForNode deletes any interfaces attached to the node and
+// inserts the provided replacements. Any links attached to removed interfaces
+// are also deleted to keep adjacency consistent.
+func (kb *KnowledgeBase) ReplaceInterfacesForNode(nodeID string, interfaces []*NetworkInterface) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrInterfaceBadInput)
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	for id, iface := range kb.interfaces {
+		if iface != nil && iface.ParentNodeID == nodeID {
+			kb.deleteInterfaceLocked(id)
+		}
+	}
+
+	for _, iface := range interfaces {
+		if iface == nil || iface.ID == "" {
+			return fmt.Errorf("%w", ErrInterfaceBadInput)
+		}
+		if iface.ParentNodeID == "" {
+			iface.ParentNodeID = nodeID
+		}
+		if iface.ParentNodeID != nodeID {
+			return fmt.Errorf("%w: interface %q parent %q does not match node %q", ErrInterfaceBadInput, iface.ID, iface.ParentNodeID, nodeID)
+		}
+		if _, exists := kb.interfaces[iface.ID]; exists {
+			return fmt.Errorf("%w: %q", ErrInterfaceExists, iface.ID)
+		}
+		kb.interfaces[iface.ID] = iface
+	}
+
+	return nil
+}
+
+// DeleteInterface removes a single interface and any links that reference it.
+func (kb *KnowledgeBase) DeleteInterface(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w", ErrInterfaceBadInput)
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	if _, ok := kb.interfaces[id]; !ok {
+		return fmt.Errorf("%w: %q", ErrInterfaceNotFound, id)
+	}
+
+	kb.deleteInterfaceLocked(id)
+	return nil
 }
 
 //
@@ -332,6 +402,21 @@ func (kb *KnowledgeBase) detachLinkFromInterface(linkID, ifID string) {
 		}
 		intf.LinkIDs = newIDs
 	}
+}
+
+// deleteInterfaceLocked removes the interface with the provided ID and cleans
+// up any adjacency state. Caller must hold kb.mu (write lock).
+func (kb *KnowledgeBase) deleteInterfaceLocked(id string) {
+	for linkID, link := range kb.links {
+		if link.InterfaceA == id || link.InterfaceB == id {
+			kb.detachLinkFromInterface(linkID, link.InterfaceA)
+			kb.detachLinkFromInterface(linkID, link.InterfaceB)
+			delete(kb.links, linkID)
+		}
+	}
+
+	delete(kb.linksByInterface, id)
+	delete(kb.interfaces, id)
 }
 
 //
