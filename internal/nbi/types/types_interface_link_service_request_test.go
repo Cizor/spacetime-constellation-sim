@@ -13,10 +13,11 @@ import (
 
 func TestInterfaceMappingRoundTrip(t *testing.T) {
 	orig := &core.NetworkInterface{
-		ID:            "if-1",
+		ID:            "node-123/if-1",
 		Name:          "Wireless0",
 		Medium:        core.MediumWireless,
 		TransceiverID: "trx-123",
+		ParentNodeID:  "node-123",
 		IsOperational: false,
 		MACAddress:    "01:23:45:67:89:ab",
 		IPAddress:     "10.0.0.1/24",
@@ -27,7 +28,7 @@ func TestInterfaceMappingRoundTrip(t *testing.T) {
 		t.Fatalf("InterfaceToProto returned nil")
 	}
 
-	back, err := InterfaceFromProto(p)
+	back, err := InterfaceFromProto(orig.ParentNodeID, p)
 	if err != nil {
 		t.Fatalf("InterfaceFromProto returned error: %v", err)
 	}
@@ -40,6 +41,9 @@ func TestInterfaceMappingRoundTrip(t *testing.T) {
 	}
 	if back.TransceiverID != orig.TransceiverID {
 		t.Errorf("TransceiverID mismatch: got %q, want %q", back.TransceiverID, orig.TransceiverID)
+	}
+	if back.ParentNodeID != orig.ParentNodeID {
+		t.Errorf("ParentNodeID mismatch: got %q, want %q", back.ParentNodeID, orig.ParentNodeID)
 	}
 	if back.IPAddress != orig.IPAddress {
 		t.Errorf("IPAddress mismatch: got %q, want %q", back.IPAddress, orig.IPAddress)
