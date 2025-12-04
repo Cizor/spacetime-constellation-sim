@@ -172,6 +172,33 @@ func NodeFromProto(n *NetworkNode) (*model.NetworkNode, error) {
 	return dom, nil
 }
 
+// NodeWithInterfacesFromProto converts a NetworkNode and any embedded
+// NetworkInterface messages into the domain representations.
+//
+// Optional proto fields that are not represented in the domain model
+// (category_tag, routing_config, SDN agent, storage, power budgets)
+// are intentionally ignored here.
+func NodeWithInterfacesFromProto(n *NetworkNode) (*model.NetworkNode, []*core.NetworkInterface, error) {
+	node, err := NodeFromProto(n)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var ifaces []*core.NetworkInterface
+	for _, iface := range n.GetNodeInterface() {
+		if iface == nil {
+			continue
+		}
+		domIF, err := InterfaceFromProto(node.ID, iface)
+		if err != nil {
+			return nil, nil, err
+		}
+		ifaces = append(ifaces, domIF)
+	}
+
+	return node, ifaces, nil
+}
+
 // NodeToProto converts a domain NetworkNode back into the Aalyria
 // NetworkNode proto.
 //
@@ -193,11 +220,58 @@ func NodeToProto(dom *model.NetworkNode) *NetworkNode {
 	}
 }
 
+// NodeToProtoWithInterfaces emits a NetworkNode proto and populates
+// embedded NetworkInterface messages for interfaces that belong to the
+// provided node.
+func NodeToProtoWithInterfaces(node *model.NetworkNode, ifaces []*core.NetworkInterface) *NetworkNode {
+	p := NodeToProto(node)
+	if p == nil {
+		return nil
+	}
+
+	for _, iface := range ifaces {
+		if iface == nil {
+			continue
+		}
+
+		if node != nil && node.ID != "" {
+			if parent := iface.ParentNodeID; parent != "" && parent != node.ID {
+				continue
+			}
+			if nodePart, _ := splitInterfaceRef(iface.ID); nodePart != "" && nodePart != node.ID {
+				continue
+			}
+		}
+
+		if pif := InterfaceToProto(iface); pif != nil {
+			p.NodeInterface = append(p.NodeInterface, pif)
+		}
+	}
+
+	return p
+}
+
 // InterfaceFromProto converts an Aalyria NetworkInterface into the
 // simulator's core.NetworkInterface representation.
-func InterfaceFromProto(iface *NetworkInterface) (*core.NetworkInterface, error) {
+func InterfaceFromProto(parentNodeID string, iface *NetworkInterface) (*core.NetworkInterface, error) {
 	if iface == nil {
 		return nil, errors.New("nil NetworkInterface proto")
+	}
+
+	// Derive node/interface IDs. Aalyria specifies interface_id as
+	// node-unique; we combine it with the parent node ID to make it
+	// globally unique in the core layer.
+	localID := iface.GetInterfaceId()
+	if idNode, idLocal := splitInterfaceRef(localID); idNode != "" {
+		parentNodeID = idNode
+		localID = idLocal
+	}
+	if parentNodeID == "" && localID == "" {
+		return nil, errors.New("interface_id is required")
+	}
+	fullID := combineInterfaceRef(parentNodeID, localID)
+	if fullID == "" {
+		fullID = localID
 	}
 
 	medium := core.MediumType("")
@@ -216,11 +290,11 @@ func InterfaceFromProto(iface *NetworkInterface) (*core.NetworkInterface, error)
 	isOperational := len(iface.GetOperationalImpairment()) == 0
 
 	return &core.NetworkInterface{
-		ID:            iface.GetInterfaceId(),
+		ID:            fullID,
 		Name:          iface.GetName(),
 		Medium:        medium,
 		TransceiverID: transceiverID,
-		ParentNodeID:  "",
+		ParentNodeID:  parentNodeID,
 		IsOperational: isOperational,
 		MACAddress:    iface.GetEthernetAddress(),
 		IPAddress:     iface.GetIpAddress(),
@@ -234,7 +308,14 @@ func InterfaceToProto(iface *core.NetworkInterface) *NetworkInterface {
 		return nil
 	}
 
-	id := iface.ID
+	_, id := splitInterfaceRef(iface.ID)
+	if id == "" {
+		id = iface.ID
+	}
+	if id == "" {
+		return nil
+	}
+
 	name := iface.Name
 	ip := iface.IPAddress
 	mac := iface.MACAddress
