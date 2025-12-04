@@ -13,6 +13,10 @@ var (
 	ErrPlatformExists = errors.New("platform already exists")
 	// ErrPlatformNotFound indicates a platform is missing.
 	ErrPlatformNotFound = errors.New("platform not found")
+	// ErrNodeExists indicates a node already exists.
+	ErrNodeExists = errors.New("node already exists")
+	// ErrNodeNotFound indicates a node is missing.
+	ErrNodeNotFound = errors.New("node not found")
 )
 
 // EventType indicates what kind of change happened in the KB.
@@ -108,18 +112,61 @@ func (kb *KnowledgeBase) Clear() {
 // AddNetworkNode adds a new network node. It returns an error if the ID already exists
 // or if the referenced platform does not exist.
 func (kb *KnowledgeBase) AddNetworkNode(n *model.NetworkNode) error {
+	if n == nil || n.ID == "" {
+		return fmt.Errorf("nil or empty node")
+	}
+
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
 	if _, exists := kb.nodes[n.ID]; exists {
-		return fmt.Errorf("node with ID %q already exists", n.ID)
+		return fmt.Errorf("%w: %q", ErrNodeExists, n.ID)
 	}
 	if n.PlatformID != "" {
 		if _, ok := kb.platforms[n.PlatformID]; !ok {
-			return fmt.Errorf("platform with ID %q not found for node", n.PlatformID)
+			return fmt.Errorf("%w: %q", ErrPlatformNotFound, n.PlatformID)
 		}
 	}
 	kb.nodes[n.ID] = n
+	return nil
+}
+
+// UpdateNetworkNode replaces an existing network node entry by ID.
+func (kb *KnowledgeBase) UpdateNetworkNode(n *model.NetworkNode) error {
+	if n == nil || n.ID == "" {
+		return fmt.Errorf("nil or empty node")
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	if _, exists := kb.nodes[n.ID]; !exists {
+		return fmt.Errorf("%w: %q", ErrNodeNotFound, n.ID)
+	}
+	if n.PlatformID != "" {
+		if _, ok := kb.platforms[n.PlatformID]; !ok {
+			return fmt.Errorf("%w: %q", ErrPlatformNotFound, n.PlatformID)
+		}
+	}
+
+	kb.nodes[n.ID] = n
+	return nil
+}
+
+// DeleteNetworkNode removes a network node by ID.
+func (kb *KnowledgeBase) DeleteNetworkNode(id string) error {
+	if id == "" {
+		return fmt.Errorf("empty node ID")
+	}
+
+	kb.mu.Lock()
+	defer kb.mu.Unlock()
+
+	if _, exists := kb.nodes[id]; !exists {
+		return fmt.Errorf("%w: %q", ErrNodeNotFound, id)
+	}
+
+	delete(kb.nodes, id)
 	return nil
 }
 
