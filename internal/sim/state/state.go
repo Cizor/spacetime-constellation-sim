@@ -3,6 +3,8 @@ package state
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
@@ -17,6 +19,20 @@ var (
 	ErrPlatformExists = kb.ErrPlatformExists
 	// ErrPlatformNotFound indicates a requested platform was not found.
 	ErrPlatformNotFound = kb.ErrPlatformNotFound
+	// ErrNodeExists indicates a network node already exists.
+	ErrNodeExists = kb.ErrNodeExists
+	// ErrNodeNotFound indicates a requested node was not found.
+	ErrNodeNotFound = kb.ErrNodeNotFound
+	// ErrInterfaceExists indicates a network interface already exists.
+	ErrInterfaceExists = network.ErrInterfaceExists
+	// ErrInterfaceNotFound indicates a requested interface was not found.
+	ErrInterfaceNotFound = network.ErrInterfaceNotFound
+	// ErrInterfaceInvalid indicates an input interface failed validation.
+	ErrInterfaceInvalid = errors.New("invalid interface")
+	// ErrTransceiverNotFound indicates a referenced transceiver model is missing.
+	ErrTransceiverNotFound = errors.New("transceiver model not found")
+	// ErrNodeInvalid indicates a node failed validation.
+	ErrNodeInvalid = errors.New("invalid node")
 	// ErrLinkNotFound indicates a requested link was not found.
 	ErrLinkNotFound = network.ErrLinkNotFound
 	// ErrServiceRequestExists indicates a service request already exists.
@@ -169,6 +185,148 @@ func (s *ScenarioState) DeletePlatform(id string) error {
 	return nil
 }
 
+// CreateNode inserts a new network node along with its interfaces.
+func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*network.NetworkInterface) error {
+	if node == nil || node.ID == "" {
+		return fmt.Errorf("%w: empty node", ErrNodeInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if node.PlatformID != "" && s.physKB.GetPlatform(node.PlatformID) == nil {
+		return fmt.Errorf("%w: %q", ErrPlatformNotFound, node.PlatformID)
+	}
+	if existing := s.physKB.GetNetworkNode(node.ID); existing != nil {
+		return fmt.Errorf("%w: %q", ErrNodeExists, node.ID)
+	}
+	if err := s.validateNodeInterfacesLocked(node.ID, interfaces); err != nil {
+		return err
+	}
+
+	if err := s.physKB.AddNetworkNode(node); err != nil {
+		if errors.Is(err, kb.ErrPlatformNotFound) {
+			return ErrPlatformNotFound
+		}
+		if errors.Is(err, kb.ErrNodeExists) {
+			return ErrNodeExists
+		}
+		return err
+	}
+
+	added := make([]string, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if err := s.netKB.AddInterface(iface); err != nil {
+			for _, id := range added {
+				_ = s.netKB.DeleteInterface(id)
+			}
+			_ = s.physKB.DeleteNetworkNode(node.ID)
+			if errors.Is(err, network.ErrInterfaceExists) {
+				return fmt.Errorf("%w: %q", ErrInterfaceExists, iface.ID)
+			}
+			if errors.Is(err, network.ErrInterfaceBadInput) {
+				return fmt.Errorf("%w: %v", ErrInterfaceInvalid, err)
+			}
+			return err
+		}
+		added = append(added, iface.ID)
+	}
+
+	return nil
+}
+
+// GetNode fetches a node and its interfaces by ID.
+func (s *ScenarioState) GetNode(id string) (*model.NetworkNode, []*network.NetworkInterface, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node := s.physKB.GetNetworkNode(id)
+	if node == nil {
+		return nil, nil, ErrNodeNotFound
+	}
+
+	return node, s.interfacesForNodeLocked(id), nil
+}
+
+// ListNodes returns all nodes in the scenario.
+func (s *ScenarioState) ListNodes() []*model.NetworkNode {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.physKB.ListNetworkNodes()
+}
+
+// ListInterfacesForNode returns all interfaces associated with a node ID.
+func (s *ScenarioState) ListInterfacesForNode(nodeID string) []*network.NetworkInterface {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.interfacesForNodeLocked(nodeID)
+}
+
+// UpdateNode replaces an existing node and its interfaces.
+func (s *ScenarioState) UpdateNode(node *model.NetworkNode, interfaces []*network.NetworkInterface) error {
+	if node == nil || node.ID == "" {
+		return fmt.Errorf("%w: empty node", ErrNodeInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing := s.physKB.GetNetworkNode(node.ID); existing == nil {
+		return ErrNodeNotFound
+	}
+	if node.PlatformID != "" && s.physKB.GetPlatform(node.PlatformID) == nil {
+		return fmt.Errorf("%w: %q", ErrPlatformNotFound, node.PlatformID)
+	}
+	if err := s.validateNodeInterfacesLocked(node.ID, interfaces); err != nil {
+		return err
+	}
+
+	if err := s.physKB.UpdateNetworkNode(node); err != nil {
+		if errors.Is(err, kb.ErrPlatformNotFound) {
+			return ErrPlatformNotFound
+		}
+		if errors.Is(err, kb.ErrNodeNotFound) {
+			return ErrNodeNotFound
+		}
+		return err
+	}
+
+	if err := s.netKB.ReplaceInterfacesForNode(node.ID, interfaces); err != nil {
+		if errors.Is(err, network.ErrInterfaceExists) {
+			return fmt.Errorf("%w: %v", ErrInterfaceExists, err)
+		}
+		if errors.Is(err, network.ErrInterfaceBadInput) {
+			return fmt.Errorf("%w: %v", ErrInterfaceInvalid, err)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// DeleteNode removes a node and its interfaces by ID.
+func (s *ScenarioState) DeleteNode(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.physKB.DeleteNetworkNode(id); err != nil {
+		if errors.Is(err, kb.ErrNodeNotFound) {
+			return ErrNodeNotFound
+		}
+		return err
+	}
+
+	if err := s.netKB.ReplaceInterfacesForNode(id, nil); err != nil && !errors.Is(err, network.ErrInterfaceNotFound) {
+		return err
+	}
+
+	return nil
+}
+
 // CreateLink inserts a new network link into the Scope-2 knowledge base.
 func (s *ScenarioState) CreateLink(link *network.NetworkLink) error {
 	if link == nil {
@@ -313,6 +471,77 @@ func (s *ScenarioState) DeleteServiceRequest(id string) error {
 	}
 	delete(s.serviceRequests, id)
 	return nil
+}
+
+// interfacesForNodeLocked returns interfaces attached to the node. Caller must
+// hold the ScenarioState lock.
+func (s *ScenarioState) interfacesForNodeLocked(nodeID string) []*network.NetworkInterface {
+	if nodeID == "" {
+		return nil
+	}
+	return s.netKB.GetInterfacesForNode(nodeID)
+}
+
+// validateNodeInterfacesLocked performs basic validation on the provided
+// interfaces, ensuring uniqueness per node, parent association, and
+// referenced transceiver existence.
+//
+// Caller must hold the ScenarioState lock.
+func (s *ScenarioState) validateNodeInterfacesLocked(nodeID string, interfaces []*network.NetworkInterface) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+
+	seen := make(map[string]struct{})
+
+	for _, iface := range interfaces {
+		if iface == nil {
+			return fmt.Errorf("%w: nil interface", ErrInterfaceInvalid)
+		}
+
+		parent, local := splitInterfaceRef(iface.ID)
+		if parent != "" && parent != nodeID {
+			return fmt.Errorf("%w: interface %q parent %q does not match node %q", ErrInterfaceInvalid, iface.ID, parent, nodeID)
+		}
+
+		if local == "" {
+			local = iface.ID
+		}
+		if local == "" {
+			return fmt.Errorf("%w: empty interface_id for node %q", ErrInterfaceInvalid, nodeID)
+		}
+
+		if iface.ParentNodeID == "" {
+			iface.ParentNodeID = nodeID
+		}
+		if iface.ParentNodeID != nodeID {
+			return fmt.Errorf("%w: interface %q parent %q does not match node %q", ErrInterfaceInvalid, iface.ID, iface.ParentNodeID, nodeID)
+		}
+
+		if _, ok := seen[local]; ok {
+			return fmt.Errorf("%w: duplicate interface_id %q for node %q", ErrInterfaceInvalid, local, nodeID)
+		}
+		seen[local] = struct{}{}
+
+		if iface.Medium == network.MediumWireless {
+			if iface.TransceiverID == "" {
+				return fmt.Errorf("%w: wireless interface %q missing transceiver reference", ErrInterfaceInvalid, iface.ID)
+			}
+			if s.netKB.GetTransceiverModel(iface.TransceiverID) == nil {
+				return fmt.Errorf("%w: %q", ErrTransceiverNotFound, iface.TransceiverID)
+			}
+		}
+	}
+
+	return nil
+}
+
+func splitInterfaceRef(ref string) (string, string) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", ref
 }
 
 // ClearScenario wipes all in-memory scenario data so a fresh scenario
