@@ -1,0 +1,55 @@
+// Copyright 2023 Aalyria Technologies, Inc., and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto2";
+
+package aalyria.spacetime.api.nbi.v1alpha;
+
+import "api/nbi/v1alpha/resources/network_element.proto";
+import "google/protobuf/empty.proto";
+
+option java_package = "com.aalyria.spacetime.api.nbi.v1alpha";
+option go_package = "aalyria.com/spacetime/api/nbi/v1alpha";
+
+// Service to manage NetworkNode resources.
+service NetworkNodeService {
+  rpc CreateNode(aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode)
+      returns (aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode);
+  rpc GetNode(GetNodeRequest)
+      returns (aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc UpdateNode(UpdateNodeRequest)
+      returns (aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode);
+  rpc DeleteNode(DeleteNodeRequest) returns (google.protobuf.Empty);
+}
+
+message GetNodeRequest {
+  optional string node_id = 1;
+}
+
+message ListNodesRequest {
+  // optional filters / pagination
+}
+
+message ListNodesResponse {
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode nodes = 1;
+}
+
+message UpdateNodeRequest {
+  optional aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode node = 1;
+}
+
+message DeleteNodeRequest {
+  optional string node_id = 1;
+}
