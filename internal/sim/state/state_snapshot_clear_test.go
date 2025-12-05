@@ -61,9 +61,9 @@ func TestScenarioStateSnapshot(t *testing.T) {
 	// ServiceRequest
 	if err := s.CreateServiceRequest(&model.ServiceRequest{
 		ID:        "sr-1",
-		Type:      "video",
 		SrcNodeID: "n1",
 		DstNodeID: "n1",
+		Priority:  1,
 	}); err != nil {
 		t.Fatalf("CreateServiceRequest error: %v", err)
 	}
@@ -126,9 +126,9 @@ func TestScenarioStateClearScenario(t *testing.T) {
 	}
 	if err := s.CreateServiceRequest(&model.ServiceRequest{
 		ID:        "sr-1",
-		Type:      "video",
 		SrcNodeID: "n1",
 		DstNodeID: "n1",
+		Priority:  1,
 	}); err != nil {
 		t.Fatalf("CreateServiceRequest error: %v", err)
 	}

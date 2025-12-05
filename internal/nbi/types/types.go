@@ -545,18 +545,13 @@ func BidirectionalLinkToProto(links ...*core.NetworkLink) *BidirectionalLink {
 
 // ServiceRequestFromProto converts an Aalyria ServiceRequest into the
 // simulator's domain ServiceRequest representation.
-//
-// Note: The proto does not carry a stable request_id. We treat the proto
-// `type` field as a human-readable label and map it onto ServiceRequest.Type.
-// The stable ID is owned by the NBI / ScenarioState layer and is not set here.
 func ServiceRequestFromProto(sr *ServiceRequest) (*model.ServiceRequest, error) {
 	if sr == nil {
 		return nil, errors.New("nil ServiceRequest proto")
 	}
 
 	dom := &model.ServiceRequest{
-		ID:                    "",           // ID is intentionally NOT derived from proto.type
-		Type:                  sr.GetType(), // type label from proto
+		ID:                    "", // ID is intentionally NOT derived from the proto
 		SrcNodeID:             sr.GetSrcNodeId(),
 		DstNodeID:             sr.GetDstNodeId(),
 		Priority:              int32(sr.GetPriority()),
@@ -569,14 +564,14 @@ func ServiceRequestFromProto(sr *ServiceRequest) (*model.ServiceRequest, error) 
 		}
 
 		fr := model.FlowRequirement{
-			RequestedBandwidthMbps: req.GetBandwidthBpsRequested() / 1e6,
-			MinBandwidthMbps:       req.GetBandwidthBpsMinimum() / 1e6,
-			MaxLatencyMs:           durationToMilliseconds(req.GetLatencyMaximum()),
+			RequestedBandwidth: req.GetBandwidthBpsRequested(),
+			MinBandwidth:       req.GetBandwidthBpsMinimum(),
+			MaxLatency:         durationToSeconds(req.GetLatencyMaximum()),
 		}
 
 		if ti := req.GetTimeInterval(); ti != nil {
-			fr.ValidFromUnixSec = dateTimeToUnixSeconds(ti.GetStartTime())
-			fr.ValidToUnixSec = dateTimeToUnixSeconds(ti.GetEndTime())
+			fr.ValidFrom = dateTimeToTime(ti.GetStartTime())
+			fr.ValidTo = dateTimeToTime(ti.GetEndTime())
 		}
 
 		if req.GetIsDisruptionTolerant() {
@@ -592,7 +587,6 @@ func ServiceRequestFromProto(sr *ServiceRequest) (*model.ServiceRequest, error) 
 // ServiceRequestToProto converts a domain ServiceRequest back into the
 // Aalyria ServiceRequest proto.
 //
-// We emit the human-readable Type label into proto.type.
 // The internal ID is not exposed on the wire here; it is used by NBI
 // request messages (request_id) and ScenarioState storage.
 func ServiceRequestToProto(sr *model.ServiceRequest) *ServiceRequest {
@@ -601,11 +595,6 @@ func ServiceRequestToProto(sr *model.ServiceRequest) *ServiceRequest {
 	}
 
 	p := &resources.ServiceRequest{}
-
-	if sr.Type != "" {
-		typ := sr.Type
-		p.Type = &typ
-	}
 
 	if sr.SrcNodeID != "" {
 		src := sr.SrcNodeID
@@ -624,21 +613,21 @@ func ServiceRequestToProto(sr *model.ServiceRequest) *ServiceRequest {
 	for _, fr := range sr.FlowRequirements {
 		req := &resources.ServiceRequest_FlowRequirements{}
 
-		if fr.RequestedBandwidthMbps != 0 {
-			bps := fr.RequestedBandwidthMbps * 1e6
+		if fr.RequestedBandwidth != 0 {
+			bps := fr.RequestedBandwidth
 			req.BandwidthBpsRequested = &bps
 		}
-		if fr.MinBandwidthMbps != 0 {
-			min := fr.MinBandwidthMbps * 1e6
+		if fr.MinBandwidth != 0 {
+			min := fr.MinBandwidth
 			req.BandwidthBpsMinimum = &min
 		}
-		if fr.MaxLatencyMs != 0 {
-			req.LatencyMaximum = millisecondsToDuration(fr.MaxLatencyMs)
+		if fr.MaxLatency != 0 {
+			req.LatencyMaximum = secondsToDuration(fr.MaxLatency)
 		}
-		if fr.ValidFromUnixSec != 0 || fr.ValidToUnixSec != 0 {
+		if !fr.ValidFrom.IsZero() || !fr.ValidTo.IsZero() {
 			req.TimeInterval = &common.TimeInterval{
-				StartTime: unixSecondsToDateTime(fr.ValidFromUnixSec),
-				EndTime:   unixSecondsToDateTime(fr.ValidToUnixSec),
+				StartTime: timeToDateTime(fr.ValidFrom),
+				EndTime:   timeToDateTime(fr.ValidTo),
 			}
 		}
 		if sr.IsDisruptionTolerant {
@@ -776,32 +765,32 @@ func stringPtr(s string) *string {
 	return &s
 }
 
-func durationToMilliseconds(d *durationpb.Duration) float64 {
+func durationToSeconds(d *durationpb.Duration) float64 {
 	if d == nil {
 		return 0
 	}
-	return float64(d.AsDuration()) / float64(time.Millisecond)
+	return d.AsDuration().Seconds()
 }
 
-func millisecondsToDuration(ms float64) *durationpb.Duration {
-	if ms == 0 {
-		return nil
-	}
-	return durationpb.New(time.Duration(ms * float64(time.Millisecond)))
-}
-
-func dateTimeToUnixSeconds(dt *common.DateTime) int64 {
-	if dt == nil {
-		return 0
-	}
-	return dt.GetUnixTimeUsec() / 1_000_000
-}
-
-func unixSecondsToDateTime(sec int64) *common.DateTime {
+func secondsToDuration(sec float64) *durationpb.Duration {
 	if sec == 0 {
 		return nil
 	}
-	usec := sec * 1_000_000
+	return durationpb.New(time.Duration(sec * float64(time.Second)))
+}
+
+func dateTimeToTime(dt *common.DateTime) time.Time {
+	if dt == nil {
+		return time.Time{}
+	}
+	return time.UnixMicro(dt.GetUnixTimeUsec())
+}
+
+func timeToDateTime(t time.Time) *common.DateTime {
+	if t.IsZero() {
+		return nil
+	}
+	usec := t.UnixMicro()
 	return &common.DateTime{
 		UnixTimeUsec: &usec,
 	}
