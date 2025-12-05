@@ -4,6 +4,7 @@ package nbi
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
@@ -18,6 +19,7 @@ import (
 // ScenarioState instance.
 type NetworkNodeService struct {
 	v1alpha.UnimplementedNetworkNodeServiceServer
+
 	state *sim.ScenarioState
 	log   Logger
 }
@@ -50,12 +52,20 @@ func (s *NetworkNodeService) CreateNode(
 		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
 
+	// Derive a single platform_id from the interfaces, if present.
+	if platformID, err := platformIDFromInterfaces(in); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	} else if platformID != "" {
+		node.PlatformID = platformID
+	}
+
 	if err := s.state.CreateNode(node, interfaces); err != nil {
 		switch {
 		case errors.Is(err, sim.ErrNodeExists):
 			return nil, status.Error(codes.AlreadyExists, err.Error())
 		case errors.Is(err, sim.ErrPlatformNotFound), errors.Is(err, sim.ErrTransceiverNotFound):
-			return nil, status.Error(codes.NotFound, err.Error())
+			// Treat bad references in the payload as InvalidArgument at the NBI.
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		case errors.Is(err, sim.ErrInterfaceInvalid), errors.Is(err, sim.ErrNodeInvalid):
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		default:
@@ -126,12 +136,19 @@ func (s *NetworkNodeService) UpdateNode(
 		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
 
+	// Re-derive platform_id from interfaces on update.
+	if platformID, err := platformIDFromInterfaces(req.GetNode()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	} else if platformID != "" {
+		node.PlatformID = platformID
+	}
+
 	if err := s.state.UpdateNode(node, interfaces); err != nil {
 		switch {
 		case errors.Is(err, sim.ErrNodeNotFound):
 			return nil, status.Error(codes.NotFound, err.Error())
 		case errors.Is(err, sim.ErrPlatformNotFound), errors.Is(err, sim.ErrTransceiverNotFound):
-			return nil, status.Error(codes.NotFound, err.Error())
+			return nil, status.Error(codes.InvalidArgument, err.Error())
 		case errors.Is(err, sim.ErrInterfaceInvalid), errors.Is(err, sim.ErrNodeInvalid):
 			return nil, status.Error(codes.InvalidArgument, err.Error())
 		default:
@@ -160,6 +177,7 @@ func (s *NetworkNodeService) DeleteNode(
 		case errors.Is(err, sim.ErrNodeNotFound):
 			return nil, status.Error(codes.NotFound, err.Error())
 		case errors.Is(err, sim.ErrNodeInUse):
+			// Node is still referenced by links or service requests.
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		default:
 			return nil, status.Error(codes.Internal, err.Error())
@@ -174,4 +192,48 @@ func (s *NetworkNodeService) ensureReady() error {
 		return status.Error(codes.FailedPrecondition, "scenario state is not configured")
 	}
 	return nil
+}
+
+// platformIDFromInterfaces extracts a single platform_id from the node's
+// interfaces. If multiple non-empty platform_ids are present and disagree, an
+// error is returned.
+func platformIDFromInterfaces(in *resources.NetworkNode) (string, error) {
+	var platformID string
+
+	setOrVerify := func(candidate string) error {
+		if candidate == "" {
+			return nil
+		}
+		if platformID == "" {
+			platformID = candidate
+			return nil
+		}
+		if platformID != candidate {
+			return fmt.Errorf("conflicting platform_id values: %q vs %q", platformID, candidate)
+		}
+		return nil
+	}
+
+	for _, iface := range in.GetNodeInterface() {
+		if iface == nil {
+			continue
+		}
+
+		switch medium := iface.GetInterfaceMedium().(type) {
+		case *resources.NetworkInterface_Wired:
+			if medium.Wired != nil {
+				if err := setOrVerify(medium.Wired.GetPlatformId()); err != nil {
+					return "", err
+				}
+			}
+		case *resources.NetworkInterface_Wireless:
+			if medium.Wireless != nil {
+				if err := setOrVerify(medium.Wireless.GetPlatform()); err != nil {
+					return "", err
+				}
+			}
+		}
+	}
+
+	return platformID, nil
 }
