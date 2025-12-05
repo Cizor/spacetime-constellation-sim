@@ -91,7 +91,6 @@ func TestDeleteNodeFailsWhenServiceRequestsPresent(t *testing.T) {
 
 	if err := s.CreateServiceRequest(&model.ServiceRequest{
 		ID:        "sr-keep-node",
-		Type:      "video",
 		SrcNodeID: nodeID,
 		DstNodeID: "other",
 	}); err != nil {
