@@ -1,0 +1,74 @@
+// Copyright 2023 Aalyria Technologies, Inc., and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto2";
+
+package aalyria.spacetime.api.nbi.v1alpha;
+
+import "api/common/platform.proto";
+import "api/nbi/v1alpha/resources/network_element.proto";
+import "api/nbi/v1alpha/resources/network_link.proto";
+import "api/nbi/v1alpha/resources/service_request.proto";
+import "google/protobuf/empty.proto";
+
+option java_package = "com.aalyria.spacetime.api.nbi.v1alpha";
+option go_package = "aalyria.com/spacetime/api/nbi/v1alpha";
+
+// Service to manage entire scenarios: clear, snapshot, and bulk load.
+service ScenarioService {
+  // Clear all in-memory scenario entities (platforms, nodes, links, service
+  // requests, etc.) and reset to an empty scenario.
+  rpc ClearScenario(ClearScenarioRequest) returns (google.protobuf.Empty);
+
+  // Return a snapshot of the current in-memory scenario.
+  rpc GetScenario(GetScenarioRequest) returns (ScenarioSnapshot);
+
+  // Bulk-load a scenario, either from inline entities or from a textproto
+  // reference (if supported by the server implementation).
+  rpc LoadScenario(LoadScenarioRequest) returns (google.protobuf.Empty);
+}
+
+// Empty request to clear all scenario state.
+message ClearScenarioRequest {
+}
+
+// Empty request to fetch the current scenario snapshot.
+message GetScenarioRequest {
+}
+
+// High-level snapshot of the current scenario, using NBI resource types.
+message ScenarioSnapshot {
+  repeated aalyria.spacetime.api.common.PlatformDefinition platforms = 1;
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode nodes = 2;
+  // We standardize on BidirectionalLink here, same as NetworkLinkService.
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.BidirectionalLink links =
+      3;
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+      service_requests = 4;
+}
+
+// Request to bulk-load a scenario.
+message LoadScenarioRequest {
+  // Option A: entities provided inline as NBI protos.
+  repeated aalyria.spacetime.api.common.PlatformDefinition platforms = 1;
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.NetworkNode nodes = 2;
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.BidirectionalLink links =
+      3;
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+      service_requests = 4;
+
+  // Option B (optional): reference to a textproto file describing the
+  // scenario. The server may choose to support or ignore this field.
+  optional string scenario_textproto_path = 10;
+}

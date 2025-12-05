@@ -48,10 +48,18 @@ const (
 //
 // Service to manage ServiceRequest resources.
 type ServiceRequestServiceClient interface {
+	// Create a new ServiceRequest resource.
+	//
+	// The incoming ServiceRequest should contain the desired source/destination
+	// nodes and flow requirements; the server assigns a stable ID.
 	CreateServiceRequest(ctx context.Context, in *resources.ServiceRequest, opts ...grpc.CallOption) (*resources.ServiceRequest, error)
+	// Retrieve a single ServiceRequest by its ID.
 	GetServiceRequest(ctx context.Context, in *GetServiceRequestRequest, opts ...grpc.CallOption) (*resources.ServiceRequest, error)
+	// List ServiceRequests in the current scenario.
 	ListServiceRequests(ctx context.Context, in *ListServiceRequestsRequest, opts ...grpc.CallOption) (*ListServiceRequestsResponse, error)
+	// Update an existing ServiceRequest.
 	UpdateServiceRequest(ctx context.Context, in *UpdateServiceRequestRequest, opts ...grpc.CallOption) (*resources.ServiceRequest, error)
+	// Delete a ServiceRequest by ID.
 	DeleteServiceRequest(ctx context.Context, in *DeleteServiceRequestRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
@@ -119,10 +127,18 @@ func (c *serviceRequestServiceClient) DeleteServiceRequest(ctx context.Context, 
 //
 // Service to manage ServiceRequest resources.
 type ServiceRequestServiceServer interface {
+	// Create a new ServiceRequest resource.
+	//
+	// The incoming ServiceRequest should contain the desired source/destination
+	// nodes and flow requirements; the server assigns a stable ID.
 	CreateServiceRequest(context.Context, *resources.ServiceRequest) (*resources.ServiceRequest, error)
+	// Retrieve a single ServiceRequest by its ID.
 	GetServiceRequest(context.Context, *GetServiceRequestRequest) (*resources.ServiceRequest, error)
+	// List ServiceRequests in the current scenario.
 	ListServiceRequests(context.Context, *ListServiceRequestsRequest) (*ListServiceRequestsResponse, error)
+	// Update an existing ServiceRequest.
 	UpdateServiceRequest(context.Context, *UpdateServiceRequestRequest) (*resources.ServiceRequest, error)
+	// Delete a ServiceRequest by ID.
 	DeleteServiceRequest(context.Context, *DeleteServiceRequestRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedServiceRequestServiceServer()
 }
