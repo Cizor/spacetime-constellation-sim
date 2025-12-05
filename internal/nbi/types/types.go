@@ -2,6 +2,7 @@ package types
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -384,17 +385,14 @@ func LinkFromProto(link *NetworkLink) (*core.NetworkLink, error) {
 		dstIface = link.GetDst().GetInterfaceId()
 	}
 
-	intA := combineInterfaceRef(srcNode, srcIface)
-	intB := combineInterfaceRef(dstNode, dstIface)
+	intA := normalizeInterfaceRef(srcNode, srcIface)
+	intB := normalizeInterfaceRef(dstNode, dstIface)
 
-	return &core.NetworkLink{
-		ID:         combineLinkID(intA, intB),
-		InterfaceA: intA,
-		InterfaceB: intB,
-		Medium:     core.MediumWireless,
-		IsUp:       true,
-		IsStatic:   true,
-	}, nil
+	if intA == "" || intB == "" {
+		return nil, fmt.Errorf("link endpoints are incomplete: src=%q dst=%q", intA, intB)
+	}
+
+	return newDirectionalLink(intA, intB), nil
 }
 
 // LinkToProto converts a core.NetworkLink back into the Aalyria
@@ -429,6 +427,116 @@ func LinkToProto(link *core.NetworkLink) *NetworkLink {
 		p.Dst = &common.NetworkInterfaceId{
 			NodeId:      &dstNode,
 			InterfaceId: &dstIface,
+		}
+	}
+
+	return p
+}
+
+// BidirectionalLinkFromProto converts an Aalyria BidirectionalLink into
+// two directional core.NetworkLink objects (A->B and B->A). Missing
+// endpoints yield an error.
+func BidirectionalLinkFromProto(link *BidirectionalLink) ([]*core.NetworkLink, error) {
+	if link == nil {
+		return nil, errors.New("nil BidirectionalLink proto")
+	}
+
+	endA := extractBidirectionalEndpoint(
+		link.GetANetworkNodeId(),
+		link.GetATxInterfaceId(),
+		link.GetARxInterfaceId(),
+		link.GetA(),
+	)
+	endB := extractBidirectionalEndpoint(
+		link.GetBNetworkNodeId(),
+		link.GetBTxInterfaceId(),
+		link.GetBRxInterfaceId(),
+		link.GetB(),
+	)
+
+	abSrc := normalizeInterfaceRef(endA.nodeID, endA.txInterface())
+	abDst := normalizeInterfaceRef(endB.nodeID, endB.rxInterface())
+	baSrc := normalizeInterfaceRef(endB.nodeID, endB.txInterface())
+	baDst := normalizeInterfaceRef(endA.nodeID, endA.rxInterface())
+
+	links := make([]*core.NetworkLink, 0, 2)
+
+	if abSrc != "" && abDst != "" {
+		links = append(links, newDirectionalLink(abSrc, abDst))
+	}
+	if baSrc != "" && baDst != "" {
+		links = append(links, newDirectionalLink(baSrc, baDst))
+	}
+
+	if len(links) == 0 {
+		return nil, errors.New("bidirectional link endpoints are incomplete")
+	}
+
+	return links, nil
+}
+
+// BidirectionalLinkToProto reconstructs an Aalyria BidirectionalLink
+// from one or two directional core.NetworkLink objects.
+func BidirectionalLinkToProto(links ...*core.NetworkLink) *BidirectionalLink {
+	filtered := make([]*core.NetworkLink, 0, len(links))
+	for _, l := range links {
+		if l != nil {
+			filtered = append(filtered, l)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	primary := filtered[0]
+	aNode, aIface := splitInterfaceRef(primary.InterfaceA)
+	bNode, bIface := splitInterfaceRef(primary.InterfaceB)
+
+	p := &resources.BidirectionalLink{
+		ANetworkNodeId: stringPtr(aNode),
+		BNetworkNodeId: stringPtr(bNode),
+		ATxInterfaceId: stringPtr(aIface),
+		ARxInterfaceId: stringPtr(aIface),
+		BTxInterfaceId: stringPtr(bIface),
+		BRxInterfaceId: stringPtr(bIface),
+	}
+
+	if aNode != "" && aIface != "" {
+		p.A = &resources.LinkEnd{
+			Id: &common.NetworkInterfaceId{
+				NodeId:      &aNode,
+				InterfaceId: &aIface,
+			},
+		}
+	}
+	if bNode != "" && bIface != "" {
+		p.B = &resources.LinkEnd{
+			Id: &common.NetworkInterfaceId{
+				NodeId:      &bNode,
+				InterfaceId: &bIface,
+			},
+		}
+	}
+
+	// If we have a second directional link, try to infer distinct Tx/Rx.
+	if len(filtered) > 1 {
+		for _, l := range filtered[1:] {
+			if l == nil {
+				continue
+			}
+			srcNode, srcIface := splitInterfaceRef(l.InterfaceA)
+			dstNode, dstIface := splitInterfaceRef(l.InterfaceB)
+
+			switch {
+			case srcNode == bNode && dstNode == aNode:
+				// B → A direction.
+				p.BTxInterfaceId = stringPtr(srcIface)
+				p.ARxInterfaceId = stringPtr(dstIface)
+			case srcNode == aNode && dstNode == bNode:
+				// A → B direction.
+				p.ATxInterfaceId = stringPtr(srcIface)
+				p.BRxInterfaceId = stringPtr(dstIface)
+			}
 		}
 	}
 
@@ -575,6 +683,90 @@ func combineLinkID(a, b string) string {
 		return ""
 	}
 	return a + "<->" + b
+}
+
+// normalizeInterfaceRef ensures we have a "node/iface" form.
+// If nodeID is empty, it will be inferred from ifaceID if possible.
+func normalizeInterfaceRef(nodeID, ifaceID string) string {
+	if nodeID == "" {
+		if n, local := splitInterfaceRef(ifaceID); n != "" {
+			nodeID = n
+			ifaceID = local
+		}
+	}
+	return combineInterfaceRef(nodeID, ifaceID)
+}
+
+// directionalLinkID produces a stable ID that relates both directions
+// of a link via a shared base while still uniquely identifying the
+// direction.
+//
+// Examples:
+//
+//	src="a/1", dst="b/2" → "a/1<->b/2|a/1->b/2"
+func directionalLinkID(src, dst string) string {
+	if src == "" && dst == "" {
+		return ""
+	}
+	dir := src + "->" + dst
+	base := combineLinkID(src, dst)
+	if base == "" || base == dir {
+		return dir
+	}
+	return base + "|" + dir
+}
+
+// newDirectionalLink constructs a directional NetworkLink between two
+// interface IDs using a default Medium and link flags.
+func newDirectionalLink(src, dst string) *core.NetworkLink {
+	return &core.NetworkLink{
+		ID:         directionalLinkID(src, dst),
+		InterfaceA: src,
+		InterfaceB: dst,
+		Medium:     core.MediumWireless, // TODO: refine if/when NBI exposes link medium
+		IsUp:       true,
+		IsStatic:   true,
+	}
+}
+
+type bidirectionalEndpoint struct {
+	nodeID string
+	txID   string
+	rxID   string
+}
+
+func extractBidirectionalEndpoint(nodeID, txID, rxID string, end *resources.LinkEnd) bidirectionalEndpoint {
+	if end != nil && end.Id != nil {
+		if nodeID == "" {
+			nodeID = end.Id.GetNodeId()
+		}
+		if txID == "" {
+			txID = end.Id.GetInterfaceId()
+		}
+		if rxID == "" {
+			rxID = end.Id.GetInterfaceId()
+		}
+	}
+
+	return bidirectionalEndpoint{
+		nodeID: nodeID,
+		txID:   txID,
+		rxID:   rxID,
+	}
+}
+
+func (e bidirectionalEndpoint) txInterface() string {
+	if e.txID != "" {
+		return e.txID
+	}
+	return e.rxID
+}
+
+func (e bidirectionalEndpoint) rxInterface() string {
+	if e.rxID != "" {
+		return e.rxID
+	}
+	return e.txID
 }
 
 func stringPtr(s string) *string {

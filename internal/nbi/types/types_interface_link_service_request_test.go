@@ -61,6 +61,8 @@ func TestLinkMappingRoundTrip(t *testing.T) {
 	dstNode := "node-b"
 	srcIface := "if-a"
 	dstIface := "if-b"
+	srcFull := combineInterfaceRef(srcNode, srcIface)
+	dstFull := combineInterfaceRef(dstNode, dstIface)
 
 	p := &resources.NetworkLink{
 		SrcNetworkNodeId: &srcNode,
@@ -80,8 +82,8 @@ func TestLinkMappingRoundTrip(t *testing.T) {
 	if dom.InterfaceB != "node-b/if-b" {
 		t.Errorf("InterfaceB mismatch: got %q", dom.InterfaceB)
 	}
-	if dom.ID != "node-a/if-a<->node-b/if-b" {
-		t.Errorf("ID mismatch: got %q", dom.ID)
+	if dom.ID != directionalLinkID(srcFull, dstFull) {
+		t.Errorf("ID mismatch: got %q, want %q", dom.ID, directionalLinkID(srcFull, dstFull))
 	}
 
 	p2 := LinkToProto(dom)
@@ -325,5 +327,81 @@ func TestNetworkNodeMappingRoundTrip(t *testing.T) {
 	}
 	if got := p2.GetType(); got != typ {
 		t.Errorf("Type roundtrip mismatch: got %q, want %q", got, typ)
+	}
+}
+
+func TestBidirectionalLinkFromProto(t *testing.T) {
+	aNode := "node-a"
+	bNode := "node-b"
+	aTx := "if-a-tx"
+	aRx := "if-a-rx"
+	bTx := "if-b-tx"
+	bRx := "if-b-rx"
+
+	p := &resources.BidirectionalLink{
+		ANetworkNodeId: &aNode,
+		BNetworkNodeId: &bNode,
+		ATxInterfaceId: &aTx,
+		ARxInterfaceId: &aRx,
+		BTxInterfaceId: &bTx,
+		BRxInterfaceId: &bRx,
+	}
+
+	links, err := BidirectionalLinkFromProto(p)
+	if err != nil {
+		t.Fatalf("BidirectionalLinkFromProto returned error: %v", err)
+	}
+	if len(links) != 2 {
+		t.Fatalf("expected 2 directional links, got %d", len(links))
+	}
+
+	expected := map[string]struct {
+		src string
+		dst string
+	}{
+		directionalLinkID(combineInterfaceRef(aNode, aTx), combineInterfaceRef(bNode, bRx)): {combineInterfaceRef(aNode, aTx), combineInterfaceRef(bNode, bRx)},
+		directionalLinkID(combineInterfaceRef(bNode, bTx), combineInterfaceRef(aNode, aRx)): {combineInterfaceRef(bNode, bTx), combineInterfaceRef(aNode, aRx)},
+	}
+
+	for _, l := range links {
+		want, ok := expected[l.ID]
+		if !ok {
+			t.Fatalf("unexpected link ID %q", l.ID)
+		}
+		if l.InterfaceA != want.src {
+			t.Errorf("InterfaceA mismatch for %q: got %q, want %q", l.ID, l.InterfaceA, want.src)
+		}
+		if l.InterfaceB != want.dst {
+			t.Errorf("InterfaceB mismatch for %q: got %q, want %q", l.ID, l.InterfaceB, want.dst)
+		}
+	}
+}
+
+func TestBidirectionalLinkToProto(t *testing.T) {
+	linkAB := newDirectionalLink("node-a/a-tx", "node-b/b-rx")
+	linkBA := newDirectionalLink("node-b/b-tx", "node-a/a-rx")
+
+	p := BidirectionalLinkToProto(linkAB, linkBA)
+	if p == nil {
+		t.Fatalf("BidirectionalLinkToProto returned nil")
+	}
+
+	if got := p.GetANetworkNodeId(); got != "node-a" {
+		t.Errorf("ANetworkNodeId = %q, want node-a", got)
+	}
+	if got := p.GetBNetworkNodeId(); got != "node-b" {
+		t.Errorf("BNetworkNodeId = %q, want node-b", got)
+	}
+	if got := p.GetATxInterfaceId(); got != "a-tx" {
+		t.Errorf("ATxInterfaceId = %q, want a-tx", got)
+	}
+	if got := p.GetARxInterfaceId(); got != "a-rx" {
+		t.Errorf("ARxInterfaceId = %q, want a-rx", got)
+	}
+	if got := p.GetBTxInterfaceId(); got != "b-tx" {
+		t.Errorf("BTxInterfaceId = %q, want b-tx", got)
+	}
+	if got := p.GetBRxInterfaceId(); got != "b-rx" {
+		t.Errorf("BRxInterfaceId = %q, want b-rx", got)
 	}
 }

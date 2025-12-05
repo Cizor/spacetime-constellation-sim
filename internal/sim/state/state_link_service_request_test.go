@@ -152,6 +152,116 @@ func TestScenarioStateUpdateLink(t *testing.T) {
 	}
 }
 
+func TestScenarioStateCreateLinksBatch(t *testing.T) {
+	phys := kb.NewKnowledgeBase()
+	net := network.NewKnowledgeBase()
+	s := NewScenarioState(phys, net)
+
+	if err := net.AddInterface(&network.NetworkInterface{
+		ID:            "ifA",
+		Name:          "If-A",
+		Medium:        network.MediumWireless,
+		ParentNodeID:  "nodeA",
+		IsOperational: true,
+	}); err != nil {
+		t.Fatalf("AddInterface(ifA) failed: %v", err)
+	}
+	if err := net.AddInterface(&network.NetworkInterface{
+		ID:            "ifB",
+		Name:          "If-B",
+		Medium:        network.MediumWireless,
+		ParentNodeID:  "nodeB",
+		IsOperational: true,
+	}); err != nil {
+		t.Fatalf("AddInterface(ifB) failed: %v", err)
+	}
+
+	linkAB := &network.NetworkLink{
+		ID:         "bidi|ifA->ifB",
+		InterfaceA: "ifA",
+		InterfaceB: "ifB",
+		Medium:     network.MediumWireless,
+		IsUp:       true,
+	}
+	linkBA := &network.NetworkLink{
+		ID:         "bidi|ifB->ifA",
+		InterfaceA: "ifB",
+		InterfaceB: "ifA",
+		Medium:     network.MediumWireless,
+		IsUp:       true,
+	}
+
+	if err := s.CreateLinks(linkAB, linkBA); err != nil {
+		t.Fatalf("CreateLinks error: %v", err)
+	}
+
+	all := s.ListLinks()
+	if len(all) != 2 {
+		t.Fatalf("ListLinks len = %d, want 2", len(all))
+	}
+	ifA := net.GetNetworkInterface("ifA")
+	ifB := net.GetNetworkInterface("ifB")
+	if !containsID(ifA.LinkIDs, linkAB.ID) || !containsID(ifA.LinkIDs, linkBA.ID) {
+		t.Fatalf("ifA.LinkIDs = %v, want both links", ifA.LinkIDs)
+	}
+	if !containsID(ifB.LinkIDs, linkAB.ID) || !containsID(ifB.LinkIDs, linkBA.ID) {
+		t.Fatalf("ifB.LinkIDs = %v, want both links", ifB.LinkIDs)
+	}
+}
+
+func TestScenarioStateCreateLinksRollback(t *testing.T) {
+	phys := kb.NewKnowledgeBase()
+	net := network.NewKnowledgeBase()
+	s := NewScenarioState(phys, net)
+
+	if err := net.AddInterface(&network.NetworkInterface{
+		ID:            "ifA",
+		Name:          "If-A",
+		Medium:        network.MediumWireless,
+		ParentNodeID:  "nodeA",
+		IsOperational: true,
+	}); err != nil {
+		t.Fatalf("AddInterface(ifA) failed: %v", err)
+	}
+	if err := net.AddInterface(&network.NetworkInterface{
+		ID:            "ifB",
+		Name:          "If-B",
+		Medium:        network.MediumWireless,
+		ParentNodeID:  "nodeB",
+		IsOperational: true,
+	}); err != nil {
+		t.Fatalf("AddInterface(ifB) failed: %v", err)
+	}
+
+	linkAB := &network.NetworkLink{
+		ID:         "bidi|ifA->ifB",
+		InterfaceA: "ifA",
+		InterfaceB: "ifB",
+		Medium:     network.MediumWireless,
+		IsUp:       true,
+	}
+	badLink := &network.NetworkLink{
+		ID:         "bidi|ifB->missing",
+		InterfaceA: "ifB",
+		InterfaceB: "missing",
+		Medium:     network.MediumWireless,
+		IsUp:       true,
+	}
+
+	if err := s.CreateLinks(linkAB, badLink); err == nil {
+		t.Fatalf("CreateLinks expected error, got nil")
+	}
+	if links := s.ListLinks(); len(links) != 0 {
+		t.Fatalf("ListLinks after rollback = %+v, want empty", links)
+	}
+	if ifA := net.GetNetworkInterface("ifA"); len(ifA.LinkIDs) != 0 {
+		t.Fatalf("ifA.LinkIDs after rollback = %v, want empty", ifA.LinkIDs)
+	}
+	if ifB := net.GetNetworkInterface("ifB"); len(ifB.LinkIDs) != 0 {
+		t.Fatalf("ifB.LinkIDs after rollback = %v, want empty", ifB.LinkIDs)
+	}
+}
+
 func TestScenarioStateServiceRequestCRUD(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()

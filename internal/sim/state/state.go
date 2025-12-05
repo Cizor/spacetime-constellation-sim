@@ -384,14 +384,35 @@ func (s *ScenarioState) nodeHasReferencesLocked(nodeID string) bool {
 
 // CreateLink inserts a new network link into the Scope-2 knowledge base.
 func (s *ScenarioState) CreateLink(link *network.NetworkLink) error {
-	if link == nil {
-		return errors.New("link is nil")
+	return s.CreateLinks(link)
+}
+
+// CreateLinks inserts one or more network links into the Scope-2
+// knowledge base. If any insert fails, previously added links from
+// this call are rolled back to keep adjacency consistent.
+func (s *ScenarioState) CreateLinks(links ...*network.NetworkLink) error {
+	for _, link := range links {
+		if link == nil {
+			return errors.New("link is nil")
+		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.netKB.AddNetworkLink(link)
+	added := make([]string, 0, len(links))
+
+	for _, link := range links {
+		if err := s.netKB.AddNetworkLink(link); err != nil {
+			for _, id := range added {
+				_ = s.netKB.DeleteNetworkLink(id)
+			}
+			return err
+		}
+		added = append(added, link.ID)
+	}
+
+	return nil
 }
 
 // GetLink returns a network link by ID.
