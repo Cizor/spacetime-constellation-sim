@@ -39,6 +39,8 @@ var (
 	ErrServiceRequestExists = errors.New("service request already exists")
 	// ErrServiceRequestNotFound indicates a service request was not found.
 	ErrServiceRequestNotFound = errors.New("service request not found")
+	// ErrNodeInUse indicates a node is still referenced by other resources.
+	ErrNodeInUse = errors.New("node is referenced by links or service requests")
 )
 
 // ScenarioState coordinates the simulator's major knowledge bases and
@@ -305,6 +307,9 @@ func (s *ScenarioState) UpdateNode(node *model.NetworkNode, interfaces []*networ
 }
 
 // DeleteNode removes a node and its interfaces by ID.
+//
+// NOTE: Higher-level deletion semantics (e.g. a future "force delete" that
+// cascades to links/service requests) are intentionally out of scope here.
 func (s *ScenarioState) DeleteNode(id string) error {
 	if id == "" {
 		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
@@ -312,6 +317,13 @@ func (s *ScenarioState) DeleteNode(id string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.physKB.GetNetworkNode(id) == nil {
+		return ErrNodeNotFound
+	}
+	if s.nodeHasReferencesLocked(id) {
+		return ErrNodeInUse
+	}
 
 	if err := s.physKB.DeleteNetworkNode(id); err != nil {
 		if errors.Is(err, kb.ErrNodeNotFound) {
@@ -325,6 +337,49 @@ func (s *ScenarioState) DeleteNode(id string) error {
 	}
 
 	return nil
+}
+
+// nodeHasReferencesLocked reports whether any links or service requests point
+// at the given node. Caller must hold s.mu.
+func (s *ScenarioState) nodeHasReferencesLocked(nodeID string) bool {
+	if nodeID == "" {
+		return false
+	}
+
+	ifaces := s.interfacesForNodeLocked(nodeID)
+	interfaceIDs := make(map[string]struct{}, len(ifaces))
+	for _, iface := range ifaces {
+		if iface != nil && iface.ID != "" {
+			interfaceIDs[iface.ID] = struct{}{}
+		}
+	}
+
+	// Check links for references to any of the node's interfaces.
+	if len(interfaceIDs) > 0 {
+		for _, link := range s.netKB.GetAllNetworkLinks() {
+			if link == nil {
+				continue
+			}
+			if _, ok := interfaceIDs[link.InterfaceA]; ok {
+				return true
+			}
+			if _, ok := interfaceIDs[link.InterfaceB]; ok {
+				return true
+			}
+		}
+	}
+
+	// Check service requests that name the node as a source or destination.
+	for _, sr := range s.serviceRequests {
+		if sr == nil {
+			continue
+		}
+		if sr.SrcNodeID == nodeID || sr.DstNodeID == nodeID {
+			return true
+		}
+	}
+
+	return false
 }
 
 // CreateLink inserts a new network link into the Scope-2 knowledge base.
