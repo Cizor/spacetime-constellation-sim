@@ -18,7 +18,6 @@ import (
 // ScenarioState instance.
 type NetworkNodeService struct {
 	v1alpha.UnimplementedNetworkNodeServiceServer
-
 	state *sim.ScenarioState
 	log   Logger
 }
@@ -143,7 +142,8 @@ func (s *NetworkNodeService) UpdateNode(
 	return types.NodeToProtoWithInterfaces(node, interfaces), nil
 }
 
-// DeleteNode removes a node by ID.
+// DeleteNode removes a node by ID, refusing to delete nodes that are still
+// referenced by links or service requests.
 func (s *NetworkNodeService) DeleteNode(
 	ctx context.Context,
 	req *v1alpha.DeleteNodeRequest,
@@ -156,10 +156,14 @@ func (s *NetworkNodeService) DeleteNode(
 	}
 
 	if err := s.state.DeleteNode(req.GetNodeId()); err != nil {
-		if errors.Is(err, sim.ErrNodeNotFound) {
+		switch {
+		case errors.Is(err, sim.ErrNodeNotFound):
 			return nil, status.Error(codes.NotFound, err.Error())
+		case errors.Is(err, sim.ErrNodeInUse):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		default:
+			return nil, status.Error(codes.Internal, err.Error())
 		}
-		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	return &emptypb.Empty{}, nil
