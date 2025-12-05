@@ -1,0 +1,78 @@
+// Copyright 2023 Aalyria Technologies, Inc., and its affiliates.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto2";
+
+package aalyria.spacetime.api.nbi.v1alpha;
+
+import "api/nbi/v1alpha/resources/service_request.proto";
+import "google/protobuf/empty.proto";
+
+option java_package = "com.aalyria.spacetime.api.nbi.v1alpha";
+option go_package = "aalyria.com/spacetime/api/nbi/v1alpha";
+
+// Service to manage ServiceRequest resources.
+service ServiceRequestService {
+  // Create a new ServiceRequest resource.
+  //
+  // The incoming ServiceRequest should contain the desired source/destination
+  // nodes and flow requirements; the server assigns a stable ID.
+  rpc CreateServiceRequest(
+      aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest)
+      returns (aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest);
+
+  // Retrieve a single ServiceRequest by its ID.
+  rpc GetServiceRequest(GetServiceRequestRequest)
+      returns (aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest);
+
+  // List ServiceRequests in the current scenario.
+  rpc ListServiceRequests(ListServiceRequestsRequest)
+      returns (ListServiceRequestsResponse);
+
+  // Update an existing ServiceRequest.
+  rpc UpdateServiceRequest(UpdateServiceRequestRequest)
+      returns (aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest);
+
+  // Delete a ServiceRequest by ID.
+  rpc DeleteServiceRequest(DeleteServiceRequestRequest)
+      returns (google.protobuf.Empty);
+}
+
+// Request to get a single ServiceRequest.
+message GetServiceRequestRequest {
+  optional string service_request_id = 1;
+}
+
+// Request to list ServiceRequests.
+// Future extensions: add filters (by src/dst node, priority, etc.) and pagination.
+message ListServiceRequestsRequest {
+  // optional filters / pagination
+}
+
+// Response containing a list of ServiceRequests.
+message ListServiceRequestsResponse {
+  repeated aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+      service_requests = 1;
+}
+
+// Request to update an existing ServiceRequest.
+message UpdateServiceRequestRequest {
+  optional aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+      service_request = 1;
+}
+
+// Request to delete a ServiceRequest by ID.
+message DeleteServiceRequestRequest {
+  optional string service_request_id = 1;
+}
