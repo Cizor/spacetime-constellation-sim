@@ -51,11 +51,13 @@ func (s *ServiceRequestService) CreateServiceRequest(
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	// The Aalyria ServiceRequest proto does not expose a dedicated ID field.
-	// For now we use the `type` string as a stable identifier for CRUD
-	// operations, and generate one if it is absent.
-	dom.ID = in.GetType()
-	if dom.ID == "" {
+	// ID behaviour:
+	// For now we overload the `type` field on the proto as the stable ID used
+	// by the simulator's internal model. If the caller omits it, we generate
+	// one and mirror it back into the response.
+	if id := in.GetType(); id != "" {
+		dom.ID = id
+	} else {
 		dom.ID = generateServiceRequestID()
 	}
 
@@ -137,7 +139,8 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	// ID is carried via the proto's `type` field for now.
+	// For now we continue the convention that the proto's `type` field carries
+	// the stable ID for CRUD operations.
 	dom.ID = req.GetServiceRequest().GetType()
 	if dom.ID == "" {
 		return nil, status.Error(codes.InvalidArgument, "service_request_id is required")
@@ -150,8 +153,6 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	// If in future we have a separate ID path parameter, enforce that it
-	// matches the existing ID; for now this is just a sanity check.
 	if existing.ID != dom.ID {
 		return nil, status.Error(codes.InvalidArgument, "service_request_id cannot be changed")
 	}
@@ -214,10 +215,10 @@ func (s *ServiceRequestService) validateServiceRequest(sr *model.ServiceRequest)
 
 	phys := s.state.PhysicalKB()
 	if phys.GetNetworkNode(sr.SrcNodeID) == nil {
-		return fmt.Errorf("%w: %q", sim.ErrNodeNotFound, sr.SrcNodeID)
+		return fmt.Errorf("unknown src node %q", sr.SrcNodeID)
 	}
 	if phys.GetNetworkNode(sr.DstNodeID) == nil {
-		return fmt.Errorf("%w: %q", sim.ErrNodeNotFound, sr.DstNodeID)
+		return fmt.Errorf("unknown dst node %q", sr.DstNodeID)
 	}
 
 	if len(sr.FlowRequirements) == 0 {
@@ -234,7 +235,7 @@ func (s *ServiceRequestService) validateServiceRequest(sr *model.ServiceRequest)
 			return fmt.Errorf("flow requirement %d latency cannot be negative", i)
 		}
 		if !fr.ValidFrom.IsZero() && !fr.ValidTo.IsZero() && fr.ValidTo.Before(fr.ValidFrom) {
-			return fmt.Errorf("flow requirement %d has invalid time interval: end before start", i)
+			return fmt.Errorf("flow requirement %d has invalid time interval (valid_to < valid_from)", i)
 		}
 	}
 
@@ -245,7 +246,7 @@ func generateServiceRequestID() string {
 	return fmt.Sprintf("sr-%d", time.Now().UnixNano())
 }
 
-// attachServiceRequestID mirrors the internal ID onto the proto `type` field so
+// attachServiceRequestID mirrors the internal ID onto the proto type field so
 // callers can read the stable identifier until the proto grows an explicit ID.
 func attachServiceRequestID(p *resources.ServiceRequest, id string) *resources.ServiceRequest {
 	if p == nil {
