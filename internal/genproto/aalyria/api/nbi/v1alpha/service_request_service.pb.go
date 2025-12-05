@@ -37,6 +37,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Request to get a single ServiceRequest.
 type GetServiceRequestRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ServiceRequestId *string                `protobuf:"bytes,1,opt,name=service_request_id,json=serviceRequestId" json:"service_request_id,omitempty"`
@@ -81,6 +82,8 @@ func (x *GetServiceRequestRequest) GetServiceRequestId() string {
 	return ""
 }
 
+// Request to list ServiceRequests.
+// Future extensions: add filters (by src/dst node, priority, etc.) and pagination.
 type ListServiceRequestsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -117,6 +120,7 @@ func (*ListServiceRequestsRequest) Descriptor() ([]byte, []int) {
 	return file_api_nbi_v1alpha_service_request_service_proto_rawDescGZIP(), []int{1}
 }
 
+// Response containing a list of ServiceRequests.
 type ListServiceRequestsResponse struct {
 	state           protoimpl.MessageState      `protogen:"open.v1"`
 	ServiceRequests []*resources.ServiceRequest `protobuf:"bytes,1,rep,name=service_requests,json=serviceRequests" json:"service_requests,omitempty"`
@@ -161,6 +165,7 @@ func (x *ListServiceRequestsResponse) GetServiceRequests() []*resources.ServiceR
 	return nil
 }
 
+// Request to update an existing ServiceRequest.
 type UpdateServiceRequestRequest struct {
 	state          protoimpl.MessageState    `protogen:"open.v1"`
 	ServiceRequest *resources.ServiceRequest `protobuf:"bytes,1,opt,name=service_request,json=serviceRequest" json:"service_request,omitempty"`
@@ -205,6 +210,7 @@ func (x *UpdateServiceRequestRequest) GetServiceRequest() *resources.ServiceRequ
 	return nil
 }
 
+// Request to delete a ServiceRequest by ID.
 type DeleteServiceRequestRequest struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ServiceRequestId *string                `protobuf:"bytes,1,opt,name=service_request_id,json=serviceRequestId" json:"service_request_id,omitempty"`
