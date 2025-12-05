@@ -57,6 +57,14 @@ type ScenarioState struct {
 	// serviceRequests is an in-memory store of active ServiceRequests,
 	// keyed by their internal ID.
 	serviceRequests map[string]*model.ServiceRequest
+
+	// motion is an optional motion model used by the simulator; it is
+	// reset alongside scenario clears.
+	motion motionResetter
+
+	// connectivity is an optional ConnectivityService whose caches need
+	// to be flushed when the scenario is cleared.
+	connectivity connectivityResetter
 }
 
 // ScenarioSnapshot captures a consistent view of all in-memory state
@@ -65,21 +73,55 @@ type ScenarioState struct {
 // The slices contain pointers owned by the underlying KBs / state;
 // callers MUST treat them as read-only.
 type ScenarioSnapshot struct {
-	Platforms       []*model.PlatformDefinition
-	Nodes           []*model.NetworkNode
-	Interfaces      []*network.NetworkInterface
-	Links           []*network.NetworkLink
-	ServiceRequests []*model.ServiceRequest
+	Platforms        []*model.PlatformDefinition
+	Nodes            []*model.NetworkNode
+	Interfaces       []*network.NetworkInterface
+	InterfacesByNode map[string][]*network.NetworkInterface
+	Links            []*network.NetworkLink
+	ServiceRequests  []*model.ServiceRequest
+}
+
+type motionResetter interface {
+	Reset()
+}
+
+type connectivityResetter interface {
+	Reset()
+}
+
+// ScenarioStateOption customises ScenarioState construction.
+type ScenarioStateOption func(*ScenarioState)
+
+// WithMotionModel attaches a motion model whose internal caches should
+// be flushed when ClearScenario is invoked.
+func WithMotionModel(m motionResetter) ScenarioStateOption {
+	return func(s *ScenarioState) {
+		s.motion = m
+	}
+}
+
+// WithConnectivityService attaches a connectivity service whose dynamic
+// caches should be cleared alongside scenario data.
+func WithConnectivityService(c connectivityResetter) ScenarioStateOption {
+	return func(s *ScenarioState) {
+		s.connectivity = c
+	}
 }
 
 // NewScenarioState wires together the scope-1 and scope-2 knowledge bases
 // and prepares an empty ServiceRequest store.
-func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase) *ScenarioState {
-	return &ScenarioState{
+func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, opts ...ScenarioStateOption) *ScenarioState {
+	state := &ScenarioState{
 		physKB:          phys,
 		netKB:           net,
 		serviceRequests: make(map[string]*model.ServiceRequest),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(state)
+		}
+	}
+	return state
 }
 
 // PhysicalKB exposes the scope-1 knowledge base for platforms/nodes.
@@ -106,12 +148,17 @@ func (s *ScenarioState) Snapshot() *ScenarioSnapshot {
 		srs = append(srs, sr)
 	}
 
+	platforms := s.physKB.ListPlatforms()
+	nodes := s.physKB.ListNetworkNodes()
+	interfaces := s.netKB.GetAllInterfaces()
+
 	return &ScenarioSnapshot{
-		Platforms:       s.physKB.ListPlatforms(),
-		Nodes:           s.physKB.ListNetworkNodes(),
-		Interfaces:      s.netKB.GetAllInterfaces(),
-		Links:           s.netKB.GetAllNetworkLinks(),
-		ServiceRequests: srs,
+		Platforms:        platforms,
+		Nodes:            nodes,
+		Interfaces:       interfaces,
+		InterfacesByNode: s.interfacesByNodeLocked(nodes, interfaces),
+		Links:            s.netKB.GetAllNetworkLinks(),
+		ServiceRequests:  srs,
 	}
 }
 
@@ -262,6 +309,18 @@ func (s *ScenarioState) ListInterfacesForNode(nodeID string) []*network.NetworkI
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.interfacesForNodeLocked(nodeID)
+}
+
+// InterfacesByNode returns a map of nodeID -> interfaces while holding
+// the ScenarioState read lock, enabling callers to build node/interface
+// projections without taking multiple locks.
+func (s *ScenarioState) InterfacesByNode() map[string][]*network.NetworkInterface {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nodes := s.physKB.ListNetworkNodes()
+	ifaces := s.netKB.GetAllInterfaces()
+	return s.interfacesByNodeLocked(nodes, ifaces)
 }
 
 // UpdateNode replaces an existing node and its interfaces.
@@ -549,6 +608,31 @@ func (s *ScenarioState) DeleteServiceRequest(id string) error {
 	return nil
 }
 
+// interfacesByNodeLocked builds a map of nodeID -> interfaces for callers that
+// already hold the ScenarioState lock.
+func (s *ScenarioState) interfacesByNodeLocked(nodes []*model.NetworkNode, interfaces []*network.NetworkInterface) map[string][]*network.NetworkInterface {
+	byNode := make(map[string][]*network.NetworkInterface, len(nodes))
+
+	for _, iface := range interfaces {
+		if iface == nil {
+			continue
+		}
+		parent := iface.ParentNodeID
+		byNode[parent] = append(byNode[parent], iface)
+	}
+
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if _, ok := byNode[node.ID]; !ok {
+			byNode[node.ID] = nil
+		}
+	}
+
+	return byNode
+}
+
 // interfacesForNodeLocked returns interfaces attached to the node. Caller must
 // hold the ScenarioState lock.
 func (s *ScenarioState) interfacesForNodeLocked(nodeID string) []*network.NetworkInterface {
@@ -633,6 +717,13 @@ func (s *ScenarioState) ClearScenario() error {
 		s.netKB.Clear()
 	}
 	s.serviceRequests = make(map[string]*model.ServiceRequest)
+
+	if s.motion != nil {
+		s.motion.Reset()
+	}
+	if s.connectivity != nil {
+		s.connectivity.Reset()
+	}
 
 	return nil
 }

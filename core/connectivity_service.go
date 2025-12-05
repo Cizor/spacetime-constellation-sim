@@ -1,3 +1,4 @@
+// core/connectivity_service.go
 package core
 
 import "math"
@@ -27,6 +28,17 @@ func NewConnectivityService(kb *KnowledgeBase) *ConnectivityService {
 		KB:                    kb,
 		MinElevationDeg:       10.0, // a conservative but typical value
 		DefaultWiredLatencyMs: 5.0,  // milliseconds
+	}
+}
+
+// Reset clears any cached connectivity state so a fresh scenario can be
+// loaded without leftover dynamic links.
+func (cs *ConnectivityService) Reset() {
+	if cs == nil {
+		return
+	}
+	if cs.KB != nil {
+		cs.KB.ClearDynamicWirelessLinks()
 	}
 }
 
