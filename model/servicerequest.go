@@ -1,17 +1,25 @@
-// model/servicerequest.go
-
 package model
+
+import "time"
+
+type FlowRequirement struct {
+	// RequestedBandwidth is the desired bandwidth in bits per second.
+	RequestedBandwidth float64
+	// MinBandwidth is the minimum acceptable bandwidth in bits per second.
+	MinBandwidth float64
+	// MaxLatency is the maximum acceptable one-way latency in seconds.
+	MaxLatency float64
+	// ValidFrom is the start of the interval when this requirement applies.
+	ValidFrom time.Time
+	// ValidTo is the end of the interval when this requirement applies.
+	ValidTo time.Time
+}
 
 type ServiceRequest struct {
 	// ID is the simulator's stable identifier for this request.
 	// It is intended to be unique within a Scenario and is what
 	// the NBI layer will use as `request_id` in CRUD operations.
 	ID string
-
-	// Type is a human-readable classification / label for this request
-	// (e.g. "video", "backhaul"), and maps directly to the Aalyria
-	// ServiceRequest.type field in the proto.
-	Type string
 
 	SrcNodeID             string
 	DstNodeID             string
@@ -21,15 +29,6 @@ type ServiceRequest struct {
 	AllowPartnerResources bool
 
 	// status fields for future scopes, e.g.:
-	// IsProvisionedNow    bool
+	// IsProvisionedNow bool
 	// ProvisionedIntervals []TimeInterval
-}
-
-type FlowRequirement struct {
-	RequestedBandwidthMbps float64
-	MinBandwidthMbps       float64
-	MaxLatencyMs           float64
-	ValidFromUnixSec       int64
-	ValidToUnixSec         int64
-	// (we can add per-flow DTN flags later if needed)
 }
