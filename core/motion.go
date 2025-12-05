@@ -1,3 +1,4 @@
+// core/motion.go
 package core
 
 import (
@@ -94,6 +95,14 @@ func (m *MotionModel) RemovePlatform(platformID string) error {
 	}
 	delete(m.entries, platformID)
 	return nil
+}
+
+// Reset clears all registered platforms and their propagators, returning
+// the motion model to an empty state.
+func (m *MotionModel) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries = make(map[string]motionEntry)
 }
 
 // UpdatePositions advances all registered platforms to simTime.

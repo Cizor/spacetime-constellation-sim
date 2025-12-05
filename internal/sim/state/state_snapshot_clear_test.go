@@ -1,3 +1,4 @@
+// internal/sim/state/state_snapshot_clear_test.go
 package state
 
 import (
@@ -7,6 +8,22 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
+
+type resettableMotion struct {
+	resets int
+}
+
+func (m *resettableMotion) Reset() {
+	m.resets++
+}
+
+type resettableConnectivity struct {
+	resets int
+}
+
+func (c *resettableConnectivity) Reset() {
+	c.resets++
+}
 
 func TestScenarioStateSnapshot(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
@@ -82,6 +99,9 @@ func TestScenarioStateSnapshot(t *testing.T) {
 	if len(snap.Interfaces) != 2 {
 		t.Fatalf("Snapshot.Interfaces len = %d, want 2", len(snap.Interfaces))
 	}
+	if got := snap.InterfacesByNode["n1"]; len(got) != 2 {
+		t.Fatalf("Snapshot.InterfacesByNode[n1] len = %d, want 2; got %#v", len(got), snap.InterfacesByNode["n1"])
+	}
 	if len(snap.Links) != 1 || snap.Links[0].ID != "link-1" {
 		t.Fatalf("Snapshot.Links = %+v, want [link-1]", snap.Links)
 	}
@@ -93,7 +113,9 @@ func TestScenarioStateSnapshot(t *testing.T) {
 func TestScenarioStateClearScenario(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	netKB := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, netKB)
+	motion := &resettableMotion{}
+	connectivity := &resettableConnectivity{}
+	s := NewScenarioState(phys, netKB, WithMotionModel(motion), WithConnectivityService(connectivity))
 
 	// Populate a minimal scenario.
 	if err := s.CreatePlatform(&model.PlatformDefinition{
@@ -148,6 +170,13 @@ func TestScenarioStateClearScenario(t *testing.T) {
 		t.Fatalf("ClearScenario error: %v", err)
 	}
 
+	if motion.resets != 1 {
+		t.Fatalf("motion.Reset call count = %d, want 1", motion.resets)
+	}
+	if connectivity.resets != 1 {
+		t.Fatalf("connectivity.Reset call count = %d, want 1", connectivity.resets)
+	}
+
 	// ScenarioState views should now be empty.
 	if got := s.ListPlatforms(); len(got) != 0 {
 		t.Fatalf("ListPlatforms after ClearScenario = %+v, want empty", got)
@@ -171,5 +200,16 @@ func TestScenarioStateClearScenario(t *testing.T) {
 	}
 	if links := netKB.GetAllNetworkLinks(); len(links) != 0 {
 		t.Fatalf("netKB links after ClearScenario = %+v, want empty", links)
+	}
+
+	// Snapshot should also reflect the cleared scenario.
+	snap := s.Snapshot()
+	if len(snap.Platforms) != 0 ||
+		len(snap.Nodes) != 0 ||
+		len(snap.Interfaces) != 0 ||
+		len(snap.InterfacesByNode) != 0 ||
+		len(snap.Links) != 0 ||
+		len(snap.ServiceRequests) != 0 {
+		t.Fatalf("Snapshot after ClearScenario = %+v, want all empty collections", snap)
 	}
 }
