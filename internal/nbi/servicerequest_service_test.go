@@ -120,6 +120,16 @@ func TestServiceRequestServiceCreateValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "missing dst node",
+			req: &resources.ServiceRequest{
+				SrcType: &resources.ServiceRequest_SrcNodeId{SrcNodeId: "src"},
+				DstType: &resources.ServiceRequest_DstNodeId{DstNodeId: "missing-dst"},
+				Requirements: []*resources.ServiceRequest_FlowRequirements{
+					flowReq(1_000_000),
+				},
+			},
+		},
+		{
 			name: "no flow requirements",
 			req: &resources.ServiceRequest{
 				SrcType: &resources.ServiceRequest_SrcNodeId{SrcNodeId: "src"},
@@ -193,8 +203,20 @@ func TestServiceRequestServiceGetAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListServiceRequests error: %v", err)
 	}
-	if len(listResp.GetServiceRequests()) != 2 {
-		t.Fatalf("ListServiceRequests count = %d, want 2", len(listResp.GetServiceRequests()))
+	if got, want := len(listResp.GetServiceRequests()), 2; got != want {
+		t.Fatalf("ListServiceRequests count = %d, want %d", got, want)
+	}
+}
+
+func TestServiceRequestServiceGetNotFound(t *testing.T) {
+	svc, _ := newServiceRequestServiceForTest()
+
+	id := "missing-service-request"
+	_, err := svc.GetServiceRequest(context.Background(), &v1alpha.GetServiceRequestRequest{
+		ServiceRequestId: &id,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("GetServiceRequest missing code = %v, want NotFound (err=%v)", status.Code(err), err)
 	}
 }
 
@@ -332,6 +354,11 @@ func TestServiceRequestServiceDelete(t *testing.T) {
 		ServiceRequestId: &id,
 	}); err != nil {
 		t.Fatalf("DeleteServiceRequest error: %v", err)
+	}
+	if _, err := svc.GetServiceRequest(context.Background(), &v1alpha.GetServiceRequestRequest{
+		ServiceRequestId: &id,
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("GetServiceRequest after delete code = %v, want NotFound (err=%v)", status.Code(err), err)
 	}
 	if _, err := state.GetServiceRequest(id); err == nil {
 		t.Fatalf("expected service request to be deleted from state")
