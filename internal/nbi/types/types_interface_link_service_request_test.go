@@ -3,6 +3,7 @@ package types
 import (
 	"math"
 	"testing"
+	"time"
 
 	core "github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -105,7 +106,6 @@ func TestServiceRequestMappingRoundTrip(t *testing.T) {
 	orig := &model.ServiceRequest{
 		// ID is intentionally NOT part of the proto mapping; it is owned by NBI.
 		// For this roundtrip test we leave it empty.
-		Type:                  "sr-type",
 		SrcNodeID:             "node-1",
 		DstNodeID:             "node-2",
 		Priority:              3,
@@ -113,11 +113,11 @@ func TestServiceRequestMappingRoundTrip(t *testing.T) {
 		AllowPartnerResources: true,
 		FlowRequirements: []model.FlowRequirement{
 			{
-				RequestedBandwidthMbps: 150,
-				MinBandwidthMbps:       50,
-				MaxLatencyMs:           25,
-				ValidFromUnixSec:       1_000,
-				ValidToUnixSec:         2_000,
+				RequestedBandwidth: 150_000_000,
+				MinBandwidth:       50_000_000,
+				MaxLatency:         0.025,
+				ValidFrom:          time.Unix(1_000, 0),
+				ValidTo:            time.Unix(2_000, 0),
 			},
 		},
 	}
@@ -130,11 +130,6 @@ func TestServiceRequestMappingRoundTrip(t *testing.T) {
 	back, err := ServiceRequestFromProto(p)
 	if err != nil {
 		t.Fatalf("ServiceRequestFromProto returned error: %v", err)
-	}
-
-	// Type should roundtrip through the proto.
-	if back.Type != orig.Type {
-		t.Errorf("Type mismatch: got %q, want %q", back.Type, orig.Type)
 	}
 
 	// ID is not derived from the proto; we do NOT assert on back.ID here.
@@ -162,20 +157,20 @@ func TestServiceRequestMappingRoundTrip(t *testing.T) {
 	got := back.FlowRequirements[0]
 	want := orig.FlowRequirements[0]
 
-	if diff := math.Abs(got.RequestedBandwidthMbps - want.RequestedBandwidthMbps); diff > 1e-6 {
-		t.Errorf("RequestedBandwidth mismatch: got %f, want %f", got.RequestedBandwidthMbps, want.RequestedBandwidthMbps)
+	if diff := math.Abs(got.RequestedBandwidth - want.RequestedBandwidth); diff > 1e-6 {
+		t.Errorf("RequestedBandwidth mismatch: got %f, want %f", got.RequestedBandwidth, want.RequestedBandwidth)
 	}
-	if diff := math.Abs(got.MinBandwidthMbps - want.MinBandwidthMbps); diff > 1e-6 {
-		t.Errorf("MinBandwidth mismatch: got %f, want %f", got.MinBandwidthMbps, want.MinBandwidthMbps)
+	if diff := math.Abs(got.MinBandwidth - want.MinBandwidth); diff > 1e-6 {
+		t.Errorf("MinBandwidth mismatch: got %f, want %f", got.MinBandwidth, want.MinBandwidth)
 	}
-	if diff := math.Abs(got.MaxLatencyMs - want.MaxLatencyMs); diff > 1e-6 {
-		t.Errorf("MaxLatencyMs mismatch: got %f, want %f", got.MaxLatencyMs, want.MaxLatencyMs)
+	if diff := math.Abs(got.MaxLatency - want.MaxLatency); diff > 1e-6 {
+		t.Errorf("MaxLatency mismatch: got %f, want %f", got.MaxLatency, want.MaxLatency)
 	}
-	if got.ValidFromUnixSec != want.ValidFromUnixSec {
-		t.Errorf("ValidFromUnixSec mismatch: got %d, want %d", got.ValidFromUnixSec, want.ValidFromUnixSec)
+	if !got.ValidFrom.Equal(want.ValidFrom) {
+		t.Errorf("ValidFrom mismatch: got %v, want %v", got.ValidFrom, want.ValidFrom)
 	}
-	if got.ValidToUnixSec != want.ValidToUnixSec {
-		t.Errorf("ValidToUnixSec mismatch: got %d, want %d", got.ValidToUnixSec, want.ValidToUnixSec)
+	if !got.ValidTo.Equal(want.ValidTo) {
+		t.Errorf("ValidTo mismatch: got %v, want %v", got.ValidTo, want.ValidTo)
 	}
 }
 

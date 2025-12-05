@@ -269,10 +269,12 @@ func TestScenarioStateServiceRequestCRUD(t *testing.T) {
 
 	sr := &model.ServiceRequest{
 		ID:        "sr-1",
-		Type:      "video",
 		SrcNodeID: "nodeA",
 		DstNodeID: "nodeB",
 		Priority:  1,
+		FlowRequirements: []model.FlowRequirement{
+			{RequestedBandwidth: 1_000_000},
+		},
 	}
 
 	if err := s.CreateServiceRequest(sr); err != nil {
@@ -283,8 +285,8 @@ func TestScenarioStateServiceRequestCRUD(t *testing.T) {
 	}
 
 	got, err := s.GetServiceRequest("sr-1")
-	if err != nil || got == nil || got.Type != "video" {
-		t.Fatalf("GetServiceRequest got (%+v, %v), want Type=video", got, err)
+	if err != nil || got == nil || got.Priority != 1 {
+		t.Fatalf("GetServiceRequest got (%+v, %v), want Priority=1", got, err)
 	}
 
 	all := s.ListServiceRequests()
@@ -293,17 +295,17 @@ func TestScenarioStateServiceRequestCRUD(t *testing.T) {
 	}
 
 	updated := &model.ServiceRequest{
-		ID:        "sr-1",
-		Type:      "backhaul",
-		SrcNodeID: "nodeA",
-		DstNodeID: "nodeB",
-		Priority:  2,
+		ID:                    "sr-1",
+		SrcNodeID:             "nodeA",
+		DstNodeID:             "nodeB",
+		Priority:              2,
+		AllowPartnerResources: true,
 	}
 	if err := s.UpdateServiceRequest(updated); err != nil {
 		t.Fatalf("UpdateServiceRequest error: %v", err)
 	}
-	if got, err := s.GetServiceRequest("sr-1"); err != nil || got.Type != "backhaul" || got.Priority != 2 {
-		t.Fatalf("GetServiceRequest after update got (%+v, %v), want Type=backhaul Priority=2", got, err)
+	if got, err := s.GetServiceRequest("sr-1"); err != nil || got.Priority != 2 || !got.AllowPartnerResources {
+		t.Fatalf("GetServiceRequest after update got (%+v, %v), want Priority=2 AllowPartnerResources=true", got, err)
 	}
 
 	if err := s.DeleteServiceRequest("sr-1"); err != nil {
