@@ -1,9 +1,11 @@
 package state
 
 import (
+	"context"
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -12,7 +14,7 @@ import (
 func newScenarioStateForTest() (*ScenarioState, *kb.KnowledgeBase, *network.KnowledgeBase) {
 	phys := kb.NewKnowledgeBase()
 	netKB := network.NewKnowledgeBase()
-	return NewScenarioState(phys, netKB), phys, netKB
+	return NewScenarioState(phys, netKB, logging.Noop()), phys, netKB
 }
 
 func TestScenarioStateNodeAndInterfaceLifecycle(t *testing.T) {
@@ -75,7 +77,7 @@ func TestScenarioStateNodeAndInterfaceLifecycle(t *testing.T) {
 	}
 
 	// Optionally exercise ClearScenario here as well.
-	if err := s.ClearScenario(); err != nil {
+	if err := s.ClearScenario(context.Background()); err != nil {
 		t.Fatalf("ClearScenario error: %v", err)
 	}
 	if got := phys.GetNetworkNode("node1"); got != nil {
@@ -156,7 +158,7 @@ func TestScenarioStateSnapshotAndClearScenario(t *testing.T) {
 	}
 
 	// Clear the scenario and ensure everything is empty in the next snapshot.
-	if err := s.ClearScenario(); err != nil {
+	if err := s.ClearScenario(context.Background()); err != nil {
 		t.Fatalf("ClearScenario error: %v", err)
 	}
 	snap = s.Snapshot()

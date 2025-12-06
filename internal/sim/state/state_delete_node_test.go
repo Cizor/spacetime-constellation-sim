@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
 func TestDeleteNodeRemovesNodeAndInterfaces(t *testing.T) {
-	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase())
+	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase(), logging.Noop())
 
 	nodeID := "node-delete"
 	ifaceID := nodeID + "/if0"
@@ -36,7 +37,7 @@ func TestDeleteNodeRemovesNodeAndInterfaces(t *testing.T) {
 }
 
 func TestDeleteNodeFailsWhenLinksPresent(t *testing.T) {
-	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase())
+	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase(), logging.Noop())
 
 	nodeID := "node-in-use"
 	ifaceID := nodeID + "/if-link"
@@ -79,7 +80,7 @@ func TestDeleteNodeFailsWhenLinksPresent(t *testing.T) {
 }
 
 func TestDeleteNodeFailsWhenServiceRequestsPresent(t *testing.T) {
-	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase())
+	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase(), logging.Noop())
 
 	nodeID := "node-with-sr"
 	ifaceID := nodeID + "/if-sr"

@@ -2,6 +2,7 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -72,6 +74,9 @@ type ScenarioState struct {
 	// connectivity is an optional ConnectivityService whose caches need
 	// to be flushed when the scenario is cleared.
 	connectivity connectivityResetter
+
+	// log is an optional structured logger for state-level events.
+	log logging.Logger
 }
 
 // ScenarioSnapshot captures a consistent view of all in-memory state
@@ -117,11 +122,15 @@ func WithConnectivityService(c connectivityResetter) ScenarioStateOption {
 
 // NewScenarioState wires together the scope-1 and scope-2 knowledge bases
 // and prepares an empty ServiceRequest store.
-func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, opts ...ScenarioStateOption) *ScenarioState {
+func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log logging.Logger, opts ...ScenarioStateOption) *ScenarioState {
+	if log == nil {
+		log = logging.Noop()
+	}
 	state := &ScenarioState{
 		physKB:          phys,
 		netKB:           net,
 		serviceRequests: make(map[string]*model.ServiceRequest),
+		log:             log,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -802,9 +811,34 @@ func splitInterfaceRef(ref string) (string, string) {
 
 // ClearScenario wipes all in-memory scenario data so a fresh scenario
 // can be loaded without dangling references.
-func (s *ScenarioState) ClearScenario() error {
+func (s *ScenarioState) ClearScenario(ctx context.Context) error {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	platforms := 0
+	nodes := 0
+	links := 0
+	interfaces := 0
+	if s.physKB != nil {
+		platforms = len(s.physKB.ListPlatforms())
+		nodes = len(s.physKB.ListNetworkNodes())
+	}
+	if s.netKB != nil {
+		interfaces = len(s.netKB.GetAllInterfaces())
+		links = len(s.netKB.GetAllNetworkLinks())
+	}
+	serviceRequests := len(s.serviceRequests)
+	reqLog.Debug(ctx, "clearing scenario",
+		logging.String("entity_type", "scenario"),
+		logging.String("operation", "clear"),
+		logging.Int("platforms", platforms),
+		logging.Int("nodes", nodes),
+		logging.Int("interfaces", interfaces),
+		logging.Int("links", links),
+		logging.Int("service_requests", serviceRequests),
+	)
 
 	if s.physKB != nil {
 		s.physKB.Clear()
@@ -820,6 +854,16 @@ func (s *ScenarioState) ClearScenario() error {
 	if s.connectivity != nil {
 		s.connectivity.Reset()
 	}
+
+	reqLog.Debug(ctx, "scenario cleared",
+		logging.String("entity_type", "scenario"),
+		logging.String("operation", "clear"),
+		logging.Int("platforms", platforms),
+		logging.Int("nodes", nodes),
+		logging.Int("interfaces", interfaces),
+		logging.Int("links", links),
+		logging.Int("service_requests", serviceRequests),
+	)
 
 	return nil
 }
