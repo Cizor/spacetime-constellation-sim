@@ -111,7 +111,7 @@ func (c *NBICollector) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 		if info != nil {
 			fullMethod = info.FullMethod
 		}
-		service, method := splitMethod(fullMethod)
+		service, method := SplitMethod(fullMethod)
 		code := status.Code(err).String()
 
 		if c.RPCRequests != nil {
@@ -154,7 +154,10 @@ func (c *NBICollector) SetScenarioCounts(platforms, nodes, links, serviceRequest
 	}
 }
 
-func splitMethod(fullMethod string) (string, string) {
+// SplitMethod parses a fully-qualified gRPC method name into service and method
+// components. It tolerates empty strings and partial paths, returning
+// "unknown"/"unknown" when parsing fails.
+func SplitMethod(fullMethod string) (string, string) {
 	if fullMethod == "" {
 		return "unknown", "unknown"
 	}
