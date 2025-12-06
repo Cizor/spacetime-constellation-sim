@@ -77,6 +77,9 @@ type ScenarioState struct {
 
 	// log is an optional structured logger for state-level events.
 	log logging.Logger
+
+	// metrics is an optional recorder for Prometheus-friendly gauges.
+	metrics ScenarioMetricsRecorder
 }
 
 // ScenarioSnapshot captures a consistent view of all in-memory state
@@ -91,6 +94,11 @@ type ScenarioSnapshot struct {
 	InterfacesByNode map[string][]*network.NetworkInterface
 	Links            []*network.NetworkLink
 	ServiceRequests  []*model.ServiceRequest
+}
+
+// ScenarioMetricsRecorder receives count updates for core scenario entities.
+type ScenarioMetricsRecorder interface {
+	SetScenarioCounts(platforms, nodes, links, serviceRequests int)
 }
 
 type motionResetter interface {
@@ -120,6 +128,13 @@ func WithConnectivityService(c connectivityResetter) ScenarioStateOption {
 	}
 }
 
+// WithMetricsRecorder attaches an optional metrics recorder for entity counts.
+func WithMetricsRecorder(m ScenarioMetricsRecorder) ScenarioStateOption {
+	return func(s *ScenarioState) {
+		s.metrics = m
+	}
+}
+
 // NewScenarioState wires together the scope-1 and scope-2 knowledge bases
 // and prepares an empty ServiceRequest store.
 func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log logging.Logger, opts ...ScenarioStateOption) *ScenarioState {
@@ -137,6 +152,7 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 			opt(state)
 		}
 	}
+	state.updateMetricsLocked()
 	return state
 }
 
@@ -235,6 +251,8 @@ func (s *ScenarioState) CreatePlatform(pd *model.PlatformDefinition) error {
 		}
 		return err
 	}
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -272,6 +290,8 @@ func (s *ScenarioState) UpdatePlatform(pd *model.PlatformDefinition) error {
 		}
 		return err
 	}
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -294,6 +314,8 @@ func (s *ScenarioState) DeletePlatform(id string) error {
 		}
 		return err
 	}
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -359,6 +381,7 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 		added = append(added, iface.ID)
 	}
 
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -440,6 +463,7 @@ func (s *ScenarioState) UpdateNode(node *model.NetworkNode, interfaces []*networ
 		return err
 	}
 
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -473,6 +497,7 @@ func (s *ScenarioState) DeleteNode(id string) error {
 		return err
 	}
 
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -543,6 +568,7 @@ func (s *ScenarioState) DeleteInterface(id string) error {
 		return err
 	}
 
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -576,6 +602,7 @@ func (s *ScenarioState) CreateLinks(links ...*network.NetworkLink) error {
 		added = append(added, link.ID)
 	}
 
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -609,6 +636,8 @@ func (s *ScenarioState) DeleteLink(id string) error {
 		}
 		return err
 	}
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -627,6 +656,8 @@ func (s *ScenarioState) UpdateLink(link *network.NetworkLink) error {
 		}
 		return err
 	}
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -655,6 +686,8 @@ func (s *ScenarioState) CreateServiceRequest(sr *model.ServiceRequest) error {
 		return ErrServiceRequestExists
 	}
 	s.serviceRequests[sr.ID] = sr
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -698,6 +731,8 @@ func (s *ScenarioState) UpdateServiceRequest(sr *model.ServiceRequest) error {
 		return ErrServiceRequestNotFound
 	}
 	s.serviceRequests[sr.ID] = sr
+
+	s.updateMetricsLocked()
 	return nil
 }
 
@@ -710,7 +745,28 @@ func (s *ScenarioState) DeleteServiceRequest(id string) error {
 		return ErrServiceRequestNotFound
 	}
 	delete(s.serviceRequests, id)
+
+	s.updateMetricsLocked()
 	return nil
+}
+
+// updateMetricsLocked pushes current entity counts into the metrics recorder.
+// Caller must hold s.mu when invoking this helper.
+func (s *ScenarioState) updateMetricsLocked() {
+	if s == nil || s.metrics == nil {
+		return
+	}
+	platforms := 0
+	nodes := 0
+	links := 0
+	if s.physKB != nil {
+		platforms = len(s.physKB.ListPlatforms())
+		nodes = len(s.physKB.ListNetworkNodes())
+	}
+	if s.netKB != nil {
+		links = len(s.netKB.GetAllNetworkLinks())
+	}
+	s.metrics.SetScenarioCounts(platforms, nodes, links, len(s.serviceRequests))
 }
 
 // interfacesByNodeLocked builds a map of nodeID -> interfaces for callers that
@@ -854,6 +910,8 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 	if s.connectivity != nil {
 		s.connectivity.Reset()
 	}
+
+	s.updateMetricsLocked()
 
 	reqLog.Debug(ctx, "scenario cleared",
 		logging.String("entity_type", "scenario"),
