@@ -346,29 +346,19 @@ func TestBidirectionalLinkFromProto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BidirectionalLinkFromProto returned error: %v", err)
 	}
-	if len(links) != 2 {
-		t.Fatalf("expected 2 directional links, got %d", len(links))
+	if len(links) != 1 {
+		t.Fatalf("expected 1 bidirectional link, got %d", len(links))
 	}
 
-	expected := map[string]struct {
-		src string
-		dst string
-	}{
-		directionalLinkID(combineInterfaceRef(aNode, aTx), combineInterfaceRef(bNode, bRx)): {combineInterfaceRef(aNode, aTx), combineInterfaceRef(bNode, bRx)},
-		directionalLinkID(combineInterfaceRef(bNode, bTx), combineInterfaceRef(aNode, aRx)): {combineInterfaceRef(bNode, bTx), combineInterfaceRef(aNode, aRx)},
+	link := links[0]
+	if link.InterfaceA != combineInterfaceRef(aNode, aTx) {
+		t.Errorf("InterfaceA mismatch: got %q, want %q", link.InterfaceA, combineInterfaceRef(aNode, aTx))
 	}
-
-	for _, l := range links {
-		want, ok := expected[l.ID]
-		if !ok {
-			t.Fatalf("unexpected link ID %q", l.ID)
-		}
-		if l.InterfaceA != want.src {
-			t.Errorf("InterfaceA mismatch for %q: got %q, want %q", l.ID, l.InterfaceA, want.src)
-		}
-		if l.InterfaceB != want.dst {
-			t.Errorf("InterfaceB mismatch for %q: got %q, want %q", l.ID, l.InterfaceB, want.dst)
-		}
+	if link.InterfaceB != combineInterfaceRef(bNode, bTx) {
+		t.Errorf("InterfaceB mismatch: got %q, want %q", link.InterfaceB, combineInterfaceRef(bNode, bTx))
+	}
+	if link.ID != combineLinkID(link.InterfaceA, link.InterfaceB) {
+		t.Errorf("ID mismatch: got %q, want %q", link.ID, combineLinkID(link.InterfaceA, link.InterfaceB))
 	}
 }
 

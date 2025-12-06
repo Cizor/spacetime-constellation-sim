@@ -92,29 +92,19 @@ func TestNetworkLinkServiceCreateStaticWiredLink(t *testing.T) {
 	}
 
 	links := state.ListLinks()
-	if len(links) != 2 {
-		t.Fatalf("scenario links count = %d, want 2 directional links", len(links))
+	if len(links) != 1 {
+		t.Fatalf("scenario links count = %d, want 1 bidirectional link", len(links))
 	}
 
-	expected := map[string]string{
-		ifaceA: ifaceB,
-		ifaceB: ifaceA,
+	l := links[0]
+	if l.InterfaceA != ifaceA || l.InterfaceB != ifaceB {
+		t.Fatalf("stored link endpoints = (%s, %s), want (%s, %s)", l.InterfaceA, l.InterfaceB, ifaceA, ifaceB)
 	}
-
-	for _, l := range links {
-		wantDst, ok := expected[l.InterfaceA]
-		if !ok {
-			t.Fatalf("unexpected InterfaceA %q in stored link %+v", l.InterfaceA, l)
-		}
-		if l.InterfaceB != wantDst {
-			t.Fatalf("stored link %+v has InterfaceB %q, want %q", l, l.InterfaceB, wantDst)
-		}
-		if l.Medium != core.MediumWired {
-			t.Fatalf("stored link %+v Medium = %s, want %s", l, l.Medium, core.MediumWired)
-		}
-		if !l.IsStatic || !l.IsUp {
-			t.Fatalf("wired link %+v should be marked always-on (IsStatic && IsUp)", l)
-		}
+	if l.Medium != core.MediumWired {
+		t.Fatalf("stored link %+v Medium = %s, want %s", l, l.Medium, core.MediumWired)
+	}
+	if !l.IsStatic || !l.IsUp {
+		t.Fatalf("wired link %+v should be marked always-on (IsStatic && IsUp)", l)
 	}
 }
 
@@ -239,8 +229,8 @@ func TestNetworkLinkServiceWirelessValidation(t *testing.T) {
 		t.Fatalf("CreateLink(wireless) error: %v", err)
 	}
 	links := state.ListLinks()
-	if len(links) != 2 {
-		t.Fatalf("wireless link creation stored %d links, want 2", len(links))
+	if len(links) != 1 {
+		t.Fatalf("wireless link creation stored %d links, want 1", len(links))
 	}
 	for _, l := range links {
 		if l.Medium != core.MediumWireless {
@@ -275,11 +265,10 @@ func TestNetworkLinkServiceGetListDelete(t *testing.T) {
 		t.Fatalf("CreateLink seed error: %v", err)
 	}
 	links := state.ListLinks()
-	if len(links) != 2 {
-		t.Fatalf("after create, link count = %d, want 2", len(links))
+	if len(links) != 1 {
+		t.Fatalf("after create, link count = %d, want 1", len(links))
 	}
 	firstID := links[0].ID
-	partnerID := links[1].ID
 
 	getResp, err := svc.GetLink(ctx, &v1alpha.GetLinkRequest{LinkId: strPtr(firstID)})
 	if err != nil {
@@ -313,16 +302,10 @@ func TestNetworkLinkServiceGetListDelete(t *testing.T) {
 	if state.NetworkKB().GetNetworkLink(firstID) != nil {
 		t.Fatalf("NetworkKB still holds deleted link %s", firstID)
 	}
-	if got := len(state.ListLinks()); got != 1 {
-		t.Fatalf("link count after first delete = %d, want 1 remaining direction", got)
+	if got := len(state.ListLinks()); got != 0 {
+		t.Fatalf("link count after delete = %d, want 0", got)
 	}
 
-	if _, err := svc.DeleteLink(ctx, &v1alpha.DeleteLinkRequest{LinkId: strPtr(partnerID)}); err != nil {
-		t.Fatalf("DeleteLink(partner %s) error: %v", partnerID, err)
-	}
-	if _, err := svc.GetLink(ctx, &v1alpha.GetLinkRequest{LinkId: strPtr(partnerID)}); status.Code(err) != codes.NotFound {
-		t.Fatalf("GetLink partner after delete code = %v, want NotFound (err=%v)", status.Code(err), err)
-	}
 	finalList, err := svc.ListLinks(ctx, &v1alpha.ListLinksRequest{})
 	if err != nil {
 		t.Fatalf("ListLinks after deletes error: %v", err)
