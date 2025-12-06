@@ -196,15 +196,16 @@ func (s *ServiceRequestService) validateServiceRequest(sr *model.ServiceRequest)
 		return fmt.Errorf("%w: service_request_id is required", ErrInvalidServiceRequest)
 	}
 
-	phys := s.state.PhysicalKB()
-	if phys.GetNetworkNode(sr.SrcNodeID) == nil {
-		return fmt.Errorf("%w: unknown src node %q", ErrInvalidServiceRequest, sr.SrcNodeID)
-	}
-	if phys.GetNetworkNode(sr.DstNodeID) == nil {
-		return fmt.Errorf("%w: unknown dst node %q", ErrInvalidServiceRequest, sr.DstNodeID)
-	}
-
-	return nil
+	return s.state.WithReadLock(func() error {
+		phys := s.state.PhysicalKB()
+		if phys.GetNetworkNode(sr.SrcNodeID) == nil {
+			return fmt.Errorf("%w: unknown src node %q", ErrInvalidServiceRequest, sr.SrcNodeID)
+		}
+		if phys.GetNetworkNode(sr.DstNodeID) == nil {
+			return fmt.Errorf("%w: unknown dst node %q", ErrInvalidServiceRequest, sr.DstNodeID)
+		}
+		return nil
+	})
 }
 
 func generateServiceRequestID() string {
