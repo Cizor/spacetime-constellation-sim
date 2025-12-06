@@ -83,11 +83,15 @@ func (s *PlatformService) CreatePlatform(
 		dom.Name = dom.ID
 	}
 
+	ctx, span := StartChildSpan(ctx, "platform/create", "platform", dom.ID)
+	defer span.End()
+
 	if err := s.state.CreatePlatform(dom); err != nil {
 		reqLog.Warn(ctx, "CreatePlatform failed",
 			logging.String("entity_id", dom.ID),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -97,6 +101,7 @@ func (s *PlatformService) CreatePlatform(
 				logging.String("entity_id", dom.ID),
 				logging.String("error", err.Error()),
 			)
+			span.RecordError(err)
 			// Try to roll back state to keep it consistent with motion model.
 			if delErr := s.state.DeletePlatform(dom.ID); delErr != nil {
 				reqLog.Warn(ctx, "failed to roll back platform after motion model error",
@@ -186,11 +191,15 @@ func (s *PlatformService) UpdatePlatform(
 		return nil, ToStatusError(err)
 	}
 
+	ctx, span := StartChildSpan(ctx, "platform/update", "platform", dom.ID)
+	defer span.End()
+
 	if err := s.state.UpdatePlatform(dom); err != nil {
 		reqLog.Warn(ctx, "UpdatePlatform failed",
 			logging.String("entity_id", dom.ID),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -224,6 +233,9 @@ func (s *PlatformService) DeletePlatform(
 		return nil, status.Error(codes.InvalidArgument, "platform_id is required")
 	}
 
+	ctx, span := StartChildSpan(ctx, "platform/delete", "platform", req.GetPlatformId())
+	defer span.End()
+
 	if err := s.state.DeletePlatform(req.GetPlatformId()); err != nil {
 		level := reqLog.Warn
 		if errors.Is(err, sim.ErrPlatformInUse) {
@@ -233,6 +245,7 @@ func (s *PlatformService) DeletePlatform(
 			logging.String("entity_id", req.GetPlatformId()),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -242,6 +255,7 @@ func (s *PlatformService) DeletePlatform(
 				logging.String("entity_id", req.GetPlatformId()),
 				logging.String("error", err.Error()),
 			)
+			span.RecordError(err)
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}

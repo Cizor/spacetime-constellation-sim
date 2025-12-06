@@ -72,10 +72,14 @@ func (s *NetworkLinkService) CreateLink(
 		return nil, ToStatusError(err)
 	}
 
+	ctx, span := StartChildSpan(ctx, "link/create", "link", links[0].ID)
+	defer span.End()
+
 	if err := s.state.CreateLinks(links...); err != nil {
 		reqLog.Warn(ctx, "CreateLink failed",
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -149,11 +153,15 @@ func (s *NetworkLinkService) DeleteLink(
 		return nil, status.Error(codes.InvalidArgument, "link_id is required")
 	}
 
+	ctx, span := StartChildSpan(ctx, "link/delete", "link", req.GetLinkId())
+	defer span.End()
+
 	if err := s.state.DeleteLink(req.GetLinkId()); err != nil {
 		reqLog.Warn(ctx, "DeleteLink failed",
 			logging.String("entity_id", req.GetLinkId()),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 

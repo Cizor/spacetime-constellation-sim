@@ -76,11 +76,15 @@ func (s *ServiceRequestService) CreateServiceRequest(
 		return nil, ToStatusError(err)
 	}
 
+	ctx, span := StartChildSpan(ctx, "service_request/create", "service_request", dom.ID)
+	defer span.End()
+
 	if err := s.state.CreateServiceRequest(dom); err != nil {
 		reqLog.Warn(ctx, "CreateServiceRequest failed",
 			logging.String("entity_id", dom.ID),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -180,11 +184,15 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 		return nil, ToStatusError(err)
 	}
 
+	ctx, span := StartChildSpan(ctx, "service_request/update", "service_request", dom.ID)
+	defer span.End()
+
 	if err := s.state.UpdateServiceRequest(dom); err != nil {
 		reqLog.Warn(ctx, "UpdateServiceRequest failed",
 			logging.String("entity_id", dom.ID),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -212,11 +220,15 @@ func (s *ServiceRequestService) DeleteServiceRequest(
 		return nil, status.Error(codes.InvalidArgument, "service_request_id is required")
 	}
 
+	ctx, span := StartChildSpan(ctx, "service_request/delete", "service_request", req.GetServiceRequestId())
+	defer span.End()
+
 	if err := s.state.DeleteServiceRequest(req.GetServiceRequestId()); err != nil {
 		reqLog.Warn(ctx, "DeleteServiceRequest failed",
 			logging.String("entity_id", req.GetServiceRequestId()),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
