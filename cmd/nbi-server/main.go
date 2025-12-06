@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
@@ -17,19 +21,95 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/internal/observability"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
+	"github.com/signalsfoundry/constellation-simulator/timectrl"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
+type Config struct {
+	ListenAddress       string
+	MetricsAddress      string
+	EnableTLS           bool
+	TLSCertPath         string
+	TLSKeyPath          string
+	LogLevel            string
+	LogFormat           string
+	TransceiversPath    string
+	NetworkScenarioPath string
+	TickInterval        time.Duration
+	Accelerated         bool
+}
+
 func main() {
-	grpcAddr := flag.String("grpc-addr", ":50051", "TCP address the NBI gRPC server listens on")
-	metricsAddr := flag.String("metrics-addr", ":9090", "HTTP address for Prometheus /metrics")
-	transceiverPath := flag.String("transceivers", "configs/transceivers.json", "Path to a JSON file containing transceiver models")
+	cfg := loadConfig()
+	log := logging.New(logging.Config{
+		Level:     cfg.LogLevel,
+		Format:    cfg.LogFormat,
+		AddSource: true,
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, cfg, log, nil); err != nil {
+		log.Error(context.Background(), "nbi-server exited with error", logging.String("error", err.Error()))
+		os.Exit(1)
+	}
+}
+
+func loadConfig() Config {
+	defaultListen := envOrDefault("NBI_LISTEN_ADDRESS", "0.0.0.0:50051")
+	defaultMetrics := envOrDefault("NBI_METRICS_ADDRESS", ":9090")
+	defaultTLS := envBool("NBI_ENABLE_TLS", false)
+	defaultTick := envDuration("NBI_TICK_INTERVAL", time.Second)
+	defaultTransceivers := envOrDefault("NBI_TRANSCEIVERS_PATH", "configs/transceivers.json")
+	defaultScenario := envOrDefault("NBI_NETWORK_SCENARIO", "")
+	defaultLogLevel := envOrDefault("LOG_LEVEL", "info")
+	defaultLogFormat := envOrDefault("LOG_FORMAT", "text")
+	defaultAccelerated := envBool("NBI_ACCELERATED", true)
+
+	listenAddr := flag.String("listen-address", defaultListen, "TCP address the NBI gRPC server listens on")
+	metricsAddr := flag.String("metrics-address", defaultMetrics, "HTTP address for Prometheus /metrics (empty to disable)")
+	enableTLS := flag.Bool("enable-tls", defaultTLS, "Enable TLS for the gRPC server")
+	tlsCert := flag.String("tls-cert", envOrDefault("NBI_TLS_CERT", ""), "Path to TLS certificate (requires --enable-tls)")
+	tlsKey := flag.String("tls-key", envOrDefault("NBI_TLS_KEY", ""), "Path to TLS private key (requires --enable-tls)")
+	logLevel := flag.String("log-level", defaultLogLevel, "Log level: debug, info, warn")
+	logFormat := flag.String("log-format", defaultLogFormat, "Log format: text or json")
+	transceiverPath := flag.String("transceivers", defaultTransceivers, "Path to a JSON file containing transceiver models")
+	networkScenario := flag.String("network-scenario", defaultScenario, "Optional JSON file with interfaces/links/positions to pre-load")
+	tick := flag.Duration("tick", defaultTick, "Simulation tick interval")
+	accelerated := flag.Bool("accelerated", defaultAccelerated, "Run simulation ticks in accelerated mode")
+
 	flag.Parse()
 
-	log := logging.NewFromEnv()
-	ctx := context.Background()
+	if *tick <= 0 {
+		*tick = time.Second
+	}
+
+	return Config{
+		ListenAddress:       *listenAddr,
+		MetricsAddress:      *metricsAddr,
+		EnableTLS:           *enableTLS,
+		TLSCertPath:         *tlsCert,
+		TLSKeyPath:          *tlsKey,
+		LogLevel:            *logLevel,
+		LogFormat:           *logFormat,
+		TransceiversPath:    *transceiverPath,
+		NetworkScenarioPath: *networkScenario,
+		TickInterval:        *tick,
+		Accelerated:         *accelerated,
+	}
+}
+
+func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) error {
+	if log == nil {
+		log = logging.Noop()
+	}
+	if cfg.EnableTLS && (cfg.TLSCertPath == "" || cfg.TLSKeyPath == "") {
+		return fmt.Errorf("enable-tls set but TLS cert or key path is empty")
+	}
 
 	traceShutdown := func(context.Context) error { return nil }
 	if shutdown, err := observability.InitTracing(ctx, observability.TracingConfigFromEnv(), log); err != nil {
@@ -41,70 +121,191 @@ func main() {
 
 	collector, err := observability.NewNBICollector(nil)
 	if err != nil {
-		log.Error(ctx, "failed to initialise metrics collector", logging.String("error", err.Error()))
-		os.Exit(1)
+		return fmt.Errorf("init metrics collector: %w", err)
 	}
 
-	metricsSrv := serveMetrics(*metricsAddr, collector, log)
+	var metricsSrv *http.Server
+	if cfg.MetricsAddress != "" {
+		metricsSrv = serveMetrics(cfg.MetricsAddress, collector, log)
+	}
 
 	physKB := kb.NewKnowledgeBase()
 	netKB := core.NewKnowledgeBase()
-	loadTransceivers(log, netKB, *transceiverPath)
+
+	motion := core.NewMotionModel(core.WithPositionUpdater(physKB))
+	connectivity := core.NewConnectivityService(netKB)
+
+	loadTransceivers(log, netKB, cfg.TransceiversPath)
+	loadNetworkScenario(log, netKB, cfg.NetworkScenarioPath)
 
 	state := sim.NewScenarioState(
 		physKB,
 		netKB,
 		log,
+		sim.WithMotionModel(motion),
+		sim.WithConnectivityService(connectivity),
 		sim.WithMetricsRecorder(collector),
 	)
 
-	server := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(
-			nbi.RequestIDUnaryServerInterceptor(log),
-			otelgrpc.UnaryServerInterceptor(
-				otelgrpc.WithTracerProvider(otel.GetTracerProvider()),
-				otelgrpc.WithPropagators(otel.GetTextMapPropagator()),
-			),
-			nbi.TracingUnaryServerInterceptor(),
-			collector.UnaryServerInterceptor(),
-		),
-	)
+	tc := timectrl.NewTimeController(time.Now().UTC(), cfg.TickInterval, timeMode(cfg))
+	simCtx, simCancel := context.WithCancel(ctx)
+	defer simCancel()
+	go runSimLoop(simCtx, tc, state, motion, connectivity, log)
 
-	v1alpha.RegisterPlatformServiceServer(server, nbi.NewPlatformService(state, nil, log))
+	server, err := buildGRPCServer(cfg, state, motion, collector, log)
+	if err != nil {
+		return err
+	}
+
+	if lis == nil {
+		lis, err = net.Listen("tcp", cfg.ListenAddress)
+		if err != nil {
+			return fmt.Errorf("listen on %s: %w", cfg.ListenAddress, err)
+		}
+	}
+
+	log.Info(ctx, "starting NBI gRPC server", logging.String("addr", lis.Addr().String()))
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.Serve(lis)
+	}()
+
+	var retErr error
+	var serveResult error
+	select {
+	case err := <-serveErr:
+		serveResult = err
+		if err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			retErr = err
+		}
+	case <-ctx.Done():
+		log.Info(ctx, "shutdown requested", logging.String("reason", ctx.Err().Error()))
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	server.GracefulStop()
+	if serveResult == nil {
+		serveResult = <-serveErr
+	}
+	if serveResult != nil && !errors.Is(serveResult, grpc.ErrServerStopped) {
+		log.Error(ctx, "gRPC server exited", logging.String("error", serveResult.Error()))
+		if retErr == nil {
+			retErr = serveResult
+		}
+	}
+
+	if metricsSrv != nil {
+		_ = metricsSrv.Shutdown(shutdownCtx)
+	}
+
+	return retErr
+}
+
+func buildGRPCServer(
+	cfg Config,
+	state *sim.ScenarioState,
+	motion *core.MotionModel,
+	collector *observability.NBICollector,
+	log logging.Logger,
+) (*grpc.Server, error) {
+	interceptors := []grpc.UnaryServerInterceptor{
+		nbi.RequestIDUnaryServerInterceptor(log),
+		otelgrpc.UnaryServerInterceptor(
+			otelgrpc.WithTracerProvider(otel.GetTracerProvider()),
+			otelgrpc.WithPropagators(otel.GetTextMapPropagator()),
+		),
+		nbi.TracingUnaryServerInterceptor(),
+	}
+	if collector != nil {
+		interceptors = append(interceptors, collector.UnaryServerInterceptor())
+	}
+
+	opts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(interceptors...),
+	}
+
+	if cfg.EnableTLS {
+		creds, err := credentials.NewServerTLSFromFile(cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS credentials: %w", err)
+		}
+		opts = append(opts, grpc.Creds(creds))
+	}
+
+	server := grpc.NewServer(opts...)
+
+	v1alpha.RegisterPlatformServiceServer(server, nbi.NewPlatformService(state, motion, log))
 	v1alpha.RegisterNetworkNodeServiceServer(server, nbi.NewNetworkNodeService(state, log))
 	v1alpha.RegisterNetworkLinkServiceServer(server, nbi.NewNetworkLinkService(state, log))
 	v1alpha.RegisterServiceRequestServiceServer(server, nbi.NewServiceRequestService(state, log))
 	v1alpha.RegisterScenarioServiceServer(server, nbi.NewScenarioService(state, log))
 
-	lis, err := net.Listen("tcp", *grpcAddr)
-	if err != nil {
-		log.Error(ctx, "failed to listen for gRPC", logging.String("addr", *grpcAddr), logging.String("error", err.Error()))
-		os.Exit(1)
+	return server, nil
+}
+
+func runSimLoop(
+	ctx context.Context,
+	tc *timectrl.TimeController,
+	state *sim.ScenarioState,
+	motion *core.MotionModel,
+	connectivity *core.ConnectivityService,
+	log logging.Logger,
+) {
+	if tc == nil || state == nil {
+		return
 	}
 
-	log.Info(ctx, "starting NBI gRPC server", logging.String("addr", *grpcAddr))
-	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Error(ctx, "gRPC server exited", logging.String("error", err.Error()))
+	ticker := time.NewTicker(tc.Tick)
+	defer ticker.Stop()
+
+	simTime := tc.StartTime
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			simTime = simTime.Add(tc.Tick)
+			if err := state.RunSimTick(simTime, motion, connectivity, func() {
+				syncNodePositions(state.PhysicalKB(), state.NetworkKB())
+			}); err != nil {
+				log.Warn(ctx, "simulation tick failed", logging.String("error", err.Error()))
+			}
 		}
-	}()
+	}
+}
 
-	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	<-stopCtx.Done()
+func syncNodePositions(phys *kb.KnowledgeBase, netKB *core.KnowledgeBase) {
+	if phys == nil || netKB == nil {
+		return
+	}
 
-	log.Info(ctx, "shutting down NBI server")
-	server.GracefulStop()
+	platforms := phys.ListPlatforms()
+	platformByID := make(map[string]core.Vec3, len(platforms))
+	for _, p := range platforms {
+		if p == nil {
+			continue
+		}
+		platformByID[p.ID] = core.Vec3{
+			X: p.Coordinates.X / 1000.0,
+			Y: p.Coordinates.Y / 1000.0,
+			Z: p.Coordinates.Z / 1000.0,
+		}
+	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if metricsSrv != nil {
-		_ = metricsSrv.Shutdown(shutdownCtx)
+	for _, node := range phys.ListNetworkNodes() {
+		if node == nil {
+			continue
+		}
+		if pos, ok := platformByID[node.PlatformID]; ok {
+			netKB.SetNodeECEFPosition(node.ID, pos)
+		}
 	}
 }
 
 func serveMetrics(addr string, collector *observability.NBICollector, log logging.Logger) *http.Server {
-	if collector == nil {
+	if collector == nil || addr == "" {
 		return nil
 	}
 	mux := http.NewServeMux()
@@ -158,4 +359,62 @@ func loadTransceivers(log logging.Logger, netKB *core.KnowledgeBase, path string
 		logging.String("path", path),
 		logging.Int("count", added),
 	)
+}
+
+func loadNetworkScenario(log logging.Logger, netKB *core.KnowledgeBase, path string) {
+	if netKB == nil || path == "" {
+		return
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		log.Warn(context.Background(), "failed to open network scenario", logging.String("path", path), logging.String("error", err.Error()))
+		return
+	}
+	defer f.Close()
+
+	summary, err := core.LoadNetworkScenario(netKB, f)
+	if err != nil {
+		log.Warn(context.Background(), "failed to load network scenario", logging.String("path", path), logging.String("error", err.Error()))
+		return
+	}
+
+	log.Info(context.Background(), "loaded network scenario",
+		logging.String("path", path),
+		logging.Int("interfaces", len(summary.InterfaceIDs)),
+		logging.Int("links", len(summary.LinkIDs)),
+		logging.Int("positions", len(summary.NodeIDs)),
+	)
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := time.ParseDuration(v); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
+func timeMode(cfg Config) timectrl.Mode {
+	if cfg.Accelerated {
+		return timectrl.Accelerated
+	}
+	return timectrl.RealTime
 }
