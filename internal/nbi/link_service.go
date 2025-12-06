@@ -46,8 +46,8 @@ func (s *NetworkLinkService) CreateLink(
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return nil, status.Error(codes.InvalidArgument, "link is required")
+	if err := ValidateLinkProto(in); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	links, err := types.BidirectionalLinkFromProto(in)
