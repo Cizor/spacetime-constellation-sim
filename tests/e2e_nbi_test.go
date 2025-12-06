@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,22 +20,43 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/model"
 	"github.com/signalsfoundry/constellation-simulator/timectrl"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
-func TestEndToEndNBI(t *testing.T) {
+type nbiTestEnv struct {
+	ctx            context.Context
+	cancel         context.CancelFunc
+	state          *sim.ScenarioState
+	motion         *deterministicMotion
+	connectivity   *core.ConnectivityService
+	physKB         *kb.KnowledgeBase
+	netKB          *core.KnowledgeBase
+	grpcServer     *grpc.Server
+	serveErr       <-chan error
+	transceiverID  string
+	platformClient v1alpha.PlatformServiceClient
+	nodeClient     v1alpha.NetworkNodeServiceClient
+	linkClient     v1alpha.NetworkLinkServiceClient
+	srClient       v1alpha.ServiceRequestServiceClient
+	scenarioClient v1alpha.ScenarioServiceClient
+}
+
+func newNbiTestEnv(t *testing.T) *nbiTestEnv {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	physKB := kb.NewKnowledgeBase()
 	netKB := core.NewKnowledgeBase()
-
 	trxID := "trx-e2e-ku"
 	if err := netKB.AddTransceiverModel(&core.TransceiverModel{
 		ID:         trxID,
 		Band:       core.FrequencyBand{MinGHz: 10.7, MaxGHz: 12.75},
 		MaxRangeKm: 120000,
 	}); err != nil {
+		cancel()
 		t.Fatalf("AddTransceiverModel: %v", err)
 	}
 
@@ -56,29 +78,80 @@ func TestEndToEndNBI(t *testing.T) {
 	}
 
 	grpcServer := grpc.NewServer()
-	v1alpha.RegisterPlatformServiceServer(grpcServer, nbi.NewPlatformService(state, motion, logging.Noop()))
-	v1alpha.RegisterNetworkNodeServiceServer(grpcServer, nbi.NewNetworkNodeService(state, logging.Noop()))
-	v1alpha.RegisterNetworkLinkServiceServer(grpcServer, nbi.NewNetworkLinkService(state, logging.Noop()))
-	v1alpha.RegisterServiceRequestServiceServer(grpcServer, nbi.NewServiceRequestService(state, logging.Noop()))
-	v1alpha.RegisterScenarioServiceServer(grpcServer, nbi.NewScenarioService(state, logging.Noop()))
+	v1alpha.RegisterPlatformServiceServer(
+		grpcServer,
+		nbi.NewPlatformService(state, motion, logging.Noop()),
+	)
+	v1alpha.RegisterNetworkNodeServiceServer(
+		grpcServer,
+		nbi.NewNetworkNodeService(state, logging.Noop()),
+	)
+	v1alpha.RegisterNetworkLinkServiceServer(
+		grpcServer,
+		nbi.NewNetworkLinkService(state, logging.Noop()),
+	)
+	v1alpha.RegisterServiceRequestServiceServer(
+		grpcServer,
+		nbi.NewServiceRequestService(state, logging.Noop()),
+	)
+	v1alpha.RegisterScenarioServiceServer(
+		grpcServer,
+		nbi.NewScenarioService(state, logging.Noop()),
+	)
 
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- grpcServer.Serve(lis)
 	}()
-	defer grpcServer.GracefulStop()
 
 	conn, err := grpc.DialContext(ctx, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
+		cancel()
 		t.Fatalf("grpc.DialContext: %v", err)
 	}
-	defer conn.Close()
 
-	platformClient := v1alpha.NewPlatformServiceClient(conn)
-	nodeClient := v1alpha.NewNetworkNodeServiceClient(conn)
-	linkClient := v1alpha.NewNetworkLinkServiceClient(conn)
-	srClient := v1alpha.NewServiceRequestServiceClient(conn)
-	scenarioClient := v1alpha.NewScenarioServiceClient(conn)
+	env := &nbiTestEnv{
+		ctx:            ctx,
+		cancel:         cancel,
+		state:          state,
+		motion:         motion,
+		connectivity:   connectivity,
+		physKB:         physKB,
+		netKB:          netKB,
+		grpcServer:     grpcServer,
+		serveErr:       serveErr,
+		transceiverID:  trxID,
+		platformClient: v1alpha.NewPlatformServiceClient(conn),
+		nodeClient:     v1alpha.NewNetworkNodeServiceClient(conn),
+		linkClient:     v1alpha.NewNetworkLinkServiceClient(conn),
+		srClient:       v1alpha.NewServiceRequestServiceClient(conn),
+		scenarioClient: v1alpha.NewScenarioServiceClient(conn),
+	}
+
+	t.Cleanup(func() {
+		grpcServer.GracefulStop()
+		_ = conn.Close()
+		cancel()
+	})
+
+	return env
+}
+
+func TestEndToEndNBI(t *testing.T) {
+	env := newNbiTestEnv(t)
+	ctx := env.ctx
+	physKB := env.physKB
+	netKB := env.netKB
+	motion := env.motion
+	connectivity := env.connectivity
+	state := env.state
+	serveErr := env.serveErr
+
+	platformClient := env.platformClient
+	nodeClient := env.nodeClient
+	linkClient := env.linkClient
+	srClient := env.srClient
+	scenarioClient := env.scenarioClient
 
 	groundID := "platform-ground"
 	satID := "platform-sat"
@@ -102,10 +175,10 @@ func TestEndToEndNBI(t *testing.T) {
 	groundIface := "if-ground"
 	satIface := "if-sat"
 
-	if _, err := nodeClient.CreateNode(ctx, wirelessNodeProto(groundNode, groundID, groundIface, trxID)); err != nil {
+	if _, err := nodeClient.CreateNode(ctx, wirelessNodeProto(groundNode, groundID, groundIface, env.transceiverID)); err != nil {
 		t.Fatalf("CreateNode ground: %v", err)
 	}
-	if _, err := nodeClient.CreateNode(ctx, wirelessNodeProto(satNode, satID, satIface, trxID)); err != nil {
+	if _, err := nodeClient.CreateNode(ctx, wirelessNodeProto(satNode, satID, satIface, env.transceiverID)); err != nil {
 		t.Fatalf("CreateNode sat: %v", err)
 	}
 
@@ -178,6 +251,116 @@ func TestEndToEndNBI(t *testing.T) {
 	}
 	if got := len(snapshot.GetServiceRequests()); got != 1 {
 		t.Fatalf("service request count = %d, want 1", got)
+	}
+}
+
+func TestDeletePlatformWithActiveNodeE2E(t *testing.T) {
+	env := newNbiTestEnv(t)
+	ctx := env.ctx
+
+	platformID := "platform-in-use"
+	pos := model.Motion{X: (core.EarthRadiusKm + 2) * 1000, Y: 0, Z: 0}
+	env.motion.setPath(platformID, []model.Motion{pos})
+
+	if _, err := env.platformClient.CreatePlatform(ctx, platformProto(platformID, "GROUND_STATION", pos, common.PlatformDefinition_UNKNOWN_SOURCE)); err != nil {
+		t.Fatalf("CreatePlatform: %v", err)
+	}
+
+	nodeID := "node-on-platform"
+	ifaceID := "if-on-platform"
+	if _, err := env.nodeClient.CreateNode(ctx, wirelessNodeProto(nodeID, platformID, ifaceID, env.transceiverID)); err != nil {
+		t.Fatalf("CreateNode: %v", err)
+	}
+
+	_, err := env.platformClient.DeletePlatform(ctx, &v1alpha.DeletePlatformRequest{PlatformId: &platformID})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DeletePlatform code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "referenced by nodes") {
+		t.Fatalf("DeletePlatform error message = %v, want reference hint", err)
+	}
+
+	snapshot, snapErr := env.scenarioClient.GetScenario(ctx, &v1alpha.GetScenarioRequest{})
+	if snapErr != nil {
+		t.Fatalf("GetScenario: %v", snapErr)
+	}
+	if got := len(snapshot.GetPlatforms()); got != 1 {
+		t.Fatalf("platform count = %d, want 1 (platform should remain)", got)
+	}
+	if got := len(snapshot.GetNodes()); got != 1 {
+		t.Fatalf("node count = %d, want 1 (node should remain)", got)
+	}
+}
+
+func TestDeleteNodeWithLinkedInterfacesE2E(t *testing.T) {
+	env := newNbiTestEnv(t)
+	ctx := env.ctx
+
+	platformA := "platform-a"
+	platformB := "platform-b"
+	env.motion.setPath(platformA, []model.Motion{{X: (core.EarthRadiusKm + 3) * 1000}})
+	env.motion.setPath(platformB, []model.Motion{{X: (core.EarthRadiusKm + 4) * 1000}})
+
+	if _, err := env.platformClient.CreatePlatform(ctx, platformProto(platformA, "GROUND_STATION", model.Motion{X: (core.EarthRadiusKm + 3) * 1000}, common.PlatformDefinition_UNKNOWN_SOURCE)); err != nil {
+		t.Fatalf("CreatePlatform A: %v", err)
+	}
+	if _, err := env.platformClient.CreatePlatform(ctx, platformProto(platformB, "GROUND_STATION", model.Motion{X: (core.EarthRadiusKm + 4) * 1000}, common.PlatformDefinition_UNKNOWN_SOURCE)); err != nil {
+		t.Fatalf("CreatePlatform B: %v", err)
+	}
+
+	nodeA := "node-a"
+	nodeB := "node-b"
+	ifaceA := "if-a"
+	ifaceB := "if-b"
+
+	if _, err := env.nodeClient.CreateNode(ctx, wirelessNodeProto(nodeA, platformA, ifaceA, env.transceiverID)); err != nil {
+		t.Fatalf("CreateNode A: %v", err)
+	}
+	if _, err := env.nodeClient.CreateNode(ctx, wirelessNodeProto(nodeB, platformB, ifaceB, env.transceiverID)); err != nil {
+		t.Fatalf("CreateNode B: %v", err)
+	}
+
+	if _, err := env.linkClient.CreateLink(ctx, bidirectionalLinkProto(nodeA, ifaceA, nodeB, ifaceB)); err != nil {
+		t.Fatalf("CreateLink: %v", err)
+	}
+
+	_, err := env.nodeClient.DeleteNode(ctx, &v1alpha.DeleteNodeRequest{NodeId: &nodeA})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DeleteNode code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "node is referenced") {
+		t.Fatalf("DeleteNode error message = %v, want reference hint", err)
+	}
+
+	if got := env.state.PhysicalKB().GetNetworkNode(nodeA); got == nil {
+		t.Fatalf("node %q should still exist after failed delete", nodeA)
+	}
+	if ifaces := env.netKB.GetInterfacesForNode(nodeA); len(ifaces) != 1 {
+		t.Fatalf("interface count for %s = %d, want 1", nodeA, len(ifaces))
+	}
+	if links := env.netKB.GetLinksForInterface(combineInterfaceRef(nodeA, ifaceA)); len(links) != 1 {
+		t.Fatalf("link count for %s/%s = %d, want 1", nodeA, ifaceA, len(links))
+	}
+}
+
+func TestCreateServiceRequestWithUnknownNodeE2E(t *testing.T) {
+	env := newNbiTestEnv(t)
+	ctx := env.ctx
+
+	_, err := env.srClient.CreateServiceRequest(ctx, serviceRequestProto("sr-unknown-node", "missing-src", "missing-dst"))
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("CreateServiceRequest code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
+	}
+	if err == nil || (!strings.Contains(err.Error(), "unknown src node") && !strings.Contains(err.Error(), "unknown dst node")) {
+		t.Fatalf("CreateServiceRequest error message = %v, want unknown node hint", err)
+	}
+
+	snapshot, snapErr := env.scenarioClient.GetScenario(ctx, &v1alpha.GetScenarioRequest{})
+	if snapErr != nil {
+		t.Fatalf("GetScenario: %v", snapErr)
+	}
+	if got := len(snapshot.GetServiceRequests()); got != 0 {
+		t.Fatalf("service request count = %d, want 0 after failed create", got)
 	}
 }
 
