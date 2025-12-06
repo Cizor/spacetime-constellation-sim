@@ -260,9 +260,10 @@ func estimateLinkSNRdB(tx, rx *TransceiverModel, distanceKm float64) float64 {
 	// Received power in dBW.
 	pr := pt + gt + gr - fspl
 
-	// Simple, fixed noise floor assumption. This is intentionally
-	// coarse but sufficient for qualitative classification.
-	noiseFloor := -120.0 // dBW
+	// Simple, fixed noise floor assumption extended by noise figure.
+	// This keeps the estimator conservative while respecting TLE catalog
+	// metadata that was previously dropped.
+	noiseFloor := -120.0 + averageNoiseFigure(tx, rx)
 
 	return pr - noiseFloor
 }
@@ -295,4 +296,22 @@ func classifyLinkBySNR(link *NetworkLink, snr float64) {
 			link.MaxDataRateMbps = 1000
 		}
 	}
+}
+
+func averageNoiseFigure(tx, rx *TransceiverModel) float64 {
+	sum := 0.0
+	count := 0
+	for _, model := range []*TransceiverModel{tx, rx} {
+		if model == nil {
+			continue
+		}
+		if nf := model.SystemNoiseFigureDB; nf != 0 {
+			sum += nf
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
 }
