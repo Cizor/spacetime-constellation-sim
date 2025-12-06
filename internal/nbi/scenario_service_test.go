@@ -10,6 +10,7 @@ import (
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	core "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -118,15 +119,16 @@ func newScenarioServicesForTest() (*ScenarioService, *PlatformService, *NetworkN
 	state := sim.NewScenarioState(
 		kb.NewKnowledgeBase(),
 		core.NewKnowledgeBase(),
+		logging.Noop(),
 		sim.WithMotionModel(motion),
 		sim.WithConnectivityService(connectivity),
 	)
 
-	return NewScenarioService(state, nil),
-		NewPlatformService(state, motion, nil),
-		NewNetworkNodeService(state, nil),
-		NewNetworkLinkService(state, nil),
-		NewServiceRequestService(state, nil),
+	return NewScenarioService(state, logging.Noop()),
+		NewPlatformService(state, motion, logging.Noop()),
+		NewNetworkNodeService(state, logging.Noop()),
+		NewNetworkLinkService(state, logging.Noop()),
+		NewServiceRequestService(state, logging.Noop()),
 		state,
 		motion,
 		connectivity

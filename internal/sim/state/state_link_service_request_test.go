@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -21,7 +22,7 @@ func containsID(ids []string, want string) bool {
 func TestScenarioStateLinkCRUD(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	if err := net.AddInterface(&network.NetworkInterface{
 		ID:            "ifA",
@@ -94,7 +95,7 @@ func TestScenarioStateLinkCRUD(t *testing.T) {
 func TestScenarioStateUpdateLink(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	if err := net.AddInterface(&network.NetworkInterface{
 		ID:            "ifA",
@@ -155,7 +156,7 @@ func TestScenarioStateUpdateLink(t *testing.T) {
 func TestScenarioStateCreateLinksBatch(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	if err := net.AddInterface(&network.NetworkInterface{
 		ID:            "ifA",
@@ -212,7 +213,7 @@ func TestScenarioStateCreateLinksBatch(t *testing.T) {
 func TestScenarioStateCreateLinksRollback(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	if err := net.AddInterface(&network.NetworkInterface{
 		ID:            "ifA",
@@ -265,7 +266,7 @@ func TestScenarioStateCreateLinksRollback(t *testing.T) {
 func TestScenarioStateServiceRequestCRUD(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	sr := &model.ServiceRequest{
 		ID:        "sr-1",

@@ -3,11 +3,13 @@ package nbi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	common "aalyria.com/spacetime/api/common"
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -15,15 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
-
-// Logger is a minimal interface satisfied by zap.SugaredLogger and similar
-// structured loggers.
-type Logger interface {
-	Debugw(msg string, keysAndValues ...interface{})
-	Infow(msg string, keysAndValues ...interface{})
-	Warnw(msg string, keysAndValues ...interface{})
-	Errorw(msg string, keysAndValues ...interface{})
-}
 
 // MotionModel describes the subset of motion functionality PlatformService needs.
 type MotionModel interface {
@@ -38,12 +31,15 @@ type PlatformService struct {
 
 	state  *sim.ScenarioState
 	motion MotionModel
-	log    Logger
+	log    logging.Logger
 }
 
 // NewPlatformService wires a PlatformService to the shared ScenarioState and
 // optional logger.
-func NewPlatformService(state *sim.ScenarioState, motion MotionModel, log Logger) *PlatformService {
+func NewPlatformService(state *sim.ScenarioState, motion MotionModel, log logging.Logger) *PlatformService {
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &PlatformService{
 		state:  state,
 		motion: motion,
@@ -55,10 +51,20 @@ func (s *PlatformService) CreatePlatform(
 	ctx context.Context,
 	in *common.PlatformDefinition,
 ) (*common.PlatformDefinition, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "platform"),
+		logging.String("operation", "create"),
+	)
+
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
 	if err := ValidatePlatformProto(in); err != nil {
+		reqLog.Debug(ctx, "CreatePlatform validation failed",
+			logging.String("reason", err.Error()),
+			logging.Any("name", in.GetName()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -78,27 +84,33 @@ func (s *PlatformService) CreatePlatform(
 	}
 
 	if err := s.state.CreatePlatform(dom); err != nil {
+		reqLog.Warn(ctx, "CreatePlatform failed",
+			logging.String("entity_id", dom.ID),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
 	if s.motion != nil {
 		if err := s.motion.AddPlatform(dom); err != nil {
-			if s.log != nil {
-				s.log.Errorw("failed to register platform with motion model",
-					"platform_id", dom.ID,
-					"err", err,
-				)
-			}
+			reqLog.Error(ctx, "failed to register platform with motion model",
+				logging.String("entity_id", dom.ID),
+				logging.String("error", err.Error()),
+			)
 			// Try to roll back state to keep it consistent with motion model.
-			if delErr := s.state.DeletePlatform(dom.ID); delErr != nil && s.log != nil {
-				s.log.Warnw("failed to roll back platform after motion model error",
-					"platform_id", dom.ID,
-					"err", delErr,
+			if delErr := s.state.DeletePlatform(dom.ID); delErr != nil {
+				reqLog.Warn(ctx, "failed to roll back platform after motion model error",
+					logging.String("entity_id", dom.ID),
+					logging.String("error", delErr.Error()),
 				)
 			}
 			return nil, status.Error(codes.Internal, "failed to register platform in motion model")
 		}
 	}
+
+	reqLog.Info(ctx, "platform created",
+		logging.String("entity_id", dom.ID),
+	)
 
 	return types.PlatformToProto(dom), nil
 }
@@ -144,6 +156,11 @@ func (s *PlatformService) UpdatePlatform(
 	ctx context.Context,
 	req *v1alpha.UpdatePlatformRequest,
 ) (*common.PlatformDefinition, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "platform"),
+		logging.String("operation", "update"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -152,6 +169,9 @@ func (s *PlatformService) UpdatePlatform(
 	}
 
 	if err := ValidatePlatformProto(req.GetPlatform()); err != nil {
+		reqLog.Debug(ctx, "UpdatePlatform validation failed",
+			logging.String("reason", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -167,12 +187,20 @@ func (s *PlatformService) UpdatePlatform(
 	}
 
 	if err := s.state.UpdatePlatform(dom); err != nil {
+		reqLog.Warn(ctx, "UpdatePlatform failed",
+			logging.String("entity_id", dom.ID),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
 	// Note: we *could* update the motion model here if motion-related
-	// parameters change (e.g. TLE, motion source), but that’s out of scope
+	// parameters change (e.g. TLE, motion source), but that's out of scope
 	// for this chunk. For now we assume motion-related fields are stable.
+
+	reqLog.Info(ctx, "platform updated",
+		logging.String("entity_id", dom.ID),
+	)
 
 	return types.PlatformToProto(dom), nil
 }
@@ -181,6 +209,11 @@ func (s *PlatformService) DeletePlatform(
 	ctx context.Context,
 	req *v1alpha.DeletePlatformRequest,
 ) (*emptypb.Empty, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "platform"),
+		logging.String("operation", "delete"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -192,20 +225,30 @@ func (s *PlatformService) DeletePlatform(
 	}
 
 	if err := s.state.DeletePlatform(req.GetPlatformId()); err != nil {
+		level := reqLog.Warn
+		if errors.Is(err, sim.ErrPlatformInUse) {
+			level = reqLog.Info
+		}
+		level(ctx, "DeletePlatform failed",
+			logging.String("entity_id", req.GetPlatformId()),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
 	if s.motion != nil {
 		if err := s.motion.RemovePlatform(req.GetPlatformId()); err != nil {
-			if s.log != nil {
-				s.log.Errorw("failed to unregister platform from motion model",
-					"platform_id", req.GetPlatformId(),
-					"err", err,
-				)
-			}
+			reqLog.Error(ctx, "failed to unregister platform from motion model",
+				logging.String("entity_id", req.GetPlatformId()),
+				logging.String("error", err.Error()),
+			)
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
+
+	reqLog.Info(ctx, "platform deleted",
+		logging.String("entity_id", req.GetPlatformId()),
+	)
 
 	return &emptypb.Empty{}, nil
 }

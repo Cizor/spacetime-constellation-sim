@@ -2,9 +2,11 @@
 package state
 
 import (
+	"context"
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -28,7 +30,7 @@ func (c *resettableConnectivity) Reset() {
 func TestScenarioStateSnapshot(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	netKB := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, netKB)
+	s := NewScenarioState(phys, netKB, logging.Noop())
 
 	// Platforms + nodes
 	if err := s.CreatePlatform(&model.PlatformDefinition{
@@ -115,7 +117,7 @@ func TestScenarioStateClearScenario(t *testing.T) {
 	netKB := network.NewKnowledgeBase()
 	motion := &resettableMotion{}
 	connectivity := &resettableConnectivity{}
-	s := NewScenarioState(phys, netKB, WithMotionModel(motion), WithConnectivityService(connectivity))
+	s := NewScenarioState(phys, netKB, logging.Noop(), WithMotionModel(motion), WithConnectivityService(connectivity))
 
 	// Populate a minimal scenario.
 	if err := s.CreatePlatform(&model.PlatformDefinition{
@@ -166,7 +168,7 @@ func TestScenarioStateClearScenario(t *testing.T) {
 		t.Fatalf("precondition: expected non-empty service requests")
 	}
 
-	if err := s.ClearScenario(); err != nil {
+	if err := s.ClearScenario(context.Background()); err != nil {
 		t.Fatalf("ClearScenario error: %v", err)
 	}
 
