@@ -38,10 +38,6 @@ func NewNetworkLinkService(state *sim.ScenarioState, log logging.Logger) *Networ
 }
 
 // CreateLink stores a new bidirectional link.
-//
-// NBI surface uses BidirectionalLink as the primary link abstraction.
-// Internally we represent this as two directional core.NetworkLink objects
-// (A->B and B->A) where possible.
 func (s *NetworkLinkService) CreateLink(
 	ctx context.Context,
 	in *resources.BidirectionalLink,
