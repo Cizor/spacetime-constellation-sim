@@ -59,8 +59,8 @@ func (s *PlatformService) CreatePlatform(
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return nil, status.Error(codes.InvalidArgument, "platform definition is required")
+	if err := ValidatePlatformProto(in); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	dom, err := types.PlatformFromProto(in)
@@ -76,16 +76,6 @@ func (s *PlatformService) CreatePlatform(
 	// Default name to ID if absent.
 	if dom.Name == "" {
 		dom.Name = dom.ID
-	}
-
-	// Require a type – detailed validation is deferred to later chunks.
-	if dom.Type == "" {
-		return nil, status.Error(codes.InvalidArgument, "platform type is required")
-	}
-
-	// Orbital platforms need a valid motion source (e.g. TLE-backed propagation).
-	if dom.Type == "SATELLITE" && dom.MotionSource == model.MotionSourceUnknown {
-		return nil, status.Error(codes.InvalidArgument, "motion source is required for orbital platforms")
 	}
 
 	if err := s.state.CreatePlatform(dom); err != nil {
@@ -168,19 +158,16 @@ func (s *PlatformService) UpdatePlatform(
 		return nil, status.Error(codes.InvalidArgument, "platform is required")
 	}
 
+	if err := ValidatePlatformProto(req.GetPlatform()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	dom, err := types.PlatformFromProto(req.GetPlatform())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	// You must know which platform to update.
-	if dom.ID == "" {
-		return nil, status.Error(codes.InvalidArgument, "platform ID is required")
-	}
-	if dom.Type == "" {
-		return nil, status.Error(codes.InvalidArgument, "platform type is required")
-	}
-
 	// Ensure it exists so we can map NotFound cleanly.
 	if _, err := s.state.GetPlatform(dom.ID); err != nil {
 		if errors.Is(err, sim.ErrPlatformNotFound) {
