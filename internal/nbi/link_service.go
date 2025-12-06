@@ -154,55 +154,57 @@ func (s *NetworkLinkService) validateLinks(links ...*core.NetworkLink) error {
 		return fmt.Errorf("%w: no links provided", ErrInvalidLink)
 	}
 
-	phys := s.state.PhysicalKB()
-	net := s.state.NetworkKB()
+	return s.state.WithReadLock(func() error {
+		phys := s.state.PhysicalKB()
+		net := s.state.NetworkKB()
 
-	for _, link := range links {
-		if link == nil {
-			return fmt.Errorf("%w: link is nil", ErrInvalidLink)
-		}
-		if link.InterfaceA == "" || link.InterfaceB == "" {
-			return fmt.Errorf("%w: link endpoints are required", ErrInvalidLink)
+		for _, link := range links {
+			if link == nil {
+				return fmt.Errorf("%w: link is nil", ErrInvalidLink)
+			}
+			if link.InterfaceA == "" || link.InterfaceB == "" {
+				return fmt.Errorf("%w: link endpoints are required", ErrInvalidLink)
+			}
+
+			ifA := net.GetNetworkInterface(link.InterfaceA)
+			if ifA == nil {
+				return fmt.Errorf("%w: %q", ErrInvalidLink, link.InterfaceA)
+			}
+			ifB := net.GetNetworkInterface(link.InterfaceB)
+			if ifB == nil {
+				return fmt.Errorf("%w: %q", ErrInvalidLink, link.InterfaceB)
+			}
+
+			// Ensure referenced parent nodes exist (if set).
+			if ifA.ParentNodeID != "" && phys.GetNetworkNode(ifA.ParentNodeID) == nil {
+				return fmt.Errorf("%w: %q", ErrInvalidLink, ifA.ParentNodeID)
+			}
+			if ifB.ParentNodeID != "" && phys.GetNetworkNode(ifB.ParentNodeID) == nil {
+				return fmt.Errorf("%w: %q", ErrInvalidLink, ifB.ParentNodeID)
+			}
+
+			wired := ifA.Medium == core.MediumWired && ifB.Medium == core.MediumWired
+			wireless := ifA.Medium == core.MediumWireless && ifB.Medium == core.MediumWireless
+
+			switch {
+			case wired:
+				// Terrestrial / static fiber: always available.
+				link.Medium = core.MediumWired
+				link.IsStatic = true
+				link.IsUp = true
+			case wireless:
+				// Dynamic wireless link: leave IsUp/IsStatic for connectivity engine.
+				link.Medium = core.MediumWireless
+			default:
+				return fmt.Errorf(
+					"%w: link endpoints must both be wired or both wireless: %q (%s) <-> %q (%s)",
+					ErrInvalidLink, link.InterfaceA, ifA.Medium, link.InterfaceB, ifB.Medium,
+				)
+			}
 		}
 
-		ifA := net.GetNetworkInterface(link.InterfaceA)
-		if ifA == nil {
-			return fmt.Errorf("%w: %q", ErrInvalidLink, link.InterfaceA)
-		}
-		ifB := net.GetNetworkInterface(link.InterfaceB)
-		if ifB == nil {
-			return fmt.Errorf("%w: %q", ErrInvalidLink, link.InterfaceB)
-		}
-
-		// Ensure referenced parent nodes exist (if set).
-		if ifA.ParentNodeID != "" && phys.GetNetworkNode(ifA.ParentNodeID) == nil {
-			return fmt.Errorf("%w: %q", ErrInvalidLink, ifA.ParentNodeID)
-		}
-		if ifB.ParentNodeID != "" && phys.GetNetworkNode(ifB.ParentNodeID) == nil {
-			return fmt.Errorf("%w: %q", ErrInvalidLink, ifB.ParentNodeID)
-		}
-
-		wired := ifA.Medium == core.MediumWired && ifB.Medium == core.MediumWired
-		wireless := ifA.Medium == core.MediumWireless && ifB.Medium == core.MediumWireless
-
-		switch {
-		case wired:
-			// Terrestrial / static fiber: always available.
-			link.Medium = core.MediumWired
-			link.IsStatic = true
-			link.IsUp = true
-		case wireless:
-			// Dynamic wireless link: leave IsUp/IsStatic for connectivity engine.
-			link.Medium = core.MediumWireless
-		default:
-			return fmt.Errorf(
-				"%w: link endpoints must both be wired or both wireless: %q (%s) <-> %q (%s)",
-				ErrInvalidLink, link.InterfaceA, ifA.Medium, link.InterfaceB, ifB.Medium,
-			)
-		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
 // findPartnerLink returns the opposite directional link if present.

@@ -50,6 +50,8 @@ var (
 // ScenarioState coordinates the simulator's major knowledge bases and
 // holds transient NBI state like ServiceRequests.
 type ScenarioState struct {
+	// mu is the coarse scenario-level lock. Take this before touching either KB
+	// to maintain the global lock ordering of ScenarioState -> KB locks.
 	mu sync.RWMutex
 
 	// physKB is the Scope-1 knowledge base for platforms and nodes.
@@ -136,6 +138,18 @@ func (s *ScenarioState) PhysicalKB() *kb.KnowledgeBase {
 // NetworkKB exposes the scope-2 knowledge base for interfaces/links.
 func (s *ScenarioState) NetworkKB() *network.KnowledgeBase {
 	return s.netKB
+}
+
+// WithReadLock executes fn while holding the ScenarioState read lock.
+// Callers must not invoke other ScenarioState methods that also take the lock
+// from inside fn to avoid self-deadlock.
+func (s *ScenarioState) WithReadLock(fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return fn()
 }
 
 // Snapshot returns a coherent view of the current scenario state.
