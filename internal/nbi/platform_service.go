@@ -205,10 +205,14 @@ func (s *PlatformService) DeletePlatform(
 	}
 
 	if err := s.state.DeletePlatform(req.GetPlatformId()); err != nil {
-		if errors.Is(err, sim.ErrPlatformNotFound) {
+		switch {
+		case errors.Is(err, sim.ErrPlatformNotFound):
 			return nil, status.Error(codes.NotFound, err.Error())
+		case errors.Is(err, sim.ErrPlatformInUse):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		default:
+			return nil, status.Error(codes.Internal, err.Error())
 		}
-		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	if s.motion != nil {
