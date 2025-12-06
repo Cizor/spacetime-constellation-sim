@@ -203,6 +203,38 @@ func TestPlatformNotFoundErrors(t *testing.T) {
 	}
 }
 
+func TestDeletePlatformFailsWhenNodesPresent(t *testing.T) {
+	state := newScenarioStateForTest()
+	svc := NewPlatformService(state, &fakeMotionModel{}, nil)
+	ctx := context.Background()
+
+	platform := &model.PlatformDefinition{
+		ID:           "plat-in-use",
+		Name:         "plat-in-use",
+		Type:         "SATELLITE",
+		MotionSource: model.MotionSourceSpacetrack,
+	}
+	if _, err := svc.CreatePlatform(ctx, platformProto(t, platform)); err != nil {
+		t.Fatalf("CreatePlatform error: %v", err)
+	}
+
+	nodeID := "node-uses-platform"
+	if err := state.CreateNode(&model.NetworkNode{ID: nodeID, PlatformID: platform.ID}, []*core.NetworkInterface{
+		{ID: nodeID + "/if0", ParentNodeID: nodeID, Medium: core.MediumWired},
+	}); err != nil {
+		t.Fatalf("CreateNode error: %v", err)
+	}
+
+	_, err := svc.DeletePlatform(ctx, &v1alpha.DeletePlatformRequest{PlatformId: &platform.ID})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("DeletePlatform code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+	}
+
+	if got, err := state.GetPlatform(platform.ID); err != nil || got == nil {
+		t.Fatalf("platform should remain after failed delete, got (%+v, %v)", got, err)
+	}
+}
+
 // --- Motion-model specific behaviours ---
 
 func TestCreatePlatformRegistersMotionModel(t *testing.T) {
