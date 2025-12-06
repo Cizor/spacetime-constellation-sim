@@ -4,6 +4,7 @@ package nbi
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
@@ -40,33 +41,27 @@ func (s *NetworkNodeService) CreateNode(
 		return nil, err
 	}
 	if err := ValidateNodeProto(in); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	node, interfaces, err := types.NodeWithInterfacesFromProto(in)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 
 	// Derive a single platform_id from the interfaces, if present.
 	if platformID, err := platformIDFromInterfaces(in); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	} else if platformID != "" {
 		node.PlatformID = platformID
 	}
 
 	if err := s.state.CreateNode(node, interfaces); err != nil {
-		switch {
-		case errors.Is(err, sim.ErrNodeExists):
-			return nil, status.Error(codes.AlreadyExists, err.Error())
-		case errors.Is(err, sim.ErrPlatformNotFound), errors.Is(err, sim.ErrTransceiverNotFound):
-			// Treat bad references in the payload as InvalidArgument at the NBI.
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		case errors.Is(err, sim.ErrInterfaceInvalid), errors.Is(err, sim.ErrNodeInvalid):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		default:
-			return nil, status.Error(codes.Internal, err.Error())
+		if errors.Is(err, sim.ErrPlatformNotFound) {
+			// Missing references during creation are treated as invalid input.
+			return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 		}
+		return nil, ToStatusError(err)
 	}
 
 	return types.NodeToProtoWithInterfaces(node, interfaces), nil
@@ -86,10 +81,7 @@ func (s *NetworkNodeService) GetNode(
 
 	node, ifaces, err := s.state.GetNode(req.GetNodeId())
 	if err != nil {
-		if errors.Is(err, sim.ErrNodeNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	return types.NodeToProtoWithInterfaces(node, ifaces), nil
@@ -125,32 +117,26 @@ func (s *NetworkNodeService) UpdateNode(
 	}
 
 	if err := ValidateNodeProto(req.GetNode()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	node, interfaces, err := types.NodeWithInterfacesFromProto(req.GetNode())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 
 	// Re-derive platform_id from interfaces on update.
 	if platformID, err := platformIDFromInterfaces(req.GetNode()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	} else if platformID != "" {
 		node.PlatformID = platformID
 	}
 
 	if err := s.state.UpdateNode(node, interfaces); err != nil {
-		switch {
-		case errors.Is(err, sim.ErrNodeNotFound):
-			return nil, status.Error(codes.NotFound, err.Error())
-		case errors.Is(err, sim.ErrPlatformNotFound), errors.Is(err, sim.ErrTransceiverNotFound):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		case errors.Is(err, sim.ErrInterfaceInvalid), errors.Is(err, sim.ErrNodeInvalid):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		default:
-			return nil, status.Error(codes.Internal, err.Error())
+		if errors.Is(err, sim.ErrPlatformNotFound) {
+			return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 		}
+		return nil, ToStatusError(err)
 	}
 
 	return types.NodeToProtoWithInterfaces(node, interfaces), nil
@@ -170,15 +156,7 @@ func (s *NetworkNodeService) DeleteNode(
 	}
 
 	if err := s.state.DeleteNode(req.GetNodeId()); err != nil {
-		switch {
-		case errors.Is(err, sim.ErrNodeNotFound):
-			return nil, status.Error(codes.NotFound, err.Error())
-		case errors.Is(err, sim.ErrNodeInUse):
-			// Node is still referenced by links or service requests.
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
-		default:
-			return nil, status.Error(codes.Internal, err.Error())
-		}
+		return nil, ToStatusError(err)
 	}
 
 	return &emptypb.Empty{}, nil

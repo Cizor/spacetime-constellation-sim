@@ -3,7 +3,6 @@ package nbi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -60,12 +59,12 @@ func (s *PlatformService) CreatePlatform(
 		return nil, err
 	}
 	if err := ValidatePlatformProto(in); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	dom, err := types.PlatformFromProto(in)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 
 	// Generate an ID if missing.
@@ -79,10 +78,7 @@ func (s *PlatformService) CreatePlatform(
 	}
 
 	if err := s.state.CreatePlatform(dom); err != nil {
-		if errors.Is(err, sim.ErrPlatformExists) {
-			return nil, status.Error(codes.AlreadyExists, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	if s.motion != nil {
@@ -123,10 +119,7 @@ func (s *PlatformService) GetPlatform(
 
 	pd, err := s.state.GetPlatform(req.GetPlatformId())
 	if err != nil {
-		if errors.Is(err, sim.ErrPlatformNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	return types.PlatformToProto(pd), nil
@@ -159,28 +152,22 @@ func (s *PlatformService) UpdatePlatform(
 	}
 
 	if err := ValidatePlatformProto(req.GetPlatform()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	dom, err := types.PlatformFromProto(req.GetPlatform())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 
 	// You must know which platform to update.
 	// Ensure it exists so we can map NotFound cleanly.
 	if _, err := s.state.GetPlatform(dom.ID); err != nil {
-		if errors.Is(err, sim.ErrPlatformNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	if err := s.state.UpdatePlatform(dom); err != nil {
-		if errors.Is(err, sim.ErrPlatformNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	// Note: we *could* update the motion model here if motion-related
@@ -205,14 +192,7 @@ func (s *PlatformService) DeletePlatform(
 	}
 
 	if err := s.state.DeletePlatform(req.GetPlatformId()); err != nil {
-		switch {
-		case errors.Is(err, sim.ErrPlatformNotFound):
-			return nil, status.Error(codes.NotFound, err.Error())
-		case errors.Is(err, sim.ErrPlatformInUse):
-			return nil, status.Error(codes.FailedPrecondition, err.Error())
-		default:
-			return nil, status.Error(codes.Internal, err.Error())
-		}
+		return nil, ToStatusError(err)
 	}
 
 	if s.motion != nil {
