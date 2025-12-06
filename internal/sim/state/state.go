@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/kb"
@@ -150,6 +151,36 @@ func (s *ScenarioState) WithReadLock(fn func() error) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return fn()
+}
+
+// MotionUpdater captures the subset of MotionModel needed by the sim loop.
+type MotionUpdater interface {
+	UpdatePositions(simTime time.Time) error
+}
+
+// ConnectivityUpdater captures the subset of ConnectivityService needed by the sim loop.
+type ConnectivityUpdater interface {
+	UpdateConnectivity()
+}
+
+// RunSimTick executes a single simulation tick while holding the ScenarioState
+// read lock. Callers must keep the work inside fn read-only with respect to
+// ScenarioState; writes that touch underlying KBs must follow their own locking.
+func (s *ScenarioState) RunSimTick(simTime time.Time, motion MotionUpdater, connectivity ConnectivityUpdater, fn func()) error {
+	return s.WithReadLock(func() error {
+		if fn != nil {
+			fn()
+		}
+		if motion != nil {
+			if err := motion.UpdatePositions(simTime); err != nil {
+				return err
+			}
+		}
+		if connectivity != nil {
+			connectivity.UpdateConnectivity()
+		}
+		return nil
+	})
 }
 
 // Snapshot returns a coherent view of the current scenario state.

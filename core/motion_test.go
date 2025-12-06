@@ -7,6 +7,27 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
+type capturingUpdater struct {
+	positions map[string]model.Motion
+	calls     map[string]int
+}
+
+func (c *capturingUpdater) UpdatePlatformPosition(id string, pos model.Motion) error {
+	if c.positions == nil {
+		c.positions = make(map[string]model.Motion)
+	}
+	if c.calls == nil {
+		c.calls = make(map[string]int)
+	}
+	c.positions[id] = pos
+	c.calls[id]++
+	return nil
+}
+
+func (c *capturingUpdater) snapshot(id string) (model.Motion, int) {
+	return c.positions[id], c.calls[id]
+}
+
 func TestStaticMotionModel_NoChange(t *testing.T) {
 	m := &StaticMotionModel{}
 	p := &model.PlatformDefinition{
@@ -64,12 +85,13 @@ func TestMotionModel_AddUpdateAndRemove(t *testing.T) {
 		Coordinates:  model.Motion{X: 1, Y: 2, Z: 3},
 	}
 
+	updater := &capturingUpdater{}
 	mm := NewMotionModel(WithTLEFetcher(func(pd *model.PlatformDefinition) (string, string) {
 		if pd.ID == sat.ID {
 			return tle1, tle2
 		}
 		return "", ""
-	}))
+	}), WithPositionUpdater(updater))
 
 	if err := mm.AddPlatform(sat); err != nil {
 		t.Fatalf("AddPlatform sat: %v", err)
@@ -85,28 +107,37 @@ func TestMotionModel_AddUpdateAndRemove(t *testing.T) {
 	if err := mm.UpdatePositions(t1); err != nil {
 		t.Fatalf("UpdatePositions first tick: %v", err)
 	}
-	firstSat := sat.Coordinates
-	firstGround := ground.Coordinates
+	firstSat, satCalls := updater.snapshot(sat.ID)
+	firstGround, groundCalls := updater.snapshot(ground.ID)
 
 	t2 := t1.Add(5 * time.Minute)
 	if err := mm.UpdatePositions(t2); err != nil {
 		t.Fatalf("UpdatePositions second tick: %v", err)
 	}
-	if firstSat == sat.Coordinates {
-		t.Fatalf("expected satellite position to change after UpdatePositions, got %+v", sat.Coordinates)
+	secondSat, satCalls2 := updater.snapshot(sat.ID)
+	secondGround, groundCalls2 := updater.snapshot(ground.ID)
+	if satCalls2 <= satCalls {
+		t.Fatalf("expected satellite position to be updated at least once, got calls %d -> %d", satCalls, satCalls2)
 	}
-	if firstGround != ground.Coordinates {
-		t.Fatalf("static platform coordinates should stay constant, got %+v", ground.Coordinates)
+	if firstSat == secondSat {
+		t.Fatalf("expected satellite position to change after UpdatePositions, got %+v", secondSat)
+	}
+	if firstGround != secondGround {
+		t.Fatalf("static platform coordinates should stay constant, got %+v", secondGround)
+	}
+	if groundCalls2 <= groundCalls {
+		t.Fatalf("expected ground platform to be propagated again, got calls %d -> %d", groundCalls, groundCalls2)
 	}
 
 	if err := mm.RemovePlatform(ground.ID); err != nil {
 		t.Fatalf("RemovePlatform: %v", err)
 	}
-	ground.Coordinates = model.Motion{X: 9, Y: 9, Z: 9}
+
 	if err := mm.UpdatePositions(t2.Add(time.Minute)); err != nil {
 		t.Fatalf("UpdatePositions after removal: %v", err)
 	}
-	if ground.Coordinates != (model.Motion{X: 9, Y: 9, Z: 9}) {
-		t.Fatalf("removed platform should not be updated, got %+v", ground.Coordinates)
+	_, groundCalls3 := updater.snapshot(ground.ID)
+	if groundCalls3 != groundCalls2 {
+		t.Fatalf("removed platform should not be updated, got calls %d -> %d", groundCalls2, groundCalls3)
 	}
 }

@@ -209,7 +209,9 @@ func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
 		}
 	}
 
-	kb.links[link.ID] = link
+	// Store our own copy so callers cannot mutate KB-owned state without locks.
+	stored := *link
+	kb.links[link.ID] = &stored
 
 	// Adjacency: linksByInterface and interface.LinkIDs.
 	kb.attachLinkToInterface(link.ID, link.InterfaceA)
@@ -232,7 +234,9 @@ func (kb *KnowledgeBase) UpdateNetworkLink(link *NetworkLink) error {
 	if _, exists := kb.links[link.ID]; !exists {
 		return fmt.Errorf("%w: %q", ErrLinkNotFound, link.ID)
 	}
-	kb.links[link.ID] = link
+	// Overwrite in place to keep adjacency pointers valid.
+	stored := kb.links[link.ID]
+	*stored = *link
 	return nil
 }
 
