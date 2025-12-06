@@ -434,8 +434,8 @@ func LinkToProto(link *core.NetworkLink) *NetworkLink {
 }
 
 // BidirectionalLinkFromProto converts an Aalyria BidirectionalLink into
-// two directional core.NetworkLink objects (A->B and B->A). Missing
-// endpoints yield an error.
+// a single core.NetworkLink object representing the undirected pair.
+// Missing endpoints yield an error.
 func BidirectionalLinkFromProto(link *BidirectionalLink) ([]*core.NetworkLink, error) {
 	if link == nil {
 		return nil, errors.New("nil BidirectionalLink proto")
@@ -454,25 +454,14 @@ func BidirectionalLinkFromProto(link *BidirectionalLink) ([]*core.NetworkLink, e
 		link.GetB(),
 	)
 
-	abSrc := normalizeInterfaceRef(endA.nodeID, endA.txInterface())
-	abDst := normalizeInterfaceRef(endB.nodeID, endB.rxInterface())
-	baSrc := normalizeInterfaceRef(endB.nodeID, endB.txInterface())
-	baDst := normalizeInterfaceRef(endA.nodeID, endA.rxInterface())
+	aEndpoint := normalizeInterfaceRef(endA.nodeID, endA.txInterface())
+	bEndpoint := normalizeInterfaceRef(endB.nodeID, endB.txInterface())
 
-	links := make([]*core.NetworkLink, 0, 2)
-
-	if abSrc != "" && abDst != "" {
-		links = append(links, newDirectionalLink(abSrc, abDst))
-	}
-	if baSrc != "" && baDst != "" {
-		links = append(links, newDirectionalLink(baSrc, baDst))
-	}
-
-	if len(links) == 0 {
+	if aEndpoint == "" || bEndpoint == "" {
 		return nil, errors.New("bidirectional link endpoints are incomplete")
 	}
 
-	return links, nil
+	return []*core.NetworkLink{newBidirectionalLink(aEndpoint, bEndpoint)}, nil
 }
 
 // BidirectionalLinkToProto reconstructs an Aalyria BidirectionalLink
@@ -713,6 +702,18 @@ func newDirectionalLink(src, dst string) *core.NetworkLink {
 		InterfaceA: src,
 		InterfaceB: dst,
 		Medium:     core.MediumWireless, // TODO: refine if/when NBI exposes link medium
+		IsUp:       true,
+		IsStatic:   true,
+	}
+}
+
+// newBidirectionalLink constructs an undirected NetworkLink using a stable ID.
+func newBidirectionalLink(a, b string) *core.NetworkLink {
+	return &core.NetworkLink{
+		ID:         combineLinkID(a, b),
+		InterfaceA: a,
+		InterfaceB: b,
+		Medium:     core.MediumWireless,
 		IsUp:       true,
 		IsStatic:   true,
 	}
