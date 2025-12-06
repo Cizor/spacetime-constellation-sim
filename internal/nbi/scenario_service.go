@@ -63,10 +63,14 @@ func (s *ScenarioService) ClearScenario(
 		return nil, err
 	}
 
+	ctx, span := StartChildSpan(ctx, "scenario/clear", "scenario", "")
+	defer span.End()
+
 	if err := s.state.ClearScenario(ctx); err != nil {
 		reqLog.Error(ctx, "ClearScenario failed",
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -160,6 +164,14 @@ func (s *ScenarioService) LoadScenario(
 	if err != nil {
 		return nil, err
 	}
+
+	ctx, span := StartChildSpan(ctx, "scenario/load", "scenario", "")
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+		}
+		span.End()
+	}()
 
 	// Recommended semantics: always clear first before loading a scenario.
 	if err := s.state.ClearScenario(ctx); err != nil {

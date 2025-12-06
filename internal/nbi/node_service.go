@@ -69,6 +69,9 @@ func (s *NetworkNodeService) CreateNode(
 		node.PlatformID = platformID
 	}
 
+	ctx, span := StartChildSpan(ctx, "node/create", "node", node.ID)
+	defer span.End()
+
 	if err := s.state.CreateNode(node, interfaces); err != nil {
 		if errors.Is(err, sim.ErrPlatformNotFound) {
 			// Missing references during creation are treated as invalid input.
@@ -77,12 +80,14 @@ func (s *NetworkNodeService) CreateNode(
 				logging.String("platform_id", node.PlatformID),
 				logging.String("error", err.Error()),
 			)
+			span.RecordError(err)
 			return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 		}
 		reqLog.Warn(ctx, "CreateNode failed",
 			logging.String("entity_id", node.ID),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -166,6 +171,9 @@ func (s *NetworkNodeService) UpdateNode(
 		node.PlatformID = platformID
 	}
 
+	ctx, span := StartChildSpan(ctx, "node/update", "node", node.ID)
+	defer span.End()
+
 	if err := s.state.UpdateNode(node, interfaces); err != nil {
 		if errors.Is(err, sim.ErrPlatformNotFound) {
 			return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
@@ -174,6 +182,7 @@ func (s *NetworkNodeService) UpdateNode(
 			logging.String("entity_id", node.ID),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
@@ -202,6 +211,9 @@ func (s *NetworkNodeService) DeleteNode(
 		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
 
+	ctx, span := StartChildSpan(ctx, "node/delete", "node", req.GetNodeId())
+	defer span.End()
+
 	if err := s.state.DeleteNode(req.GetNodeId()); err != nil {
 		levelLog := reqLog.Warn
 		if errors.Is(err, sim.ErrNodeInUse) {
@@ -212,6 +224,7 @@ func (s *NetworkNodeService) DeleteNode(
 			logging.String("entity_id", req.GetNodeId()),
 			logging.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return nil, ToStatusError(err)
 	}
 
