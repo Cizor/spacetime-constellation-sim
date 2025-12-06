@@ -4,7 +4,6 @@ package nbi
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
@@ -40,16 +39,13 @@ func (s *NetworkNodeService) CreateNode(
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return nil, status.Error(codes.InvalidArgument, "node is required")
+	if err := ValidateNodeProto(in); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	node, interfaces, err := types.NodeWithInterfacesFromProto(in)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if node.ID == "" {
-		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
 
 	// Derive a single platform_id from the interfaces, if present.
@@ -128,12 +124,13 @@ func (s *NetworkNodeService) UpdateNode(
 		return nil, status.Error(codes.InvalidArgument, "node is required")
 	}
 
+	if err := ValidateNodeProto(req.GetNode()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	node, interfaces, err := types.NodeWithInterfacesFromProto(req.GetNode())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
-	if node.ID == "" {
-		return nil, status.Error(codes.InvalidArgument, "node_id is required")
 	}
 
 	// Re-derive platform_id from interfaces on update.
@@ -192,48 +189,4 @@ func (s *NetworkNodeService) ensureReady() error {
 		return status.Error(codes.FailedPrecondition, "scenario state is not configured")
 	}
 	return nil
-}
-
-// platformIDFromInterfaces extracts a single platform_id from the node's
-// interfaces. If multiple non-empty platform_ids are present and disagree, an
-// error is returned.
-func platformIDFromInterfaces(in *resources.NetworkNode) (string, error) {
-	var platformID string
-
-	setOrVerify := func(candidate string) error {
-		if candidate == "" {
-			return nil
-		}
-		if platformID == "" {
-			platformID = candidate
-			return nil
-		}
-		if platformID != candidate {
-			return fmt.Errorf("conflicting platform_id values: %q vs %q", platformID, candidate)
-		}
-		return nil
-	}
-
-	for _, iface := range in.GetNodeInterface() {
-		if iface == nil {
-			continue
-		}
-
-		switch medium := iface.GetInterfaceMedium().(type) {
-		case *resources.NetworkInterface_Wired:
-			if medium.Wired != nil {
-				if err := setOrVerify(medium.Wired.GetPlatformId()); err != nil {
-					return "", err
-				}
-			}
-		case *resources.NetworkInterface_Wireless:
-			if medium.Wireless != nil {
-				if err := setOrVerify(medium.Wireless.GetPlatform()); err != nil {
-					return "", err
-				}
-			}
-		}
-	}
-
-	return platformID, nil
 }

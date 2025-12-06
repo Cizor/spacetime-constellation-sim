@@ -42,8 +42,8 @@ func (s *ServiceRequestService) CreateServiceRequest(
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
-	if in == nil {
-		return nil, status.Error(codes.InvalidArgument, "service_request is required")
+	if err := ValidateServiceRequestProto(in); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	dom, err := types.ServiceRequestFromProto(in)
@@ -134,6 +134,10 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 		return nil, status.Error(codes.InvalidArgument, "service_request is required")
 	}
 
+	if err := ValidateServiceRequestProto(req.GetServiceRequest()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	dom, err := types.ServiceRequestFromProto(req.GetServiceRequest())
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -201,16 +205,13 @@ func (s *ServiceRequestService) ensureReady() error {
 	return nil
 }
 
-// validateServiceRequest performs basic sanity checks and referential integrity.
+// validateServiceRequest performs referential integrity checks and ensures an ID is set.
 func (s *ServiceRequestService) validateServiceRequest(sr *model.ServiceRequest) error {
 	if sr == nil {
 		return errors.New("service request is required")
 	}
 	if sr.ID == "" {
 		return errors.New("service_request_id is required")
-	}
-	if sr.SrcNodeID == "" || sr.DstNodeID == "" {
-		return errors.New("src_node_id and dst_node_id are required")
 	}
 
 	phys := s.state.PhysicalKB()
@@ -219,24 +220,6 @@ func (s *ServiceRequestService) validateServiceRequest(sr *model.ServiceRequest)
 	}
 	if phys.GetNetworkNode(sr.DstNodeID) == nil {
 		return fmt.Errorf("unknown dst node %q", sr.DstNodeID)
-	}
-
-	if len(sr.FlowRequirements) == 0 {
-		return errors.New("at least one flow requirement is required")
-	}
-	for i, fr := range sr.FlowRequirements {
-		if fr.RequestedBandwidth < 0 {
-			return fmt.Errorf("flow requirement %d requested bandwidth cannot be negative", i)
-		}
-		if fr.MinBandwidth < 0 {
-			return fmt.Errorf("flow requirement %d minimum bandwidth cannot be negative", i)
-		}
-		if fr.MaxLatency < 0 {
-			return fmt.Errorf("flow requirement %d latency cannot be negative", i)
-		}
-		if !fr.ValidFrom.IsZero() && !fr.ValidTo.IsZero() && fr.ValidTo.Before(fr.ValidFrom) {
-			return fmt.Errorf("flow requirement %d has invalid time interval (valid_to < valid_from)", i)
-		}
 	}
 
 	return nil
