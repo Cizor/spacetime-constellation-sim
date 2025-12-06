@@ -9,6 +9,7 @@ import (
 	common "aalyria.com/spacetime/api/common"
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -33,11 +34,14 @@ type ScenarioService struct {
 	v1alpha.UnimplementedScenarioServiceServer
 
 	state *sim.ScenarioState
-	log   Logger
+	log   logging.Logger
 }
 
 // NewScenarioService constructs a ScenarioService bound to ScenarioState.
-func NewScenarioService(state *sim.ScenarioState, log Logger) *ScenarioService {
+func NewScenarioService(state *sim.ScenarioState, log logging.Logger) *ScenarioService {
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &ScenarioService{
 		state: state,
 		log:   log,
@@ -50,16 +54,23 @@ func (s *ScenarioService) ClearScenario(
 	ctx context.Context,
 	_ *v1alpha.ClearScenarioRequest,
 ) (*emptypb.Empty, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "scenario"),
+		logging.String("operation", "clear"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
 
-	if err := s.state.ClearScenario(); err != nil {
-		if s.log != nil {
-			s.log.Errorw("ClearScenario failed", "err", err)
-		}
+	if err := s.state.ClearScenario(ctx); err != nil {
+		reqLog.Error(ctx, "ClearScenario failed",
+			logging.String("error", err.Error()),
+		)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+
+	reqLog.Info(ctx, "scenario cleared")
 
 	return &emptypb.Empty{}, nil
 }
@@ -136,6 +147,11 @@ func (s *ScenarioService) LoadScenario(
 	ctx context.Context,
 	req *v1alpha.LoadScenarioRequest,
 ) (_ *emptypb.Empty, retErr error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "scenario"),
+		logging.String("operation", "load"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -146,10 +162,10 @@ func (s *ScenarioService) LoadScenario(
 	}
 
 	// Recommended semantics: always clear first before loading a scenario.
-	if err := s.state.ClearScenario(); err != nil {
-		if s.log != nil {
-			s.log.Errorw("LoadScenario ClearScenario failed", "err", err)
-		}
+	if err := s.state.ClearScenario(ctx); err != nil {
+		reqLog.Error(ctx, "LoadScenario ClearScenario failed",
+			logging.String("error", err.Error()),
+		)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -157,8 +173,10 @@ func (s *ScenarioService) LoadScenario(
 	// state by clearing again.
 	defer func() {
 		if retErr != nil {
-			if err := s.state.ClearScenario(); err != nil && s.log != nil {
-				s.log.Warnw("failed to roll back scenario after load error", "err", err)
+			if err := s.state.ClearScenario(ctx); err != nil {
+				reqLog.Warn(ctx, "failed to roll back scenario after load error",
+					logging.String("error", err.Error()),
+				)
 			}
 		}
 	}()
@@ -174,6 +192,9 @@ func (s *ScenarioService) LoadScenario(
 	for _, pd := range sortProtoPlatforms(payload.GetPlatforms()) {
 		if _, err := platSvc.CreatePlatform(ctx, pd); err != nil {
 			retErr = err
+			reqLog.Debug(ctx, "LoadScenario platform load failed",
+				logging.String("error", err.Error()),
+			)
 			return nil, retErr
 		}
 	}
@@ -182,6 +203,9 @@ func (s *ScenarioService) LoadScenario(
 	for _, node := range sortProtoNodes(payload.GetNodes()) {
 		if _, err := nodeSvc.CreateNode(ctx, node); err != nil {
 			retErr = err
+			reqLog.Debug(ctx, "LoadScenario node load failed",
+				logging.String("error", err.Error()),
+			)
 			return nil, retErr
 		}
 	}
@@ -190,6 +214,9 @@ func (s *ScenarioService) LoadScenario(
 	for _, link := range sortLinks(payload.GetLinks()) {
 		if _, err := linkSvc.CreateLink(ctx, link); err != nil {
 			retErr = err
+			reqLog.Debug(ctx, "LoadScenario link load failed",
+				logging.String("error", err.Error()),
+			)
 			return nil, retErr
 		}
 	}
@@ -198,9 +225,19 @@ func (s *ScenarioService) LoadScenario(
 	for _, sr := range sortProtoServiceRequests(payload.GetServiceRequests()) {
 		if _, err := srSvc.CreateServiceRequest(ctx, sr); err != nil {
 			retErr = err
+			reqLog.Debug(ctx, "LoadScenario service request load failed",
+				logging.String("error", err.Error()),
+			)
 			return nil, retErr
 		}
 	}
+
+	reqLog.Info(ctx, "scenario loaded",
+		logging.Int("platforms", len(payload.GetPlatforms())),
+		logging.Int("nodes", len(payload.GetNodes())),
+		logging.Int("links", len(payload.GetLinks())),
+		logging.Int("service_requests", len(payload.GetServiceRequests())),
+	)
 
 	return &emptypb.Empty{}, nil
 }

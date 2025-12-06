@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
 func TestDeleteInterfaceFailsWhenLinksPresent(t *testing.T) {
-	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase())
+	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase(), logging.Noop())
 
 	nodeID := "node-iface"
 	ifaceID := nodeID + "/if0"
@@ -49,7 +50,7 @@ func TestDeleteInterfaceFailsWhenLinksPresent(t *testing.T) {
 }
 
 func TestDeleteInterfaceRemovesInterface(t *testing.T) {
-	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase())
+	s := NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase(), logging.Noop())
 
 	nodeID := "node-iface-remove"
 	ifaceID := nodeID + "/if0"
