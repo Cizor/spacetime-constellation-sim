@@ -3,7 +3,6 @@ package nbi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 
@@ -47,31 +46,22 @@ func (s *NetworkLinkService) CreateLink(
 		return nil, err
 	}
 	if err := ValidateLinkProto(in); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	links, err := types.BidirectionalLinkFromProto(in)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 	if err := s.validateLinks(links...); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	if err := s.state.CreateLinks(links...); err != nil {
-		switch {
-		case errors.Is(err, core.ErrInterfaceMiss):
-			// One or more endpoints did not exist in Scope-2 KB.
-			return nil, status.Error(codes.InvalidArgument, err.Error())
-		case errors.Is(err, core.ErrLinkExists):
-			// A link with the same ID already exists.
-			return nil, status.Error(codes.AlreadyExists, err.Error())
-		default:
-			if s.log != nil {
-				s.log.Errorw("CreateLink failed", "err", err)
-			}
-			return nil, status.Error(codes.Internal, err.Error())
+		if s.log != nil {
+			s.log.Errorw("CreateLink failed", "err", err)
 		}
+		return nil, ToStatusError(err)
 	}
 
 	return types.BidirectionalLinkToProto(links...), nil
@@ -94,10 +84,7 @@ func (s *NetworkLinkService) GetLink(
 
 	link, err := s.state.GetLink(req.GetLinkId())
 	if err != nil {
-		if errors.Is(err, sim.ErrLinkNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	partner := s.findPartnerLink(link)
@@ -139,10 +126,7 @@ func (s *NetworkLinkService) DeleteLink(
 	}
 
 	if err := s.state.DeleteLink(req.GetLinkId()); err != nil {
-		if errors.Is(err, sim.ErrLinkNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	return &emptypb.Empty{}, nil
@@ -167,7 +151,7 @@ func (s *NetworkLinkService) ensureReady() error {
 //   - Wireless links are left dynamic (MediumWireless).
 func (s *NetworkLinkService) validateLinks(links ...*core.NetworkLink) error {
 	if len(links) == 0 {
-		return errors.New("no links provided")
+		return fmt.Errorf("%w: no links provided", ErrInvalidLink)
 	}
 
 	phys := s.state.PhysicalKB()
@@ -175,27 +159,27 @@ func (s *NetworkLinkService) validateLinks(links ...*core.NetworkLink) error {
 
 	for _, link := range links {
 		if link == nil {
-			return errors.New("link is nil")
+			return fmt.Errorf("%w: link is nil", ErrInvalidLink)
 		}
 		if link.InterfaceA == "" || link.InterfaceB == "" {
-			return errors.New("link endpoints are required")
+			return fmt.Errorf("%w: link endpoints are required", ErrInvalidLink)
 		}
 
 		ifA := net.GetNetworkInterface(link.InterfaceA)
 		if ifA == nil {
-			return fmt.Errorf("%w: %q", sim.ErrInterfaceNotFound, link.InterfaceA)
+			return fmt.Errorf("%w: %q", ErrInvalidLink, link.InterfaceA)
 		}
 		ifB := net.GetNetworkInterface(link.InterfaceB)
 		if ifB == nil {
-			return fmt.Errorf("%w: %q", sim.ErrInterfaceNotFound, link.InterfaceB)
+			return fmt.Errorf("%w: %q", ErrInvalidLink, link.InterfaceB)
 		}
 
 		// Ensure referenced parent nodes exist (if set).
 		if ifA.ParentNodeID != "" && phys.GetNetworkNode(ifA.ParentNodeID) == nil {
-			return fmt.Errorf("%w: %q", sim.ErrNodeNotFound, ifA.ParentNodeID)
+			return fmt.Errorf("%w: %q", ErrInvalidLink, ifA.ParentNodeID)
 		}
 		if ifB.ParentNodeID != "" && phys.GetNetworkNode(ifB.ParentNodeID) == nil {
-			return fmt.Errorf("%w: %q", sim.ErrNodeNotFound, ifB.ParentNodeID)
+			return fmt.Errorf("%w: %q", ErrInvalidLink, ifB.ParentNodeID)
 		}
 
 		wired := ifA.Medium == core.MediumWired && ifB.Medium == core.MediumWired
@@ -212,8 +196,8 @@ func (s *NetworkLinkService) validateLinks(links ...*core.NetworkLink) error {
 			link.Medium = core.MediumWireless
 		default:
 			return fmt.Errorf(
-				"link endpoints must both be wired or both wireless: %q (%s) <-> %q (%s)",
-				link.InterfaceA, ifA.Medium, link.InterfaceB, ifB.Medium,
+				"%w: link endpoints must both be wired or both wireless: %q (%s) <-> %q (%s)",
+				ErrInvalidLink, link.InterfaceA, ifA.Medium, link.InterfaceB, ifB.Medium,
 			)
 		}
 	}
