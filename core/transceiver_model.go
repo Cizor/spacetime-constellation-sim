@@ -26,6 +26,12 @@ type TransceiverModel struct {
 	GainTxDBi  float64 `json:"GainTxDBi,omitempty"`
 	GainRxDBi  float64 `json:"GainRxDBi,omitempty"`
 
+	// SystemNoiseFigureDB declares the noise figure (dB) for this
+	// transceiver. This field was already supplied in configs but not
+	// represented here; it adjusts the noise-floor used by the SNR
+	// estimator so that gaps in requirements coverage can be tracked.
+	SystemNoiseFigureDB float64 `json:"SystemNoiseFigureDB,omitempty"`
+
 	// MaxBeams is metadata describing how many concurrent beams this
 	// transceiver can theoretically support.
 	//
