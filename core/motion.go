@@ -73,9 +73,10 @@ func (m *MotionModel) AddPlatform(pd *model.PlatformDefinition) error {
 		return errors.New("platform already registered in motion model: " + pd.ID)
 	}
 
-	prop := newPlatformPropagator(pd, m.tleFetcher)
+	copy := clonePlatform(pd)
+	prop := newPlatformPropagator(copy, m.tleFetcher)
 	m.entries[pd.ID] = motionEntry{
-		platform:   pd,
+		platform:   copy,
 		propagator: prop,
 	}
 	return nil
@@ -198,4 +199,12 @@ func newPlatformPropagator(p *model.PlatformDefinition, fetcher TLEFetcher) plat
 		return NewOrbitalModelFromTLE(tle1, tle2)
 	}
 	return &StaticMotionModel{}
+}
+
+func clonePlatform(pd *model.PlatformDefinition) *model.PlatformDefinition {
+	if pd == nil {
+		return nil
+	}
+	cp := *pd
+	return &cp
 }
