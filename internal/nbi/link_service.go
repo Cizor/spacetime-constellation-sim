@@ -9,6 +9,7 @@ import (
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	core "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"google.golang.org/grpc/codes"
@@ -22,11 +23,14 @@ type NetworkLinkService struct {
 	v1alpha.UnimplementedNetworkLinkServiceServer
 
 	state *sim.ScenarioState
-	log   Logger
+	log   logging.Logger
 }
 
 // NewNetworkLinkService constructs a NetworkLinkService bound to ScenarioState.
-func NewNetworkLinkService(state *sim.ScenarioState, log Logger) *NetworkLinkService {
+func NewNetworkLinkService(state *sim.ScenarioState, log logging.Logger) *NetworkLinkService {
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &NetworkLinkService{
 		state: state,
 		log:   log,
@@ -42,10 +46,18 @@ func (s *NetworkLinkService) CreateLink(
 	ctx context.Context,
 	in *resources.BidirectionalLink,
 ) (*resources.BidirectionalLink, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "link"),
+		logging.String("operation", "create"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
 	if err := ValidateLinkProto(in); err != nil {
+		reqLog.Debug(ctx, "CreateLink validation failed",
+			logging.String("reason", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -54,15 +66,22 @@ func (s *NetworkLinkService) CreateLink(
 		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 	if err := s.validateLinks(links...); err != nil {
+		reqLog.Debug(ctx, "CreateLink validation failed",
+			logging.String("reason", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
 	if err := s.state.CreateLinks(links...); err != nil {
-		if s.log != nil {
-			s.log.Errorw("CreateLink failed", "err", err)
-		}
+		reqLog.Warn(ctx, "CreateLink failed",
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "link created",
+		logging.String("entity_id", links[0].ID),
+	)
 
 	return types.BidirectionalLinkToProto(links...), nil
 }
@@ -118,6 +137,11 @@ func (s *NetworkLinkService) DeleteLink(
 	ctx context.Context,
 	req *v1alpha.DeleteLinkRequest,
 ) (*emptypb.Empty, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "link"),
+		logging.String("operation", "delete"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -126,8 +150,16 @@ func (s *NetworkLinkService) DeleteLink(
 	}
 
 	if err := s.state.DeleteLink(req.GetLinkId()); err != nil {
+		reqLog.Warn(ctx, "DeleteLink failed",
+			logging.String("entity_id", req.GetLinkId()),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "link deleted",
+		logging.String("entity_id", req.GetLinkId()),
+	)
 
 	return &emptypb.Empty{}, nil
 }
@@ -252,7 +284,14 @@ func groupBidirectionalLinks(links []*core.NetworkLink) []*resources.Bidirection
 
 	out := make([]*resources.BidirectionalLink, 0, len(pairs))
 	for _, k := range keys {
-		out = append(out, types.BidirectionalLinkToProto(pairs[k]...))
+		links := pairs[k]
+		sort.SliceStable(links, func(i, j int) bool {
+			if links[i] == nil || links[j] == nil {
+				return links[i] == nil
+			}
+			return links[i].ID < links[j].ID
+		})
+		out = append(out, types.BidirectionalLinkToProto(links...))
 	}
 	return out
 }

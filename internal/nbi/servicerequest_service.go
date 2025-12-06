@@ -8,6 +8,7 @@ import (
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -22,11 +23,14 @@ type ServiceRequestService struct {
 	v1alpha.UnimplementedServiceRequestServiceServer
 
 	state *sim.ScenarioState
-	log   Logger
+	log   logging.Logger
 }
 
 // NewServiceRequestService constructs a ServiceRequestService bound to ScenarioState.
-func NewServiceRequestService(state *sim.ScenarioState, log Logger) *ServiceRequestService {
+func NewServiceRequestService(state *sim.ScenarioState, log logging.Logger) *ServiceRequestService {
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &ServiceRequestService{
 		state: state,
 		log:   log,
@@ -38,10 +42,18 @@ func (s *ServiceRequestService) CreateServiceRequest(
 	ctx context.Context,
 	in *resources.ServiceRequest,
 ) (*resources.ServiceRequest, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "service_request"),
+		logging.String("operation", "create"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
 	if err := ValidateServiceRequestProto(in); err != nil {
+		reqLog.Debug(ctx, "CreateServiceRequest validation failed",
+			logging.String("reason", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -65,11 +77,18 @@ func (s *ServiceRequestService) CreateServiceRequest(
 	}
 
 	if err := s.state.CreateServiceRequest(dom); err != nil {
-		if s.log != nil {
-			s.log.Errorw("CreateServiceRequest failed", "err", err)
-		}
+		reqLog.Warn(ctx, "CreateServiceRequest failed",
+			logging.String("entity_id", dom.ID),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "service request created",
+		logging.String("entity_id", dom.ID),
+		logging.String("src_node_id", dom.SrcNodeID),
+		logging.String("dst_node_id", dom.DstNodeID),
+	)
 
 	return attachServiceRequestID(types.ServiceRequestToProto(dom), dom.ID), nil
 }
@@ -118,6 +137,11 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 	ctx context.Context,
 	req *v1alpha.UpdateServiceRequestRequest,
 ) (*resources.ServiceRequest, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "service_request"),
+		logging.String("operation", "update"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -126,6 +150,9 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 	}
 
 	if err := ValidateServiceRequestProto(req.GetServiceRequest()); err != nil {
+		reqLog.Debug(ctx, "UpdateServiceRequest validation failed",
+			logging.String("reason", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -154,8 +181,16 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 	}
 
 	if err := s.state.UpdateServiceRequest(dom); err != nil {
+		reqLog.Warn(ctx, "UpdateServiceRequest failed",
+			logging.String("entity_id", dom.ID),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "service request updated",
+		logging.String("entity_id", dom.ID),
+	)
 
 	return attachServiceRequestID(types.ServiceRequestToProto(dom), dom.ID), nil
 }
@@ -165,6 +200,11 @@ func (s *ServiceRequestService) DeleteServiceRequest(
 	ctx context.Context,
 	req *v1alpha.DeleteServiceRequestRequest,
 ) (*emptypb.Empty, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "service_request"),
+		logging.String("operation", "delete"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -173,8 +213,16 @@ func (s *ServiceRequestService) DeleteServiceRequest(
 	}
 
 	if err := s.state.DeleteServiceRequest(req.GetServiceRequestId()); err != nil {
+		reqLog.Warn(ctx, "DeleteServiceRequest failed",
+			logging.String("entity_id", req.GetServiceRequestId()),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "service request deleted",
+		logging.String("entity_id", req.GetServiceRequestId()),
+	)
 
 	return &emptypb.Empty{}, nil
 }

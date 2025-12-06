@@ -10,6 +10,7 @@ import (
 	common "aalyria.com/spacetime/api/common"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	core "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
@@ -29,7 +30,7 @@ func benchmarkPlatforms(b *testing.B, cfg perfConfig) {
 
 	for i := 0; i < b.N; i++ {
 		state := newScenarioState()
-		svc := nbi.NewPlatformService(state, nil, nil)
+		svc := nbi.NewPlatformService(state, nil, logging.Noop())
 
 		b.ResetTimer()
 		for j := 0; j < cfg.Platforms; j++ {
@@ -52,7 +53,7 @@ func benchmarkNodes(b *testing.B, cfg perfConfig) {
 
 	for i := 0; i < b.N; i++ {
 		state := newScenarioState()
-		svc := nbi.NewNetworkNodeService(state, nil)
+		svc := nbi.NewNetworkNodeService(state, logging.Noop())
 
 		b.ResetTimer()
 		for j := 0; j < cfg.Nodes; j++ {
@@ -71,8 +72,8 @@ func benchmarkLinks(b *testing.B, cfg perfConfig) {
 
 	for i := 0; i < b.N; i++ {
 		state := newScenarioState()
-		nodeSvc := nbi.NewNetworkNodeService(state, nil)
-		linkSvc := nbi.NewNetworkLinkService(state, nil)
+		nodeSvc := nbi.NewNetworkNodeService(state, logging.Noop())
+		linkSvc := nbi.NewNetworkLinkService(state, logging.Noop())
 
 		nodeIDs := make([]string, 0, max(cfg.Nodes, cfg.Links+1))
 		for j := 0; j < cap(nodeIDs); j++ {
@@ -104,8 +105,8 @@ func benchmarkServiceRequests(b *testing.B, cfg perfConfig) {
 
 	for i := 0; i < b.N; i++ {
 		state := newScenarioState()
-		nodeSvc := nbi.NewNetworkNodeService(state, nil)
-		srSvc := nbi.NewServiceRequestService(state, nil)
+		nodeSvc := nbi.NewNetworkNodeService(state, logging.Noop())
+		srSvc := nbi.NewServiceRequestService(state, logging.Noop())
 
 		nodeIDs := make([]string, 0, max(cfg.Nodes, cfg.ServiceRequests+1))
 		for j := 0; j < cap(nodeIDs); j++ {
@@ -129,7 +130,7 @@ func benchmarkServiceRequests(b *testing.B, cfg perfConfig) {
 }
 
 func newScenarioState() *sim.ScenarioState {
-	return sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase())
+	return sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase(), logging.Noop())
 }
 
 func nodeProto(nodeID string, interfaces int) *resources.NetworkNode {

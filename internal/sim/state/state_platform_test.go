@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -12,7 +13,7 @@ import (
 func TestScenarioStatePlatformCRUD(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	p := &model.PlatformDefinition{ID: "p1", Name: "one"}
 	if err := s.CreatePlatform(p); err != nil {
@@ -55,7 +56,7 @@ func TestScenarioStatePlatformCRUD(t *testing.T) {
 func TestDeletePlatformFailsWhenNodesPresent(t *testing.T) {
 	phys := kb.NewKnowledgeBase()
 	net := network.NewKnowledgeBase()
-	s := NewScenarioState(phys, net)
+	s := NewScenarioState(phys, net, logging.Noop())
 
 	platformID := "plat-in-use"
 	if err := s.CreatePlatform(&model.PlatformDefinition{ID: platformID, Name: platformID}); err != nil {

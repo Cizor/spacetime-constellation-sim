@@ -10,6 +10,7 @@ import (
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	core "github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -19,15 +20,15 @@ import (
 
 // newNodeServiceForTest creates a NetworkNodeService with in-memory KBs.
 func newNodeServiceForTest() (*NetworkNodeService, *sim.ScenarioState) {
-	state := sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase())
-	return NewNetworkNodeService(state, nil), state
+	state := sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase(), logging.Noop())
+	return NewNetworkNodeService(state, logging.Noop()), state
 }
 
 // newNodeServiceWithTransceivers creates a service with a minimal
 // transceiver-model registry populated so wireless interface validation
 // can pass/fail.
 func newNodeServiceWithTransceivers(trxIDs ...string) (*NetworkNodeService, *sim.ScenarioState) {
-	state := sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase())
+	state := sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase(), logging.Noop())
 	for _, id := range trxIDs {
 		if err := state.NetworkKB().AddTransceiverModel(&core.TransceiverModel{
 			ID:   id,
@@ -37,7 +38,7 @@ func newNodeServiceWithTransceivers(trxIDs ...string) (*NetworkNodeService, *sim
 			panic(err)
 		}
 	}
-	return NewNetworkNodeService(state, nil), state
+	return NewNetworkNodeService(state, logging.Noop()), state
 }
 
 func requirePlatform(t *testing.T, state *sim.ScenarioState, id string) {

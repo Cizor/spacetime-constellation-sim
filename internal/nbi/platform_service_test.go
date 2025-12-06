@@ -8,6 +8,7 @@ import (
 	common "aalyria.com/spacetime/api/common"
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
@@ -45,7 +46,7 @@ func (f *fakeMotionModel) RemovePlatform(platformID string) error {
 // newScenarioStateForTest constructs an in-memory ScenarioState backed by
 // in-memory Scope-1 and Scope-2 knowledge bases.
 func newScenarioStateForTest() *sim.ScenarioState {
-	return sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase())
+	return sim.NewScenarioState(kb.NewKnowledgeBase(), core.NewKnowledgeBase(), logging.Noop())
 }
 
 // platformProto builds a proto PlatformDefinition from a domain object using
@@ -64,7 +65,7 @@ func platformProto(t *testing.T, dom *model.PlatformDefinition) *common.Platform
 func TestPlatformServiceCRUDHappyPath(t *testing.T) {
 	state := newScenarioStateForTest()
 	motion := &fakeMotionModel{}
-	svc := NewPlatformService(state, motion, nil)
+	svc := NewPlatformService(state, motion, logging.Noop())
 
 	ctx := context.Background()
 	base := &model.PlatformDefinition{
@@ -142,7 +143,7 @@ func TestPlatformServiceCRUDHappyPath(t *testing.T) {
 // --- Validation and error cases ---
 
 func TestCreatePlatformValidationErrors(t *testing.T) {
-	svc := NewPlatformService(newScenarioStateForTest(), &fakeMotionModel{}, nil)
+	svc := NewPlatformService(newScenarioStateForTest(), &fakeMotionModel{}, logging.Noop())
 	ctx := context.Background()
 
 	missingType := platformProto(t, &model.PlatformDefinition{
@@ -177,7 +178,7 @@ func TestCreatePlatformValidationErrors(t *testing.T) {
 }
 
 func TestPlatformNotFoundErrors(t *testing.T) {
-	svc := NewPlatformService(newScenarioStateForTest(), &fakeMotionModel{}, nil)
+	svc := NewPlatformService(newScenarioStateForTest(), &fakeMotionModel{}, logging.Noop())
 	ctx := context.Background()
 
 	pid := "missing"
@@ -205,7 +206,7 @@ func TestPlatformNotFoundErrors(t *testing.T) {
 
 func TestDeletePlatformFailsWhenNodesPresent(t *testing.T) {
 	state := newScenarioStateForTest()
-	svc := NewPlatformService(state, &fakeMotionModel{}, nil)
+	svc := NewPlatformService(state, &fakeMotionModel{}, logging.Noop())
 	ctx := context.Background()
 
 	platform := &model.PlatformDefinition{
@@ -239,7 +240,7 @@ func TestDeletePlatformFailsWhenNodesPresent(t *testing.T) {
 
 func TestCreatePlatformRegistersMotionModel(t *testing.T) {
 	motion := &fakeMotionModel{}
-	svc := NewPlatformService(newScenarioStateForTest(), motion, nil)
+	svc := NewPlatformService(newScenarioStateForTest(), motion, logging.Noop())
 
 	name := "platform-1"
 	typ := "SATELLITE"
@@ -279,7 +280,7 @@ func TestCreatePlatformRegistersMotionModel(t *testing.T) {
 
 func TestCreatePlatformMotionModelErrorRollsBack(t *testing.T) {
 	motion := &fakeMotionModel{addErr: errors.New("motion failure")}
-	svc := NewPlatformService(newScenarioStateForTest(), motion, nil)
+	svc := NewPlatformService(newScenarioStateForTest(), motion, logging.Noop())
 
 	name := "platform-2"
 	typ := "SATELLITE"
@@ -312,7 +313,7 @@ func TestDeletePlatformUnregistersMotionModel(t *testing.T) {
 		t.Fatalf("seed platform error: %v", err)
 	}
 
-	svc := NewPlatformService(state, motion, nil)
+	svc := NewPlatformService(state, motion, logging.Noop())
 	pid := "platform-3"
 	if _, err := svc.DeletePlatform(context.Background(), &v1alpha.DeletePlatformRequest{
 		PlatformId: &pid,
@@ -339,7 +340,7 @@ func TestDeletePlatformMotionModelError(t *testing.T) {
 		t.Fatalf("seed platform error: %v", err)
 	}
 
-	svc := NewPlatformService(state, motion, nil)
+	svc := NewPlatformService(state, motion, logging.Noop())
 	pid := "platform-4"
 	_, err := svc.DeletePlatform(context.Background(), &v1alpha.DeletePlatformRequest{
 		PlatformId: &pid,

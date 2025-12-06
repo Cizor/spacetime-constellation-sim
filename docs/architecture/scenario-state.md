@@ -21,6 +21,6 @@ ScenarioState wraps a sync.RWMutex around the two KB handles and the service req
 Motion/position propagation and connectivity evaluation should treat ScenarioState as the authoritative view. Use read-only paths (Snapshot or KB getters accessed while holding the ScenarioState read lock) when sampling state inside the sim loop. NBI handlers must perform writes through ScenarioState's mutating methods so they go through the shared write lock and keep sim-time readers consistent.
 
 ## Integration points
-- Construction: NewScenarioState(physKB, netKB) receives existing Scope 1 and Scope 2 knowledge bases and wires them under the facade.
+- Construction: NewScenarioState(physKB, netKB, log) receives existing Scope 1 and Scope 2 knowledge bases and wires them under the facade.
 - NBI services (Scope 3): per-request handlers should depend on a shared ScenarioState instance rather than touching KBs directly. This ensures service request CRUD, platform/node/interface/link updates, and scenario clears go through one lock and remain consistent for concurrent readers.
 - Main server binaries: components such as cmd/nbi-server should instantiate the two KBs, wrap them in a ScenarioState, and pass that into both the simulation loop and the NBI service layer so they operate over the same synchronized view.

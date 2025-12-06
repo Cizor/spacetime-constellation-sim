@@ -8,6 +8,7 @@ import (
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi/types"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"google.golang.org/grpc/codes"
@@ -21,11 +22,14 @@ type NetworkNodeService struct {
 	v1alpha.UnimplementedNetworkNodeServiceServer
 
 	state *sim.ScenarioState
-	log   Logger
+	log   logging.Logger
 }
 
 // NewNetworkNodeService constructs a NetworkNodeService bound to ScenarioState.
-func NewNetworkNodeService(state *sim.ScenarioState, log Logger) *NetworkNodeService {
+func NewNetworkNodeService(state *sim.ScenarioState, log logging.Logger) *NetworkNodeService {
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &NetworkNodeService{
 		state: state,
 		log:   log,
@@ -37,10 +41,19 @@ func (s *NetworkNodeService) CreateNode(
 	ctx context.Context,
 	in *resources.NetworkNode,
 ) (*resources.NetworkNode, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "node"),
+		logging.String("operation", "create"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
 	if err := ValidateNodeProto(in); err != nil {
+		reqLog.Debug(ctx, "CreateNode validation failed",
+			logging.String("reason", err.Error()),
+			logging.Any("node_id", in.GetNodeId()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -59,10 +72,23 @@ func (s *NetworkNodeService) CreateNode(
 	if err := s.state.CreateNode(node, interfaces); err != nil {
 		if errors.Is(err, sim.ErrPlatformNotFound) {
 			// Missing references during creation are treated as invalid input.
+			reqLog.Debug(ctx, "CreateNode failed platform reference check",
+				logging.String("entity_id", node.ID),
+				logging.String("platform_id", node.PlatformID),
+				logging.String("error", err.Error()),
+			)
 			return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 		}
+		reqLog.Warn(ctx, "CreateNode failed",
+			logging.String("entity_id", node.ID),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "node created",
+		logging.String("entity_id", node.ID),
+	)
 
 	return types.NodeToProtoWithInterfaces(node, interfaces), nil
 }
@@ -109,6 +135,11 @@ func (s *NetworkNodeService) UpdateNode(
 	ctx context.Context,
 	req *v1alpha.UpdateNodeRequest,
 ) (*resources.NetworkNode, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "node"),
+		logging.String("operation", "update"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -117,6 +148,9 @@ func (s *NetworkNodeService) UpdateNode(
 	}
 
 	if err := ValidateNodeProto(req.GetNode()); err != nil {
+		reqLog.Debug(ctx, "UpdateNode validation failed",
+			logging.String("reason", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
 
@@ -136,8 +170,16 @@ func (s *NetworkNodeService) UpdateNode(
 		if errors.Is(err, sim.ErrPlatformNotFound) {
 			return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 		}
+		reqLog.Warn(ctx, "UpdateNode failed",
+			logging.String("entity_id", node.ID),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "node updated",
+		logging.String("entity_id", node.ID),
+	)
 
 	return types.NodeToProtoWithInterfaces(node, interfaces), nil
 }
@@ -148,6 +190,11 @@ func (s *NetworkNodeService) DeleteNode(
 	ctx context.Context,
 	req *v1alpha.DeleteNodeRequest,
 ) (*emptypb.Empty, error) {
+	ctx, reqLog := logging.WithRequestLogger(ctx, s.log)
+	reqLog = reqLog.With(
+		logging.String("entity_type", "node"),
+		logging.String("operation", "delete"),
+	)
 	if err := s.ensureReady(); err != nil {
 		return nil, err
 	}
@@ -156,8 +203,21 @@ func (s *NetworkNodeService) DeleteNode(
 	}
 
 	if err := s.state.DeleteNode(req.GetNodeId()); err != nil {
+		levelLog := reqLog.Warn
+		if errors.Is(err, sim.ErrNodeInUse) {
+			// Referential integrity errors are expected user-facing failures.
+			levelLog = reqLog.Info
+		}
+		levelLog(ctx, "DeleteNode failed",
+			logging.String("entity_id", req.GetNodeId()),
+			logging.String("error", err.Error()),
+		)
 		return nil, ToStatusError(err)
 	}
+
+	reqLog.Info(ctx, "node deleted",
+		logging.String("entity_id", req.GetNodeId()),
+	)
 
 	return &emptypb.Empty{}, nil
 }
