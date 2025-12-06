@@ -3,7 +3,6 @@ package nbi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -43,12 +42,12 @@ func (s *ServiceRequestService) CreateServiceRequest(
 		return nil, err
 	}
 	if err := ValidateServiceRequestProto(in); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	dom, err := types.ServiceRequestFromProto(in)
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 
 	// ID behaviour:
@@ -62,19 +61,14 @@ func (s *ServiceRequestService) CreateServiceRequest(
 	}
 
 	if err := s.validateServiceRequest(dom); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	if err := s.state.CreateServiceRequest(dom); err != nil {
-		switch {
-		case errors.Is(err, sim.ErrServiceRequestExists):
-			return nil, status.Error(codes.AlreadyExists, err.Error())
-		default:
-			if s.log != nil {
-				s.log.Errorw("CreateServiceRequest failed", "err", err)
-			}
-			return nil, status.Error(codes.Internal, err.Error())
+		if s.log != nil {
+			s.log.Errorw("CreateServiceRequest failed", "err", err)
 		}
+		return nil, ToStatusError(err)
 	}
 
 	return attachServiceRequestID(types.ServiceRequestToProto(dom), dom.ID), nil
@@ -89,15 +83,12 @@ func (s *ServiceRequestService) GetServiceRequest(
 		return nil, err
 	}
 	if req == nil || req.GetServiceRequestId() == "" {
-		return nil, status.Error(codes.InvalidArgument, "service_request_id is required")
+		return nil, ToStatusError(fmt.Errorf("%w: service_request_id is required", ErrInvalidServiceRequest))
 	}
 
 	sr, err := s.state.GetServiceRequest(req.GetServiceRequestId())
 	if err != nil {
-		if errors.Is(err, sim.ErrServiceRequestNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	return attachServiceRequestID(types.ServiceRequestToProto(sr), sr.ID), nil
@@ -131,45 +122,39 @@ func (s *ServiceRequestService) UpdateServiceRequest(
 		return nil, err
 	}
 	if req == nil || req.GetServiceRequest() == nil {
-		return nil, status.Error(codes.InvalidArgument, "service_request is required")
+		return nil, ToStatusError(fmt.Errorf("%w: service_request is required", ErrInvalidServiceRequest))
 	}
 
 	if err := ValidateServiceRequestProto(req.GetServiceRequest()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	dom, err := types.ServiceRequestFromProto(req.GetServiceRequest())
 	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(fmt.Errorf("%w: %v", ErrInvalidEntity, err))
 	}
 
 	// For now we continue the convention that the proto's `type` field carries
 	// the stable ID for CRUD operations.
 	dom.ID = req.GetServiceRequest().GetType()
 	if dom.ID == "" {
-		return nil, status.Error(codes.InvalidArgument, "service_request_id is required")
+		return nil, ToStatusError(fmt.Errorf("%w: service_request_id is required", ErrInvalidServiceRequest))
 	}
 
 	existing, err := s.state.GetServiceRequest(dom.ID)
 	if err != nil {
-		if errors.Is(err, sim.ErrServiceRequestNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 	if existing.ID != dom.ID {
-		return nil, status.Error(codes.InvalidArgument, "service_request_id cannot be changed")
+		return nil, ToStatusError(fmt.Errorf("%w: service_request_id cannot be changed", ErrInvalidServiceRequest))
 	}
 
 	if err := s.validateServiceRequest(dom); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	if err := s.state.UpdateServiceRequest(dom); err != nil {
-		if errors.Is(err, sim.ErrServiceRequestNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	return attachServiceRequestID(types.ServiceRequestToProto(dom), dom.ID), nil
@@ -188,10 +173,7 @@ func (s *ServiceRequestService) DeleteServiceRequest(
 	}
 
 	if err := s.state.DeleteServiceRequest(req.GetServiceRequestId()); err != nil {
-		if errors.Is(err, sim.ErrServiceRequestNotFound) {
-			return nil, status.Error(codes.NotFound, err.Error())
-		}
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, ToStatusError(err)
 	}
 
 	return &emptypb.Empty{}, nil
@@ -208,18 +190,18 @@ func (s *ServiceRequestService) ensureReady() error {
 // validateServiceRequest performs referential integrity checks and ensures an ID is set.
 func (s *ServiceRequestService) validateServiceRequest(sr *model.ServiceRequest) error {
 	if sr == nil {
-		return errors.New("service request is required")
+		return fmt.Errorf("%w: service request is required", ErrInvalidServiceRequest)
 	}
 	if sr.ID == "" {
-		return errors.New("service_request_id is required")
+		return fmt.Errorf("%w: service_request_id is required", ErrInvalidServiceRequest)
 	}
 
 	phys := s.state.PhysicalKB()
 	if phys.GetNetworkNode(sr.SrcNodeID) == nil {
-		return fmt.Errorf("unknown src node %q", sr.SrcNodeID)
+		return fmt.Errorf("%w: unknown src node %q", ErrInvalidServiceRequest, sr.SrcNodeID)
 	}
 	if phys.GetNetworkNode(sr.DstNodeID) == nil {
-		return fmt.Errorf("unknown dst node %q", sr.DstNodeID)
+		return fmt.Errorf("%w: unknown dst node %q", ErrInvalidServiceRequest, sr.DstNodeID)
 	}
 
 	return nil
