@@ -17,6 +17,8 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/internal/observability"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 )
 
@@ -28,6 +30,14 @@ func main() {
 
 	log := logging.NewFromEnv()
 	ctx := context.Background()
+
+	traceShutdown := func(context.Context) error { return nil }
+	if shutdown, err := observability.InitTracing(ctx, observability.TracingConfigFromEnv(), log); err != nil {
+		log.Warn(ctx, "failed to initialise tracing", logging.String("error", err.Error()))
+	} else {
+		traceShutdown = shutdown
+	}
+	defer observability.ShutdownWithTimeout(context.Background(), traceShutdown, log)
 
 	collector, err := observability.NewNBICollector(nil)
 	if err != nil {
@@ -51,6 +61,11 @@ func main() {
 	server := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			nbi.RequestIDUnaryServerInterceptor(log),
+			otelgrpc.UnaryServerInterceptor(
+				otelgrpc.WithTracerProvider(otel.GetTracerProvider()),
+				otelgrpc.WithPropagators(otel.GetTextMapPropagator()),
+			),
+			nbi.TracingUnaryServerInterceptor(),
 			collector.UnaryServerInterceptor(),
 		),
 	)

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Field is a structured logging attribute.
@@ -178,7 +180,9 @@ func WithRequestLogger(ctx context.Context, base Logger) (context.Context, Logge
 		base = Noop()
 	}
 	ctx, id := EnsureRequestID(ctx)
-	return ctx, base.With(String("request_id", id))
+	fields := []Field{String("request_id", id)}
+	fields = append(fields, spanFields(ctx)...)
+	return ctx, base.With(fields...)
 }
 
 // ContextWithLogger stores a logger on the context.
@@ -207,4 +211,19 @@ func newRequestID() string {
 		return "unknown"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+func spanFields(ctx context.Context) []Field {
+	span := trace.SpanFromContext(ctx)
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return nil
+	}
+	fields := []Field{
+		String("trace_id", sc.TraceID().String()),
+	}
+	if sc.SpanID().IsValid() {
+		fields = append(fields, String("span_id", sc.SpanID().String()))
+	}
+	return fields
 }
