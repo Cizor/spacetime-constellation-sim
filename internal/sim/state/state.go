@@ -39,8 +39,12 @@ var (
 	ErrServiceRequestExists = errors.New("service request already exists")
 	// ErrServiceRequestNotFound indicates a service request was not found.
 	ErrServiceRequestNotFound = errors.New("service request not found")
+	// ErrPlatformInUse indicates a platform is still referenced by nodes.
+	ErrPlatformInUse = errors.New("platform is referenced by nodes")
 	// ErrNodeInUse indicates a node is still referenced by other resources.
 	ErrNodeInUse = errors.New("node is referenced by links or service requests")
+	// ErrInterfaceInUse indicates an interface is still referenced by links.
+	ErrInterfaceInUse = errors.New("interface is referenced by links")
 )
 
 // ScenarioState coordinates the simulator's major knowledge bases and
@@ -218,12 +222,17 @@ func (s *ScenarioState) UpdatePlatform(pd *model.PlatformDefinition) error {
 }
 
 // DeletePlatform removes a platform by ID.
-//
-// NOTE: Referential integrity (nodes referencing this platform) is *not*
-// enforced here yet; that will be handled in later validation/RI chunks.
 func (s *ScenarioState) DeletePlatform(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.physKB.GetPlatform(id) == nil {
+		return ErrPlatformNotFound
+	}
+	if s.platformHasReferencesLocked(id) {
+		// Hard fail semantics: no cascading delete in this scope.
+		return ErrPlatformInUse
+	}
 
 	if err := s.physKB.DeletePlatform(id); err != nil {
 		if errors.Is(err, kb.ErrPlatformNotFound) {
@@ -232,6 +241,21 @@ func (s *ScenarioState) DeletePlatform(id string) error {
 		return err
 	}
 	return nil
+}
+
+// platformHasReferencesLocked reports whether any nodes reference the platform.
+// Caller must hold s.mu.
+func (s *ScenarioState) platformHasReferencesLocked(platformID string) bool {
+	if platformID == "" {
+		return false
+	}
+
+	for _, node := range s.physKB.ListNetworkNodes() {
+		if node != nil && node.PlatformID == platformID {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateNode inserts a new network node along with its interfaces.
@@ -439,6 +463,33 @@ func (s *ScenarioState) nodeHasReferencesLocked(nodeID string) bool {
 	}
 
 	return false
+}
+
+// DeleteInterface removes an interface by ID, refusing to delete when it is
+// still referenced by links. Cascading deletion could be added in later scopes.
+func (s *ScenarioState) DeleteInterface(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: empty interface ID", ErrInterfaceInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.netKB.GetNetworkInterface(id) == nil {
+		return ErrInterfaceNotFound
+	}
+	if links := s.netKB.GetLinksForInterface(id); len(links) > 0 {
+		return ErrInterfaceInUse
+	}
+
+	if err := s.netKB.DeleteInterface(id); err != nil {
+		if errors.Is(err, network.ErrInterfaceNotFound) {
+			return ErrInterfaceNotFound
+		}
+		return err
+	}
+
+	return nil
 }
 
 // CreateLink inserts a new network link into the Scope-2 knowledge base.
