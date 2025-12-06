@@ -51,3 +51,32 @@ func TestScenarioStatePlatformCRUD(t *testing.T) {
 		t.Fatalf("DeletePlatform missing error = %v, want ErrPlatformNotFound", err)
 	}
 }
+
+func TestDeletePlatformFailsWhenNodesPresent(t *testing.T) {
+	phys := kb.NewKnowledgeBase()
+	net := network.NewKnowledgeBase()
+	s := NewScenarioState(phys, net)
+
+	platformID := "plat-in-use"
+	if err := s.CreatePlatform(&model.PlatformDefinition{ID: platformID, Name: platformID}); err != nil {
+		t.Fatalf("CreatePlatform error: %v", err)
+	}
+
+	nodeID := "node-on-platform"
+	if err := s.CreateNode(&model.NetworkNode{ID: nodeID, PlatformID: platformID}, []*network.NetworkInterface{
+		{ID: nodeID + "/if0", ParentNodeID: nodeID, Medium: network.MediumWired},
+	}); err != nil {
+		t.Fatalf("CreateNode error: %v", err)
+	}
+
+	if err := s.DeletePlatform(platformID); !errors.Is(err, ErrPlatformInUse) {
+		t.Fatalf("DeletePlatform error = %v, want ErrPlatformInUse", err)
+	}
+
+	if got, err := s.GetPlatform(platformID); err != nil || got == nil {
+		t.Fatalf("platform should remain after failed delete, got (%+v, %v)", got, err)
+	}
+	if got := s.physKB.GetNetworkNode(nodeID); got == nil {
+		t.Fatalf("node should remain after failed platform delete; got nil")
+	}
+}
