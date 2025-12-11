@@ -75,6 +75,7 @@ func TestStaticLinkExplicitDeactivationDoesNotAutoActivate(t *testing.T) {
 	// Now explicitly deactivate it (simulating DeactivateLink call)
 	link.Status = LinkStatusPotential
 	link.IsUp = false
+	link.WasExplicitlyDeactivated = true // Mark as explicitly deactivated
 	if err := kb.UpdateNetworkLink(link); err != nil {
 		t.Fatalf("UpdateNetworkLink: %v", err)
 	}

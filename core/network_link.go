@@ -56,4 +56,10 @@ type NetworkLink struct {
 	// as opposed to dynamic wireless links that are rebuilt on every
 	// connectivity update.
 	IsStatic bool `json:"IsStatic"`
+
+	// WasExplicitlyDeactivated tracks whether this link was explicitly
+	// deactivated via DeactivateLink. This allows us to distinguish
+	// between links that were auto-downgraded (should recover) and
+	// links that were explicitly deactivated (should NOT auto-activate).
+	WasExplicitlyDeactivated bool `json:"WasExplicitlyDeactivated,omitempty"`
 }

@@ -136,4 +136,3 @@ func TestDynamicLinkRecoveryAfterGeometryFailure(t *testing.T) {
 		t.Fatalf("expected dynamic link to be up when geometry improves, got IsUp=false")
 	}
 }
-

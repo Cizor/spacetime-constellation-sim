@@ -682,6 +682,8 @@ func (s *ScenarioState) ActivateLink(linkID string) error {
 	// Maintain backward compatibility with IsUp field
 	updated.IsUp = true
 	updated.IsImpaired = false
+	// Clear explicit deactivation flag when explicitly activated
+	updated.WasExplicitlyDeactivated = false
 
 	// Update via KnowledgeBase method (which handles its own locking)
 	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
@@ -712,6 +714,8 @@ func (s *ScenarioState) DeactivateLink(linkID string) error {
 	updated.Status = network.LinkStatusPotential
 	// Maintain backward compatibility with IsUp field
 	updated.IsUp = false
+	// Mark as explicitly deactivated so it won't auto-activate
+	updated.WasExplicitlyDeactivated = true
 
 	// Update via KnowledgeBase method (which handles its own locking)
 	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
@@ -888,6 +892,8 @@ func (s *ScenarioState) ApplyBeamDelete(nodeID, interfaceID, targetNodeID, targe
 	updated.Status = network.LinkStatusPotential
 	// Maintain backward compatibility with IsUp field
 	updated.IsUp = false
+	// Mark as explicitly deactivated so it won't auto-activate
+	updated.WasExplicitlyDeactivated = true
 
 	// Update via KnowledgeBase method (which handles its own locking)
 	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {

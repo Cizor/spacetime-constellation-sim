@@ -254,4 +254,3 @@ func TestEventScheduler_MultipleRunDueCalls(t *testing.T) {
 		t.Fatalf("expected counter=1 after multiple RunDue calls, got %d", counter)
 	}
 }
-
