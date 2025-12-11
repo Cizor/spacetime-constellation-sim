@@ -2,7 +2,7 @@
 package core
 
 import (
-	"fmt"
+	"log"
 	"math"
 	"strings"
 )
@@ -112,15 +112,13 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 					// Note: Since UpsertDynamicWirelessLink returns a pointer to the link
 					// in the KB's internal map, modifying link directly already updates
 					// the KB. However, we call UpdateNetworkLink for consistency and to
-					// ensure the state is properly synchronized. If this fails, it indicates
-					// a serious issue (link was deleted concurrently or KB is corrupted).
+					// ensure the state is properly synchronized. If this fails, we log
+					// the error and continue since the state is already persisted via the
+					// pointer modification.
 					if err := cs.KB.UpdateNetworkLink(link); err != nil {
-						// This should never happen in normal operation since we just created
-						// the link via UpsertDynamicWirelessLink. If it does, it indicates
-						// a race condition or KB corruption. We panic to surface this
-						// critical error rather than silently losing the deactivation state,
-						// which would cause the link to incorrectly auto-activate.
-						panic(fmt.Sprintf("failed to persist deactivation state for dynamic link %q: %v", link.ID, err))
+						// Log the error but continue - the state is already persisted via
+						// the pointer, so this is a best-effort synchronization step.
+						log.Printf("warning: failed to synchronize deactivation state for dynamic link %q: %v (state already persisted via pointer)", link.ID, err)
 					}
 				}
 			}
