@@ -119,9 +119,17 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		if link.MaxDataRateMbps == 0 {
 			link.MaxDataRateMbps = 1000 // 1 Gbit/s nominal
 		}
-		// Wired links are always "active" if not impaired.
-		link.Status = LinkStatusActive
-		link.IsUp = true
+		// Auto-activate wired links if Status is Unknown (backward compatibility).
+		// Respect explicitly-set Potential status to allow administrative disabling.
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusActive
+		}
+		// Link is only "up" if Status is Active
+		if link.Status == LinkStatusActive {
+			link.IsUp = true
+		} else {
+			link.IsUp = false
+		}
 		link.Quality = LinkQualityExcellent
 		link.SNRdB = 0 // not meaningful for wired here
 		return
