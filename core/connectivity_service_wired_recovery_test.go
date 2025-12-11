@@ -92,11 +92,11 @@ func TestWiredLinkExplicitDeactivationDoesNotRecover(t *testing.T) {
 
 	// Create a wired link with Potential status that was explicitly deactivated
 	link := &NetworkLink{
-		ID:                      "linkAB-wired",
-		InterfaceA:              "ifA",
-		InterfaceB:              "ifB",
-		Medium:                  MediumWired,
-		Status:                  LinkStatusPotential,
+		ID:                       "linkAB-wired",
+		InterfaceA:               "ifA",
+		InterfaceB:               "ifB",
+		Medium:                   MediumWired,
+		Status:                   LinkStatusPotential,
 		WasExplicitlyDeactivated: true, // Explicitly deactivated
 	}
 	if err := kb.AddNetworkLink(link); err != nil {
@@ -118,4 +118,3 @@ func TestWiredLinkExplicitDeactivationDoesNotRecover(t *testing.T) {
 		t.Fatalf("expected IsUp=false for Potential wired link (was explicitly deactivated), got IsUp=true")
 	}
 }
-

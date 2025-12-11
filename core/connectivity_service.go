@@ -2,6 +2,7 @@
 package core
 
 import (
+	"fmt"
 	"math"
 	"strings"
 )
@@ -107,10 +108,19 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 					link.WasExplicitlyDeactivated = true
 					link.Status = LinkStatusPotential
 					link.IsUp = false
-					// Persist the restored state to the knowledge base
+					// Persist the restored state to the knowledge base.
+					// Note: Since UpsertDynamicWirelessLink returns a pointer to the link
+					// in the KB's internal map, modifying link directly already updates
+					// the KB. However, we call UpdateNetworkLink for consistency and to
+					// ensure the state is properly synchronized. If this fails, it indicates
+					// a serious issue (link was deleted concurrently or KB is corrupted).
 					if err := cs.KB.UpdateNetworkLink(link); err != nil {
-						// Log error but continue - this is a best-effort restoration
-						// The link will be re-evaluated in UpdateConnectivity anyway
+						// This should never happen in normal operation since we just created
+						// the link via UpsertDynamicWirelessLink. If it does, it indicates
+						// a race condition or KB corruption. We panic to surface this
+						// critical error rather than silently losing the deactivation state,
+						// which would cause the link to incorrectly auto-activate.
+						panic(fmt.Sprintf("failed to persist deactivation state for dynamic link %q: %v", link.ID, err))
 					}
 				}
 			}
