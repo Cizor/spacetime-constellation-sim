@@ -11,6 +11,7 @@ import (
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
+	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -716,6 +717,182 @@ func (s *ScenarioState) DeactivateLink(linkID string) error {
 	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
 		if errors.Is(err, network.ErrLinkNotFound) {
 			return fmt.Errorf("link %s not found", linkID)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// ErrLinkNotFoundForBeam indicates that no link was found matching the beam specification.
+var ErrLinkNotFoundForBeam = errors.New("link not found for beam specification")
+
+// findLinkByBeamSpec locates a link that matches the given BeamSpec endpoints.
+// It searches for a link connecting (beam.NodeID, beam.InterfaceID) to
+// (beam.TargetNodeID, beam.TargetIfID) in either direction.
+// Returns the link and true if found, nil and false otherwise.
+// Caller must hold s.mu lock.
+func (s *ScenarioState) findLinkByBeamSpecLocked(beam *sbi.BeamSpec) (*network.NetworkLink, bool) {
+	if beam == nil {
+		return nil, false
+	}
+
+	// Build interface references
+	srcIfRef := beam.InterfaceID
+	if beam.NodeID != "" {
+		srcIfRef = fmt.Sprintf("%s/%s", beam.NodeID, beam.InterfaceID)
+	}
+
+	dstIfRef := beam.TargetIfID
+	if beam.TargetNodeID != "" {
+		dstIfRef = fmt.Sprintf("%s/%s", beam.TargetNodeID, beam.TargetIfID)
+	}
+
+	// Try to find link by checking links attached to the source interface
+	links := s.netKB.GetLinksForInterface(srcIfRef)
+	for _, link := range links {
+		if link == nil {
+			continue
+		}
+		// Check if link connects to the target interface (either direction)
+		if (link.InterfaceA == srcIfRef && link.InterfaceB == dstIfRef) ||
+			(link.InterfaceA == dstIfRef && link.InterfaceB == srcIfRef) {
+			return link, true
+		}
+	}
+
+	// Also try the target interface in case the link was indexed differently
+	links = s.netKB.GetLinksForInterface(dstIfRef)
+	for _, link := range links {
+		if link == nil {
+			continue
+		}
+		if (link.InterfaceA == srcIfRef && link.InterfaceB == dstIfRef) ||
+			(link.InterfaceA == dstIfRef && link.InterfaceB == srcIfRef) {
+			return link, true
+		}
+	}
+
+	return nil, false
+}
+
+// ApplyBeamUpdate activates a link based on a BeamSpec. It validates that the
+// node and interface exist, locates the corresponding link, and sets its status
+// to Active if geometry allows. This is used by Scope 4 agents when executing
+// ScheduledUpdateBeam actions.
+func (s *ScenarioState) ApplyBeamUpdate(nodeID string, beam *sbi.BeamSpec) error {
+	if beam == nil {
+		return fmt.Errorf("ApplyBeamUpdate: beam spec is nil")
+	}
+	if nodeID == "" && beam.NodeID == "" {
+		return fmt.Errorf("ApplyBeamUpdate: nodeID or beam.NodeID must be provided")
+	}
+	if beam.InterfaceID == "" {
+		return fmt.Errorf("ApplyBeamUpdate: beam.InterfaceID must not be empty")
+	}
+
+	// Use nodeID from parameter if provided, otherwise use beam.NodeID
+	actualNodeID := nodeID
+	if actualNodeID == "" {
+		actualNodeID = beam.NodeID
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Validate node exists
+	node := s.physKB.GetNetworkNode(actualNodeID)
+	if node == nil {
+		return fmt.Errorf("ApplyBeamUpdate: node %q not found", actualNodeID)
+	}
+
+	// Build interface reference
+	ifRef := beam.InterfaceID
+	if actualNodeID != "" {
+		ifRef = fmt.Sprintf("%s/%s", actualNodeID, beam.InterfaceID)
+	}
+
+	// Validate interface exists
+	intf := s.netKB.GetNetworkInterface(ifRef)
+	if intf == nil {
+		return fmt.Errorf("ApplyBeamUpdate: interface %q not found on node %q", beam.InterfaceID, actualNodeID)
+	}
+
+	// Locate the corresponding link
+	link, found := s.findLinkByBeamSpecLocked(beam)
+	if !found {
+		return fmt.Errorf("ApplyBeamUpdate: %w: no link found between %q and %q", ErrLinkNotFoundForBeam, ifRef, beam.TargetIfID)
+	}
+
+	// For Scope 4, we assume the scheduler won't schedule impossible beams.
+	// We can optionally check geometry here, but for now we'll activate if
+	// the link exists and is at least Potential status.
+	// TODO: Add optional geometry check if needed
+
+	// Create a copy with updated status
+	updated := *link
+	updated.Status = network.LinkStatusActive
+	// Maintain backward compatibility with IsUp field
+	updated.IsUp = true
+	updated.IsImpaired = false
+
+	// Update via KnowledgeBase method (which handles its own locking)
+	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
+		if errors.Is(err, network.ErrLinkNotFound) {
+			return fmt.Errorf("ApplyBeamUpdate: link %q not found", link.ID)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// ApplyBeamDelete deactivates a link based on beam endpoints. It locates the
+// corresponding link and sets its status back to Potential. This is used by
+// Scope 4 agents when executing ScheduledDeleteBeam actions.
+func (s *ScenarioState) ApplyBeamDelete(nodeID, interfaceID, targetNodeID, targetIfID string) error {
+	if nodeID == "" {
+		return fmt.Errorf("ApplyBeamDelete: nodeID must not be empty")
+	}
+	if interfaceID == "" {
+		return fmt.Errorf("ApplyBeamDelete: interfaceID must not be empty")
+	}
+	if targetIfID == "" {
+		return fmt.Errorf("ApplyBeamDelete: targetIfID must not be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build interface references
+	srcIfRef := fmt.Sprintf("%s/%s", nodeID, interfaceID)
+	dstIfRef := targetIfID
+	if targetNodeID != "" {
+		dstIfRef = fmt.Sprintf("%s/%s", targetNodeID, targetIfID)
+	}
+
+	// Locate the link
+	beam := &sbi.BeamSpec{
+		NodeID:       nodeID,
+		InterfaceID:  interfaceID,
+		TargetNodeID: targetNodeID,
+		TargetIfID:   targetIfID,
+	}
+	link, found := s.findLinkByBeamSpecLocked(beam)
+	if !found {
+		return fmt.Errorf("ApplyBeamDelete: %w: no link found between %q and %q", ErrLinkNotFoundForBeam, srcIfRef, dstIfRef)
+	}
+
+	// Create a copy with updated status
+	updated := *link
+	updated.Status = network.LinkStatusPotential
+	// Maintain backward compatibility with IsUp field
+	updated.IsUp = false
+
+	// Update via KnowledgeBase method (which handles its own locking)
+	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
+		if errors.Is(err, network.ErrLinkNotFound) {
+			return fmt.Errorf("ApplyBeamDelete: link %q not found", link.ID)
 		}
 		return err
 	}
