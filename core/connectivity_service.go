@@ -156,11 +156,19 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		if link.MaxDataRateMbps == 0 {
 			link.MaxDataRateMbps = 1000 // 1 Gbit/s nominal
 		}
-		// Auto-activate wired links if Status is Unknown (backward compatibility).
-		// Respect explicitly-set Potential status and WasExplicitlyDeactivated flag
-		// to allow administrative disabling.
-		if link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated {
+		// Auto-activate wired links for backward compatibility with Scope 2/3.
+		// Auto-activate Unknown links (default/unset status) that were not explicitly deactivated.
+		// Also auto-activate Potential links that were auto-downgraded
+		// (not explicitly deactivated). Links that were explicitly deactivated
+		// (WasExplicitlyDeactivated=true) do NOT auto-activate, ensuring explicit
+		// control plane actions are respected. This matches the recovery behavior
+		// of wireless links for consistency.
+		shouldAutoActivate := (link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated) ||
+			(link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated)
+		if shouldAutoActivate {
 			link.Status = LinkStatusActive
+			// Clear explicit deactivation flag only when we actually auto-activate
+			link.WasExplicitlyDeactivated = false
 		}
 		// Link is only "up" if Status is Active
 		if link.Status == LinkStatusActive {

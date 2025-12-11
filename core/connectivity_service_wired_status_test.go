@@ -30,13 +30,14 @@ func TestWiredLinkRespectsPotentialStatus(t *testing.T) {
 		t.Fatalf("AddInterface(ifB): %v", err)
 	}
 
-	// Create a wired link with explicitly-set Potential status
+	// Create a wired link with explicitly-set Potential status (explicitly deactivated)
 	link := &NetworkLink{
-		ID:         "linkAB-wired",
-		InterfaceA: "ifA",
-		InterfaceB: "ifB",
-		Medium:     MediumWired,
-		Status:     LinkStatusPotential, // Explicitly set to Potential
+		ID:                      "linkAB-wired",
+		InterfaceA:              "ifA",
+		InterfaceB:              "ifB",
+		Medium:                  MediumWired,
+		Status:                  LinkStatusPotential, // Explicitly set to Potential
+		WasExplicitlyDeactivated: true,              // Explicitly deactivated
 	}
 	if err := kb.AddNetworkLink(link); err != nil {
 		t.Fatalf("AddNetworkLink(linkAB-wired): %v", err)
