@@ -5,13 +5,21 @@ param(
     [Parameter(Mandatory=$true)]
     [int]$IssueNumber,
     
-    [string]$BaseBranch = "main"
+    [string]$BaseBranch = "main",
+    [string]$GitHubToken = $env:GITHUB_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
 
+# Get GitHub token from environment variable or parameter
+if (-not $GitHubToken) {
+    Write-Host "Error: GitHub token not provided. Set GITHUB_TOKEN environment variable or use -GitHubToken parameter." -ForegroundColor Red
+    Write-Host "Example: `$env:GITHUB_TOKEN = 'your_token'; .\start-issue.ps1 -IssueNumber 120" -ForegroundColor Yellow
+    exit 1
+}
+
 # Fetch issue details
-$token = "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"
+$token = $GitHubToken
 $repo = "Cizor/spacetime-constellation-sim"
 $baseUrl = "https://api.github.com/repos/$repo/issues"
 $headers = @{

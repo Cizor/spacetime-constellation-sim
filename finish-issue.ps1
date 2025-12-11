@@ -7,7 +7,8 @@ param(
     
     [switch]$SkipTests,
     [switch]$AutoMerge,
-    [string]$BaseBranch = "main"
+    [string]$BaseBranch = "main",
+    [string]$GitHubToken = $env:GITHUB_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,8 +34,12 @@ if ($status) {
         $commitMsg = Read-Host
         if (-not $commitMsg) {
             # Fetch issue for auto-generated message
-            $token = "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"
-            $repo = "Cizor/spacetime-constellation-sim"
+            if (-not $GitHubToken) {
+                Write-Host "Warning: GitHub token not provided. Using default commit message." -ForegroundColor Yellow
+                $commitMsg = "Fixes #$IssueNumber"
+            } else {
+                $token = $GitHubToken
+                $repo = "Cizor/spacetime-constellation-sim"
             $baseUrl = "https://api.github.com/repos/$repo/issues"
             $headers = @{
                 "Authorization" = "token $token"
@@ -46,6 +51,7 @@ if ($status) {
                 $commitMsg = "[Scope 4][Chunk $chunk] $($issue.title)`n`nFixes #$IssueNumber"
             } catch {
                 $commitMsg = "Fixes #$IssueNumber"
+            }
             }
         }
         git add -A

@@ -240,8 +240,9 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		}
 	} else {
 		link.IsUp = false
-		// If Status was not set and geometry doesn't allow, default to Potential
-		if link.Status == LinkStatusUnknown {
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
 			link.Status = LinkStatusPotential
 		}
 	}
