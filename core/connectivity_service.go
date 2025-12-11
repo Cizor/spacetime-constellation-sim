@@ -63,8 +63,17 @@ func (cs *ConnectivityService) UpdateConnectivity() {
 
 // rebuildDynamicWirelessLinks clears previously discovered wireless
 // links and creates a new set based purely on interface metadata and
-// transceiver compatibility.
+// transceiver compatibility. It preserves explicit deactivation state
+// for links that are recreated.
 func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
+	// Before clearing, save which dynamic links were explicitly deactivated
+	deactivatedLinkIDs := make(map[string]bool)
+	for _, link := range cs.KB.GetAllNetworkLinks() {
+		if strings.HasPrefix(link.ID, "dyn-") && link.WasExplicitlyDeactivated {
+			deactivatedLinkIDs[link.ID] = true
+		}
+	}
+
 	// Remove any dynamic wireless links from the last tick.
 	cs.KB.ClearDynamicWirelessLinks()
 
@@ -90,7 +99,16 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 			}
 
 			// Create or fetch a dynamic link between them.
-			_ = cs.KB.UpsertDynamicWirelessLink(ia.ID, ib.ID)
+			link := cs.KB.UpsertDynamicWirelessLink(ia.ID, ib.ID)
+			if link != nil {
+				// Restore explicit deactivation state if this link was previously deactivated
+				// The link ID is deterministic based on interface IDs, so we can match it
+				if deactivatedLinkIDs[link.ID] {
+					link.WasExplicitlyDeactivated = true
+					link.Status = LinkStatusPotential
+					link.IsUp = false
+				}
+			}
 		}
 	}
 }
@@ -101,19 +119,19 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 // are considered "up" even if geometry/RF allows them.
 func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	// If the link is administratively impaired, it's always down.
-	if link.Status == LinkStatusImpaired || link.IsImpaired {
+	// Check IsImpaired first to handle un-impairing correctly.
+	if link.IsImpaired {
 		link.IsUp = false
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
-		// Maintain backward compatibility: sync Status and IsImpaired bidirectionally
-		if link.Status == LinkStatusImpaired {
-			link.IsImpaired = true
-		}
-		if link.IsImpaired {
-			link.Status = LinkStatusImpaired
-		}
+		link.Status = LinkStatusImpaired
 		return
+	}
+	// If Status is Impaired but IsImpaired is false, clear the Status
+	// to allow normal re-evaluation (handles un-impairing case).
+	if link.Status == LinkStatusImpaired {
+		link.Status = LinkStatusUnknown // Reset to Unknown to allow re-evaluation
 	}
 
 	// Wired links are assumed always up (unless impaired) with a
@@ -243,13 +261,11 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	if link.Quality != LinkQualityDown {
 		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
 		// Auto-activate Unknown links (default/unset status).
-		// Also auto-activate Potential links that are:
-		// - Dynamic (auto-discovered links that were auto-downgraded)
-		// - Static links that were auto-downgraded (not explicitly deactivated)
-		// Static links that were explicitly deactivated (WasExplicitlyDeactivated=true)
-		// do NOT auto-activate, ensuring explicit control plane actions are respected.
-		isDynamic := strings.HasPrefix(link.ID, "dyn-")
-		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && (isDynamic || (link.IsStatic && !link.WasExplicitlyDeactivated))) {
+		// Also auto-activate Potential links that were auto-downgraded
+		// (not explicitly deactivated). Links that were explicitly deactivated
+		// (WasExplicitlyDeactivated=true) do NOT auto-activate, ensuring explicit
+		// control plane actions are respected for both static and dynamic links.
+		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated) {
 			// Auto-activate when geometry allows (maintains backward compatibility)
 			link.Status = LinkStatusActive
 			// Clear explicit deactivation flag when auto-activating
