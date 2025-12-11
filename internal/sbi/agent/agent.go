@@ -33,6 +33,10 @@ func (a *SimAgent) ID() sbi.AgentID {
 // - Use EventScheduler and ScenarioState to execute at the correct simulation time
 func (a *SimAgent) HandleScheduledAction(ctx context.Context, action *sbi.ScheduledAction) error {
 	// TODO (later chunks): implement real scheduling and execution logic
+	// For now, just validate the action
+	if err := action.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
