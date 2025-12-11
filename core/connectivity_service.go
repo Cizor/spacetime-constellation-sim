@@ -107,6 +107,11 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 					link.WasExplicitlyDeactivated = true
 					link.Status = LinkStatusPotential
 					link.IsUp = false
+					// Persist the restored state to the knowledge base
+					if err := cs.KB.UpdateNetworkLink(link); err != nil {
+						// Log error but continue - this is a best-effort restoration
+						// The link will be re-evaluated in UpdateConnectivity anyway
+					}
 				}
 			}
 		}
@@ -274,10 +279,19 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		// (not explicitly deactivated). Links that were explicitly deactivated
 		// (WasExplicitlyDeactivated=true) do NOT auto-activate, ensuring explicit
 		// control plane actions are respected for both static and dynamic links.
-		if (link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated) || (link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated) {
+		//
+		// Note: Links auto-downgraded to Potential by geometry/RF checks (lines 181-183,
+		// 195-198, etc.) do not set WasExplicitlyDeactivated, so they will auto-activate
+		// when geometry improves. This is the intended recovery behavior for temporary
+		// geometry failures. Only links explicitly deactivated via DeactivateLink should
+		// remain deactivated.
+		shouldAutoActivate := (link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated) ||
+			(link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated)
+		if shouldAutoActivate {
 			// Auto-activate when geometry allows (maintains backward compatibility)
 			link.Status = LinkStatusActive
-			// Clear explicit deactivation flag when auto-activating
+			// Clear explicit deactivation flag only when we actually auto-activate
+			// This ensures the flag accurately reflects the link's state
 			link.WasExplicitlyDeactivated = false
 		}
 		// Link is only "up" if Status is Active
