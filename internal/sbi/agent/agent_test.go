@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
+	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
 func TestSimAgent_ID(t *testing.T) {
@@ -21,12 +22,17 @@ func TestSimAgent_HandleScheduledAction(t *testing.T) {
 	id := sbi.AgentID("test-agent-1")
 	agent := NewSimAgent(id)
 
-	action := &sbi.ScheduledAction{
-		ID:      "action-1",
-		AgentID: id,
-		Kind:    sbi.ActionKindSetRoute,
-		When:    time.Now(),
+	route := &model.RouteEntry{
+		DestinationCIDR: "10.0.0.0/24",
+		NextHopNodeID:   "nodeB",
+		OutInterfaceID:  "if1",
 	}
+	meta := sbi.ActionMeta{
+		RequestID: "req-1",
+		SeqNo:     1,
+		Token:     "token-abc",
+	}
+	action := sbi.NewRouteAction("action-1", id, sbi.ScheduledSetRoute, time.Now(), route, meta)
 
 	// Should not panic and return nil (stub implementation)
 	if err := agent.HandleScheduledAction(context.Background(), action); err != nil {
