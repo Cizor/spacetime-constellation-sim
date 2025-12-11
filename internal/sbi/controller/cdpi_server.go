@@ -4,15 +4,19 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
+	"github.com/signalsfoundry/constellation-simulator/model"
 	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // CDPIServer implements the ControlDataPlaneInterface gRPC service.
@@ -35,7 +39,8 @@ type AgentHandle struct {
 	Stream   grpc.BidiStreamingServer[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]
 	outgoing chan *schedulingpb.ReceiveRequestsMessageFromController
 	token    string
-	seqNo    uint64 // monotonically increasing sequence number per agent
+	seqNoMu  sync.Mutex // protects seqNo
+	seqNo    uint64     // monotonically increasing sequence number per agent
 }
 
 // NewCDPIServer creates a new CDPI server with the given dependencies.
@@ -166,11 +171,294 @@ func (s *CDPIServer) Reset(ctx context.Context, req *schedulingpb.ResetRequest) 
 	}
 
 	// Clear any existing schedule entries (this will be handled by the agent)
-	// Issue a fresh token
+	// Issue a fresh token and reset sequence number
 	handle.token = generateToken()
+	handle.seqNoMu.Lock()
 	handle.seqNo = 0
+	handle.seqNoMu.Unlock()
 
 	return &emptypb.Empty{}, nil
+}
+
+// SendCreateEntry sends a CreateEntryRequest to the specified agent.
+// It converts the ScheduledAction to a proto message and pushes it onto
+// the agent's outgoing channel.
+func (s *CDPIServer) SendCreateEntry(agentID string, action *sbi.ScheduledAction) error {
+	if action == nil {
+		return status.Error(codes.InvalidArgument, "action must not be nil")
+	}
+
+	s.agentsMu.RLock()
+	handle, exists := s.agents[agentID]
+	s.agentsMu.RUnlock()
+
+	if !exists {
+		return status.Errorf(codes.NotFound, "agent %q not found", agentID)
+	}
+
+	// Increment sequence number (thread-safe)
+	handle.seqNoMu.Lock()
+	handle.seqNo++
+	seqNo := handle.seqNo
+	handle.seqNoMu.Unlock()
+
+	// Convert ScheduledAction to CreateEntryRequest
+	createEntry, err := convertActionToCreateEntry(action, handle.token, seqNo)
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to convert action to CreateEntryRequest: %v", err)
+	}
+
+	// Build the message
+	msg := &schedulingpb.ReceiveRequestsMessageFromController{
+		Request: &schedulingpb.ReceiveRequestsMessageFromController_CreateEntry{
+			CreateEntry: createEntry,
+		},
+	}
+
+	// Send to agent's outgoing channel
+	select {
+	case handle.outgoing <- msg:
+		return nil
+	default:
+		return status.Error(codes.ResourceExhausted, "agent outgoing channel full")
+	}
+}
+
+// SendDeleteEntry sends a DeleteEntryRequest to the specified agent.
+func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error {
+	if entryID == "" {
+		return status.Error(codes.InvalidArgument, "entryID must not be empty")
+	}
+
+	s.agentsMu.RLock()
+	handle, exists := s.agents[agentID]
+	s.agentsMu.RUnlock()
+
+	if !exists {
+		return status.Errorf(codes.NotFound, "agent %q not found", agentID)
+	}
+
+	// Increment sequence number (thread-safe)
+	handle.seqNoMu.Lock()
+	handle.seqNo++
+	seqNo := handle.seqNo
+	handle.seqNoMu.Unlock()
+
+	// Build DeleteEntryRequest
+	deleteEntry := &schedulingpb.DeleteEntryRequest{
+		ScheduleManipulationToken: handle.token,
+		Seqno:                     seqNo,
+		Id:                        entryID,
+	}
+
+	// Build the message
+	msg := &schedulingpb.ReceiveRequestsMessageFromController{
+		Request: &schedulingpb.ReceiveRequestsMessageFromController_DeleteEntry{
+			DeleteEntry: deleteEntry,
+		},
+	}
+
+	// Send to agent's outgoing channel
+	select {
+	case handle.outgoing <- msg:
+		return nil
+	default:
+		return status.Error(codes.ResourceExhausted, "agent outgoing channel full")
+	}
+}
+
+// SendFinalize sends a FinalizeRequest to the specified agent.
+func (s *CDPIServer) SendFinalize(agentID string, cutoff time.Time) error {
+	s.agentsMu.RLock()
+	handle, exists := s.agents[agentID]
+	s.agentsMu.RUnlock()
+
+	if !exists {
+		return status.Errorf(codes.NotFound, "agent %q not found", agentID)
+	}
+
+	// Increment sequence number (thread-safe)
+	handle.seqNoMu.Lock()
+	handle.seqNo++
+	seqNo := handle.seqNo
+	handle.seqNoMu.Unlock()
+
+	// Convert time.Time to protobuf Timestamp
+	cutoffProto := timestamppb.New(cutoff)
+	if err := cutoffProto.CheckValid(); err != nil {
+		return status.Errorf(codes.InvalidArgument, "invalid cutoff time: %v", err)
+	}
+
+	// Build FinalizeRequest
+	finalize := &schedulingpb.FinalizeRequest{
+		ScheduleManipulationToken: handle.token,
+		Seqno:                     seqNo,
+		UpTo:                      cutoffProto,
+	}
+
+	// Build the message
+	msg := &schedulingpb.ReceiveRequestsMessageFromController{
+		Request: &schedulingpb.ReceiveRequestsMessageFromController_Finalize{
+			Finalize: finalize,
+		},
+	}
+
+	// Send to agent's outgoing channel
+	select {
+	case handle.outgoing <- msg:
+		return nil
+	default:
+		return status.Error(codes.ResourceExhausted, "agent outgoing channel full")
+	}
+}
+
+// convertActionToCreateEntry converts a ScheduledAction to a CreateEntryRequest proto.
+func convertActionToCreateEntry(action *sbi.ScheduledAction, token string, seqNo uint64) (*schedulingpb.CreateEntryRequest, error) {
+	// Convert time.Time to protobuf Timestamp
+	whenProto := timestamppb.New(action.When)
+	if err := whenProto.CheckValid(); err != nil {
+		return nil, fmt.Errorf("invalid action time: %v", err)
+	}
+
+	// Build base CreateEntryRequest
+	createEntry := &schedulingpb.CreateEntryRequest{
+		ScheduleManipulationToken: token,
+		Seqno:                     seqNo,
+		Id:                        action.EntryID,
+		Time:                      whenProto,
+	}
+
+	// Set ConfigurationChange based on action type
+	switch action.Type {
+	case sbi.ScheduledUpdateBeam:
+		if action.Beam == nil {
+			return nil, fmt.Errorf("ScheduledUpdateBeam requires non-nil Beam")
+		}
+		updateBeam := convertBeamSpecToUpdateBeam(action.Beam)
+		createEntry.ConfigurationChange = &schedulingpb.CreateEntryRequest_UpdateBeam{
+			UpdateBeam: updateBeam,
+		}
+
+	case sbi.ScheduledDeleteBeam:
+		if action.Beam == nil {
+			return nil, fmt.Errorf("ScheduledDeleteBeam requires non-nil Beam")
+		}
+		deleteBeam := convertBeamSpecToDeleteBeam(action.Beam)
+		createEntry.ConfigurationChange = &schedulingpb.CreateEntryRequest_DeleteBeam{
+			DeleteBeam: deleteBeam,
+		}
+
+	case sbi.ScheduledSetRoute:
+		if action.Route == nil {
+			return nil, fmt.Errorf("ScheduledSetRoute requires non-nil Route")
+		}
+		setRoute := convertRouteEntryToSetRoute(action.Route)
+		createEntry.ConfigurationChange = &schedulingpb.CreateEntryRequest_SetRoute{
+			SetRoute: setRoute,
+		}
+
+	case sbi.ScheduledDeleteRoute:
+		if action.Route == nil {
+			return nil, fmt.Errorf("ScheduledDeleteRoute requires non-nil Route")
+		}
+		deleteRoute := convertRouteEntryToDeleteRoute(action.Route)
+		createEntry.ConfigurationChange = &schedulingpb.CreateEntryRequest_DeleteRoute{
+			DeleteRoute: deleteRoute,
+		}
+
+	case sbi.ScheduledSetSrPolicy:
+		if action.SrPolicy == nil {
+			return nil, fmt.Errorf("ScheduledSetSrPolicy requires non-nil SrPolicy")
+		}
+		setSrPolicy := convertSrPolicySpecToSetSrPolicy(action.SrPolicy)
+		createEntry.ConfigurationChange = &schedulingpb.CreateEntryRequest_SetSrPolicy{
+			SetSrPolicy: setSrPolicy,
+		}
+
+	case sbi.ScheduledDeleteSrPolicy:
+		if action.SrPolicy == nil {
+			return nil, fmt.Errorf("ScheduledDeleteSrPolicy requires non-nil SrPolicy")
+		}
+		deleteSrPolicy := convertSrPolicySpecToDeleteSrPolicy(action.SrPolicy)
+		createEntry.ConfigurationChange = &schedulingpb.CreateEntryRequest_DeleteSrPolicy{
+			DeleteSrPolicy: deleteSrPolicy,
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported action type: %v", action.Type)
+	}
+
+	return createEntry, nil
+}
+
+// convertBeamSpecToUpdateBeam converts a BeamSpec to an UpdateBeam proto.
+// This is a simplified conversion for Scope 4.
+func convertBeamSpecToUpdateBeam(beam *sbi.BeamSpec) *schedulingpb.UpdateBeam {
+	// Build a minimal Beam proto
+	beamProto := &schedulingpb.Beam{
+		AntennaId: beam.InterfaceID,
+	}
+
+	// For Scope 4, we'll use a minimal beam configuration
+	// Endpoints is a map[string]*BeamEndpoint, but we'll leave it empty
+	// for now as it's not critical for basic functionality
+
+	return &schedulingpb.UpdateBeam{
+		Beam: beamProto,
+	}
+}
+
+// convertBeamSpecToDeleteBeam converts a BeamSpec to a DeleteBeam proto.
+// For Scope 4, we use the interface ID as the beam ID.
+func convertBeamSpecToDeleteBeam(beam *sbi.BeamSpec) *schedulingpb.DeleteBeam {
+	// Use interface ID as beam ID (simplified for Scope 4)
+	beamID := beam.InterfaceID
+	if beamID == "" {
+		// Fallback: construct a beam ID from node and interface
+		beamID = beam.NodeID + ":" + beam.InterfaceID
+	}
+
+	return &schedulingpb.DeleteBeam{
+		Id: beamID,
+	}
+}
+
+// convertRouteEntryToSetRoute converts a RouteEntry to a SetRoute proto.
+func convertRouteEntryToSetRoute(route *model.RouteEntry) *schedulingpb.SetRoute {
+	// SetRoute uses From (source), To (destination), Via (next hop), Dev (output interface)
+	// RouteEntry has DestinationCIDR, NextHopNodeID, OutInterfaceID
+	// For Scope 4, we'll use DestinationCIDR for both From and To (simplified)
+	return &schedulingpb.SetRoute{
+		From: "",                    // Source prefix - not in RouteEntry, leave empty
+		To:   route.DestinationCIDR, // Destination prefix
+		Via:  route.NextHopNodeID,   // Next hop address/node
+		Dev:  route.OutInterfaceID,  // Output device/interface
+	}
+}
+
+// convertRouteEntryToDeleteRoute converts a RouteEntry to a DeleteRoute proto.
+func convertRouteEntryToDeleteRoute(route *model.RouteEntry) *schedulingpb.DeleteRoute {
+	return &schedulingpb.DeleteRoute{
+		From: route.DestinationCIDR, // From is source prefix
+		To:   route.DestinationCIDR, // To is destination prefix
+	}
+}
+
+// convertSrPolicySpecToSetSrPolicy converts an SrPolicySpec to a SetSrPolicy proto.
+// This is a stub implementation for Scope 4.
+func convertSrPolicySpecToSetSrPolicy(srPolicy *sbi.SrPolicySpec) *schedulingpb.SetSrPolicy {
+	// Minimal stub for Scope 4
+	return &schedulingpb.SetSrPolicy{
+		Id: srPolicy.PolicyID,
+	}
+}
+
+// convertSrPolicySpecToDeleteSrPolicy converts an SrPolicySpec to a DeleteSrPolicy proto.
+// This is a stub implementation for Scope 4.
+func convertSrPolicySpecToDeleteSrPolicy(srPolicy *sbi.SrPolicySpec) *schedulingpb.DeleteSrPolicy {
+	return &schedulingpb.DeleteSrPolicy{
+		Id: srPolicy.PolicyID,
+	}
 }
 
 // generateToken generates a random token for schedule manipulation.
