@@ -243,17 +243,16 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	if link.Quality != LinkQualityDown {
 		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
 		// Auto-activate Unknown links (default/unset status).
-		// Also auto-activate Potential links that were auto-downgraded due to geometry failure:
-		// - IsStatic=true: NBI-created links that were temporarily downgraded
-		// - Dynamic links (ID starts with "dyn-"): Auto-discovered links that were auto-downgraded
-		// This ensures both static and dynamic links recover when geometry improves.
-		// Static links explicitly set to Potential by the control plane (via DeactivateLink)
-		// will not auto-activate because they are IsStatic=true but were not auto-downgraded
-		// (they were explicitly set to Potential and remain Potential across UpdateConnectivity).
-		// Dynamic links should always auto-activate when geometry allows since they are
-		// automatically discovered and not managed by the control plane.
+		// Also auto-activate Potential links that are dynamic (auto-discovered links that
+		// were auto-downgraded due to geometry failure). Dynamic links should always
+		// auto-activate when geometry allows since they are automatically discovered and
+		// not managed by the control plane.
+		// Static links with Potential status (whether auto-downgraded or explicitly set
+		// via DeactivateLink) do NOT auto-activate. This ensures that explicit control
+		// plane actions (DeactivateLink) are respected. Static links that were
+		// auto-downgraded can be explicitly reactivated via ActivateLink.
 		isDynamic := strings.HasPrefix(link.ID, "dyn-")
-		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && (link.IsStatic || isDynamic)) {
+		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && isDynamic) {
 			// Auto-activate when geometry allows (maintains backward compatibility)
 			link.Status = LinkStatusActive
 		}
