@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -469,4 +469,3 @@ func generateToken() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-
