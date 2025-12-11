@@ -723,6 +723,103 @@ func (s *ScenarioState) DeactivateLink(linkID string) error {
 	return nil
 }
 
+// InstallRoute installs or updates a static route on a node. If a route with
+// the same DestinationCIDR already exists, it is replaced. This is used by
+// Scope 4 control-plane components (scheduler, agents) to manage routing tables.
+func (s *ScenarioState) InstallRoute(nodeID string, route model.RouteEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return fmt.Errorf("node %s not found", nodeID)
+	}
+
+	// Create a copy of the node to modify
+	updated := *node
+
+	// Replace existing route with same destination, or append if new
+	found := false
+	for i, r := range updated.Routes {
+		if r.DestinationCIDR == route.DestinationCIDR {
+			updated.Routes[i] = route
+			found = true
+			break
+		}
+	}
+	if !found {
+		updated.Routes = append(updated.Routes, route)
+	}
+
+	// Update the node in the KB
+	if err := s.physKB.UpdateNetworkNode(&updated); err != nil {
+		if errors.Is(err, kb.ErrNodeNotFound) {
+			return fmt.Errorf("node %s not found", nodeID)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// RemoveRoute removes a static route from a node by destination CIDR.
+// Returns an error if the node is not found or the route does not exist.
+func (s *ScenarioState) RemoveRoute(nodeID, destCIDR string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return fmt.Errorf("node %s not found", nodeID)
+	}
+
+	// Create a copy of the node to modify
+	updated := *node
+
+	// Find and remove the route
+	idx := -1
+	for i, r := range updated.Routes {
+		if r.DestinationCIDR == destCIDR {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("route %s not found on node %s", destCIDR, nodeID)
+	}
+
+	// Remove the route from the slice
+	updated.Routes = append(updated.Routes[:idx], updated.Routes[idx+1:]...)
+
+	// Update the node in the KB
+	if err := s.physKB.UpdateNetworkNode(&updated); err != nil {
+		if errors.Is(err, kb.ErrNodeNotFound) {
+			return fmt.Errorf("node %s not found", nodeID)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// GetRoutes returns a copy of all routes for a node. Returns an error if
+// the node is not found. The returned slice is a copy and can be safely
+// modified by callers without affecting the internal state.
+func (s *ScenarioState) GetRoutes(nodeID string) ([]model.RouteEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return nil, fmt.Errorf("node %s not found", nodeID)
+	}
+
+	// Return a copy of the routes slice
+	routesCopy := make([]model.RouteEntry, len(node.Routes))
+	copy(routesCopy, node.Routes)
+	return routesCopy, nil
+}
+
 // ServiceRequests returns a snapshot of all stored ServiceRequests.
 //
 // The returned slice is a shallow copy of the internal map values.
