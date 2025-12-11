@@ -239,13 +239,15 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	// Its IsUp status then depends on whether the control plane has activated it.
 	if link.Quality != LinkQualityDown {
 		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
-		// Only auto-activate if Status is Unknown (not explicitly set).
-		// Links explicitly set to Potential via DeactivateLink should remain Potential
-		// to prevent auto-activation. Scope 4 components can explicitly use
-		// DeactivateLink to set Status to Potential and prevent auto-activation,
-		// or set Status to Impaired.
+		// - Unknown links: always auto-activate (backward compatibility)
+		// - Static links (IsStatic=true): auto-activate even if Potential (backward compatibility for NBI-created links)
+		// - Dynamic Potential links: remain Potential (explicitly deactivated)
 		if link.Status == LinkStatusUnknown {
 			// Auto-activate when geometry allows (maintains backward compatibility)
+			link.Status = LinkStatusActive
+		} else if link.Status == LinkStatusPotential && link.IsStatic {
+			// For static links created via NBI API, auto-activate when geometry allows
+			// even if they initially had Potential status (backward compatibility)
 			link.Status = LinkStatusActive
 		}
 		// Link is only "up" if Status is Active
