@@ -116,12 +116,13 @@ func TestWirelessLoSClear(t *testing.T) {
 	kb.SetNodeECEFPosition("nodeB", Vec3{X: EarthRadiusKm + 700, Y: 1000, Z: 0})
 
 	// Create a static link (not dynamic) so we can test Status persistence
+	// Start with Unknown status to test auto-activation (backward compatibility)
 	if err := kb.AddNetworkLink(&NetworkLink{
 		ID:         "linkAB",
 		InterfaceA: "ifA",
 		InterfaceB: "ifB",
 		Medium:     MediumWireless,
-		Status:     LinkStatusPotential, // Start as Potential
+		Status:     LinkStatusUnknown, // Unknown links auto-activate when geometry allows
 	}); err != nil {
 		t.Fatalf("AddNetworkLink failed: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestWirelessLoSClear(t *testing.T) {
 	if link == nil {
 		t.Fatalf("expected static link linkAB to exist")
 	}
-	// Links with Potential status auto-activate when geometry allows (backward compatibility)
+	// Links with Unknown status auto-activate when geometry allows (backward compatibility)
 	// So Status should be Active and link should be up
 	if link.Status != LinkStatusActive {
 		t.Fatalf("expected link Status = LinkStatusActive (auto-activated), got %v", link.Status)

@@ -446,13 +446,13 @@ func TestScenarioStateLinkStatusConnectivityGating(t *testing.T) {
 	net.SetNodeECEFPosition("nodeA", network.Vec3{X: network.EarthRadiusKm + 500, Y: 0, Z: 0})
 	net.SetNodeECEFPosition("nodeB", network.Vec3{X: network.EarthRadiusKm + 500, Y: 100, Z: 0})
 
-	// Create a static link with Potential status
+	// Create a static link with Unknown status (will auto-activate for backward compatibility)
 	link := &network.NetworkLink{
 		ID:         "linkAB",
 		InterfaceA: "ifA",
 		InterfaceB: "ifB",
 		Medium:     network.MediumWireless,
-		Status:     network.LinkStatusPotential,
+		Status:     network.LinkStatusUnknown, // Unknown links auto-activate when geometry allows
 	}
 	if err := s.CreateLink(link); err != nil {
 		t.Fatalf("CreateLink error: %v", err)
@@ -462,7 +462,7 @@ func TestScenarioStateLinkStatusConnectivityGating(t *testing.T) {
 	cs := network.NewConnectivityService(net)
 	cs.UpdateConnectivity()
 
-	// Links with Potential status auto-activate when geometry allows (backward compatibility)
+	// Links with Unknown status auto-activate when geometry allows (backward compatibility)
 	// So Status should be Active and link should be up
 	got, err := s.GetLink("linkAB")
 	if err != nil {
@@ -492,17 +492,19 @@ func TestScenarioStateLinkStatusConnectivityGating(t *testing.T) {
 		t.Fatalf("Link after DeactivateLink should not be up, got IsUp=true")
 	}
 
-	// Note: Potential links auto-activate when geometry allows (backward compatibility).
-	// After UpdateConnectivity, the link will be auto-activated again.
-	// This test verifies that DeactivateLink works correctly, but acknowledges
-	// that UpdateConnectivity will auto-activate Potential links when geometry allows.
+	// Verify that Potential links do NOT auto-activate (this is the intended behavior).
+	// DeactivateLink sets Status to Potential to prevent auto-activation.
+	// After UpdateConnectivity, the link should remain Potential and not be auto-activated.
 	cs.UpdateConnectivity()
 	got, err = s.GetLink("linkAB")
 	if err != nil {
 		t.Fatalf("GetLink after UpdateConnectivity error: %v", err)
 	}
-	// Link is auto-activated again (backward compatibility behavior)
-	if got.Status != network.LinkStatusActive {
-		t.Fatalf("Link Status after UpdateConnectivity = %v, want LinkStatusActive (auto-activated)", got.Status)
+	// Link should remain Potential (not auto-activated)
+	if got.Status != network.LinkStatusPotential {
+		t.Fatalf("Link Status after UpdateConnectivity = %v, want LinkStatusPotential (should NOT auto-activate)", got.Status)
+	}
+	if got.IsUp {
+		t.Fatalf("Link with Potential status should not be up, got IsUp=true")
 	}
 }
