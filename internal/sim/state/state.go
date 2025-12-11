@@ -1028,6 +1028,32 @@ func (s *ScenarioState) GetRoutes(nodeID string) ([]model.RouteEntry, error) {
 	return routesCopy, nil
 }
 
+// GetRoute returns the route on nodeID whose DestinationCIDR exactly matches destCIDR.
+// It currently does a simple string equality match (no longest-prefix matching).
+// Returns (nil, false) if the node or route is not found.
+// The returned RouteEntry is a copy and can be safely modified by callers.
+func (s *ScenarioState) GetRoute(nodeID, destCIDR string) (*model.RouteEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return nil, false
+	}
+
+	// Scan routes for exact DestinationCIDR match
+	for i := range node.Routes {
+		r := &node.Routes[i]
+		if r.DestinationCIDR == destCIDR {
+			// Return a copy to avoid external mutation
+			copy := *r
+			return &copy, true
+		}
+	}
+
+	return nil, false
+}
+
 // ServiceRequests returns a snapshot of all stored ServiceRequests.
 //
 // The returned slice is a shallow copy of the internal map values.
