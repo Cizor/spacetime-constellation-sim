@@ -214,8 +214,9 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 			link.Quality = LinkQualityDown
 			link.SNRdB = 0
 			link.MaxDataRateMbps = 0
-			// If Status was not set, default to Potential
-			if link.Status == LinkStatusUnknown {
+			// If Status was not set or was Active, set to Potential to maintain consistency
+			// (Active status with IsUp=false is inconsistent)
+			if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
 				link.Status = LinkStatusPotential
 			}
 			return
