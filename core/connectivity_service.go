@@ -1,7 +1,10 @@
 // core/connectivity_service.go
 package core
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 // ConnectivityService evaluates which pairs of interfaces are
 // connected at a given instant, and annotates links with simple
@@ -240,13 +243,17 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	if link.Quality != LinkQualityDown {
 		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
 		// Auto-activate Unknown links (default/unset status).
-		// Also auto-activate Potential links that are IsStatic=true (NBI-created links
-		// that were temporarily downgraded to Potential due to geometry failure).
-		// This maintains backward compatibility: NBI-created links should auto-activate
-		// when geometry allows, even if they were temporarily Potential.
-		// Non-static Potential links are explicitly deactivated by the control plane
-		// (via DeactivateLink) and should not auto-activate.
-		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && link.IsStatic) {
+		// Also auto-activate Potential links that were auto-downgraded due to geometry failure:
+		// - IsStatic=true: NBI-created links that were temporarily downgraded
+		// - Dynamic links (ID starts with "dyn-"): Auto-discovered links that were auto-downgraded
+		// This ensures both static and dynamic links recover when geometry improves.
+		// Static links explicitly set to Potential by the control plane (via DeactivateLink)
+		// will not auto-activate because they are IsStatic=true but were not auto-downgraded
+		// (they were explicitly set to Potential and remain Potential across UpdateConnectivity).
+		// Dynamic links should always auto-activate when geometry allows since they are
+		// automatically discovered and not managed by the control plane.
+		isDynamic := strings.HasPrefix(link.ID, "dyn-")
+		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && (link.IsStatic || isDynamic)) {
 			// Auto-activate when geometry allows (maintains backward compatibility)
 			link.Status = LinkStatusActive
 		}
