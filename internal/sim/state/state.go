@@ -979,6 +979,37 @@ func (s *ScenarioState) RemoveRoute(nodeID, destCIDR string) error {
 	return nil
 }
 
+// ApplySetRoute installs or updates a static route on a node. This is a
+// high-level wrapper around InstallRoute that provides a clear entry point
+// for SBI/agents executing ScheduledSetRoute actions. It validates inputs
+// and delegates to the underlying InstallRoute method.
+func (s *ScenarioState) ApplySetRoute(nodeID string, route model.RouteEntry) error {
+	if nodeID == "" {
+		return fmt.Errorf("ApplySetRoute: nodeID must not be empty")
+	}
+	if route.DestinationCIDR == "" {
+		return fmt.Errorf("ApplySetRoute: DestinationCIDR must not be empty")
+	}
+	return s.InstallRoute(nodeID, route)
+}
+
+// ApplyDeleteRoute removes a static route from a node by destination CIDR.
+// This is a high-level wrapper around RemoveRoute that provides a clear entry
+// point for SBI/agents executing ScheduledDeleteRoute actions. It validates
+// inputs and delegates to the underlying RemoveRoute method.
+//
+// Behavior: Returns an error if the node is not found or the route does not
+// exist (strict mode for Scope 4 debug-friendliness).
+func (s *ScenarioState) ApplyDeleteRoute(nodeID, destCIDR string) error {
+	if nodeID == "" {
+		return fmt.Errorf("ApplyDeleteRoute: nodeID must not be empty")
+	}
+	if destCIDR == "" {
+		return fmt.Errorf("ApplyDeleteRoute: destCIDR must not be empty")
+	}
+	return s.RemoveRoute(nodeID, destCIDR)
+}
+
 // GetRoutes returns a copy of all routes for a node. Returns an error if
 // the node is not found. The returned slice is a copy and can be safely
 // modified by callers without affecting the internal state.
