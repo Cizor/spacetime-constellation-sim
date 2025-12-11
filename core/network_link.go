@@ -1,5 +1,17 @@
 package core
 
+// LinkStatus is an explicit status for a network link, indicating
+// whether it is merely geometrically possible (Potential) or
+// actively enabled by the control plane (Active).
+type LinkStatus int
+
+const (
+	LinkStatusUnknown   LinkStatus = iota // Default/unset
+	LinkStatusPotential                   // Geometrically possible, but not activated by control plane
+	LinkStatusActive                      // Activated by control plane and geometrically possible
+	LinkStatusImpaired                    // Deliberately impaired by control plane, regardless of geometry
+)
+
 // LinkQuality is a coarse, human-readable classification of link
 // quality derived from the SNR estimate.
 type LinkQuality string
@@ -21,8 +33,15 @@ type NetworkLink struct {
 	InterfaceB string     `json:"InterfaceB"`
 	Medium     MediumType `json:"Medium"`
 
-	// Administrative / health status flags.
-	IsUp       bool `json:"IsUp"`
+	// Status indicates the control-plane state of the link.
+	// This is distinct from IsUp, which reflects current physical viability.
+	Status LinkStatus `json:"Status"`
+
+	// IsUp indicates if the link is currently physically viable (geometry, RF, etc.)
+	// AND administratively active. Maintained for backward compatibility.
+	IsUp bool `json:"IsUp"`
+	// IsImpaired indicates if the link is administratively forced down.
+	// Maintained for backward compatibility.
 	IsImpaired bool `json:"IsImpaired"`
 
 	// Performance metadata. Latency and data rate are primarily

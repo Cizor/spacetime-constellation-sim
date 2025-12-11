@@ -115,15 +115,31 @@ func TestWirelessLoSClear(t *testing.T) {
 	kb.SetNodeECEFPosition("nodeA", Vec3{X: EarthRadiusKm + 700, Y: 0, Z: 0})
 	kb.SetNodeECEFPosition("nodeB", Vec3{X: EarthRadiusKm + 700, Y: 1000, Z: 0})
 
+	// Create a static link (not dynamic) so we can test Status persistence
+	if err := kb.AddNetworkLink(&NetworkLink{
+		ID:         "linkAB",
+		InterfaceA: "ifA",
+		InterfaceB: "ifB",
+		Medium:     MediumWireless,
+		Status:     LinkStatusPotential, // Start as Potential
+	}); err != nil {
+		t.Fatalf("AddNetworkLink failed: %v", err)
+	}
+
 	cs := NewConnectivityService(kb)
 	cs.UpdateConnectivity()
 
-	link := findLinkBetween(kb, "ifA", "ifB")
+	link := kb.GetNetworkLink("linkAB")
 	if link == nil {
-		t.Fatalf("expected a dynamic wireless link between ifA and ifB")
+		t.Fatalf("expected static link linkAB to exist")
+	}
+	// Links with Potential status auto-activate when geometry allows (backward compatibility)
+	// So Status should be Active and link should be up
+	if link.Status != LinkStatusActive {
+		t.Fatalf("expected link Status = LinkStatusActive (auto-activated), got %v", link.Status)
 	}
 	if !link.IsUp {
-		t.Fatalf("expected link to be up with clear LoS and within range")
+		t.Fatalf("expected link to be up with clear LoS, within range, and Active status (Status=%v, Quality=%v, IsUp=%v)", link.Status, link.Quality, link.IsUp)
 	}
 	if link.Quality == LinkQualityDown {
 		t.Fatalf("expected non-DOWN quality for a usable link, got %v", link.Quality)
@@ -191,6 +207,7 @@ func TestFrequencyBandMismatchBlocksLink(t *testing.T) {
 		InterfaceA: "ifKu",
 		InterfaceB: "ifKa",
 		Medium:     MediumWireless,
+		Status:     LinkStatusActive, // Set to Active to test RF compatibility check
 	}); err != nil {
 		t.Fatalf("AddNetworkLink(link-ku-ka): %v", err)
 	}
@@ -352,6 +369,7 @@ func TestManualLinkImpairmentOverridesGeometry(t *testing.T) {
 		InterfaceA: "ifA",
 		InterfaceB: "ifB",
 		Medium:     MediumWireless,
+		Status:     LinkStatusActive, // Set to Active to test impairment behavior
 	}); err != nil {
 		t.Fatalf("AddNetworkLink(linkAB): %v", err)
 	}

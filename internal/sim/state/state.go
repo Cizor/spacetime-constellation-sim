@@ -661,6 +661,68 @@ func (s *ScenarioState) UpdateLink(link *network.NetworkLink) error {
 	return nil
 }
 
+// ActivateLink sets a link's status to Active, enabling it in the network topology.
+// This is used by Scope 4 control-plane components (scheduler, agents) to turn
+// links on. The link must exist and be geometrically possible (potential) before
+// it can be activated.
+func (s *ScenarioState) ActivateLink(linkID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get a copy of the link to modify
+	link := s.netKB.GetNetworkLink(linkID)
+	if link == nil {
+		return fmt.Errorf("link %s not found", linkID)
+	}
+
+	// Create a copy with updated status
+	updated := *link
+	updated.Status = network.LinkStatusActive
+	// Maintain backward compatibility with IsUp field
+	updated.IsUp = true
+	updated.IsImpaired = false
+
+	// Update via KnowledgeBase method (which handles its own locking)
+	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
+		if errors.Is(err, network.ErrLinkNotFound) {
+			return fmt.Errorf("link %s not found", linkID)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// DeactivateLink sets a link's status to Potential, disabling it in the network topology.
+// This is used by Scope 4 control-plane components to turn links off. The link
+// remains in the knowledge base but is no longer considered active.
+func (s *ScenarioState) DeactivateLink(linkID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get a copy of the link to modify
+	link := s.netKB.GetNetworkLink(linkID)
+	if link == nil {
+		return fmt.Errorf("link %s not found", linkID)
+	}
+
+	// Create a copy with updated status
+	updated := *link
+	updated.Status = network.LinkStatusPotential
+	// Maintain backward compatibility with IsUp field
+	updated.IsUp = false
+
+	// Update via KnowledgeBase method (which handles its own locking)
+	if err := s.netKB.UpdateNetworkLink(&updated); err != nil {
+		if errors.Is(err, network.ErrLinkNotFound) {
+			return fmt.Errorf("link %s not found", linkID)
+		}
+		return err
+	}
+
+	return nil
+}
+
 // ServiceRequests returns a snapshot of all stored ServiceRequests.
 //
 // The returned slice is a shallow copy of the internal map values.

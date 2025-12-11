@@ -1,0 +1,911 @@
+Chunk 0 – Sanity-check & tidy Scope 1/2 base (small but important)
+
+Goal: Ensure the existing core is solid and ready for NBI to sit on top.
+
+0.1 – Confirm data model alignment with requirements
+
+Cross-check current PlatformDefinition (model.PlatformDefinition, SGP4 motion model in core/motion.go) with the Requirements doc’s PlatformDefinition expectations: ID, name/type, motion source (TLE), ECEF coordinates, type/category tags. 
+
+Requirements for an Aalyria Spa…
+
+Add any missing fields in model.PlatformDefinition that are needed for NBI parity (e.g. category tags, motion source metadata) even if some are just stored and not fully used yet.
+
+Confirm NetworkNode struct (model.NetworkNode) has at least: ID, name/type, PlatformID for physical association. Add category tags if missing. 
+
+Requirements for an Aalyria Spa…
+
+0.2 – Confirm Scope-2 connectivity core is ready
+
+Review core/NetworkInterface, TransceiverModel, NetworkLink, ConnectivityService against the Scope 2 plan and Requirements doc (interfaces, wired/wireless split, transceiver model ID, basic link budget fields). 
+
+Requirements for an Aalyria Spa…
+
+Ensure TransceiverModel has at least ID, basic RF params and any NBI-needed identifiers (transceiver_model_id mapping to Aalyria’s proto). 
+
+Requirements for an Aalyria Spa…
+
+Confirm ConnectivityService exposes at least:
+
+Evaluation of wireless connectivity (line-of-sight, threshold-based link up/down).
+
+A way to query current link states for NBI later (you may expose “query by interface pair” helper now or in Chunk 7).
+
+Output: A short internal note: “Scope 1 & 2 baseline verified for NBI”, and a list of any extra fields you add now so we don’t lose them when mapping to NBI messages in later chunks.
+
+Chunk 1 – NBI proto integration & Go type generation
+
+Goal: Wire Aalyria protos into this repo so we can use the real message types described in Requirements & Scope-3 plan. 
+
+Scope 3 Implementation Plan_ No…
+
+1.1 – Vendor / import api-main
+
+Decide on strategy:
+
+Option A (simpler now): Vendor the relevant parts of api-main under third_party/aalyria/api in this repo.
+
+Option B: Add a Go module dependency on aalyria.com/spacetime (per its go.mod) and use protos from there.
+
+Copy or reference at minimum:
+
+api/nbi/v1alpha/resources/platform.proto
+
+api/nbi/v1alpha/resources/network_element.proto
+
+api/nbi/v1alpha/resources/network_link.proto
+
+api/nbi/v1alpha/resources/service_request.proto
+
+api/nbi/v1alpha/nbi.proto (NetOps / NBI surface). 
+
+Requirements for an Aalyria Spa…
+
+1.2 – Generate Go code for selected protos
+
+Add a tools/proto or internal/genproto directory and:
+
+buf.gen.yaml or a Makefile target for protoc --go_out --go-grpc_out ....
+
+Generate *.pb.go for the above protos into e.g. internal/genproto/aalyria/....
+
+Check package names align with Aalyria’s expectation; avoid clashes with your own model/core packages.
+
+1.3 – Create NBI type alias layer
+
+Add nbi/types package with helpers:
+
+Type aliases/wrappers around the generated types, e.g. type PlatformDefinition = spacetimepb.PlatformDefinition.
+
+Basic conversion functions between:
+
+model.PlatformDefinition ↔ nbi.PlatformDefinition.
+
+model.NetworkNode + core.NetworkInterface ↔ nbi.NetworkNode (with embedded interfaces). 
+
+Requirements for an Aalyria Spa…
+
+core.NetworkLink ↔ nbi.NetworkLink/BidirectionalLink.
+
+New ServiceRequest struct in your domain ↔ nbi.ServiceRequest.
+
+Keep this mapping pure (no side-effects) so it can be reused by both gRPC handlers and tests.
+
+Output: internal/genproto/... tree and nbi/types with clean mapping functions, plus docs on which Aalyria protos are considered “in scope” for this simulator.
+
+Chunk 2 – ScenarioState façade over existing knowledge bases
+
+Goal: Provide a single, NBI-facing state façade that orchestrates:
+
+Scope 1 physical state (kb.KnowledgeBase: platforms + logical nodes).
+
+Scope 2 network state (core.KnowledgeBase: interfaces, links, connectivity aux state).
+
+This matches the Requirements doc’s notion of a “Scenario” as the full graph of platforms, nodes, links and service requests. 
+
+Requirements for an Aalyria Spa…
+
+2.1 – Introduce sim/state (ScenarioState)
+
+New package sim/state:
+
+type ScenarioState struct {
+    physical *kb.KnowledgeBase
+    network  *core.KnowledgeBase
+    // optionally: serviceRequests map[string]*ServiceRequest
+    mu sync.RWMutex
+}
+
+
+Provide constructor:
+
+NewScenarioState(physical *kb.KnowledgeBase, network *core.KnowledgeBase) *ScenarioState.
+
+2.2 – Entity-level operations (used by NBI services)
+
+Implement methods on ScenarioState:
+
+Platforms
+
+CreatePlatform(pd *model.PlatformDefinition) error
+
+GetPlatform(id string) (*model.PlatformDefinition, error)
+
+ListPlatforms() []*model.PlatformDefinition
+
+UpdatePlatform(pd *model.PlatformDefinition) error
+
+DeletePlatform(id string) error – enforce no NetworkNode referencing it (or cascade, whichever you decide).
+
+Network nodes & association
+
+CreateNode(node *model.NetworkNode, interfaces []*core.NetworkInterface) error
+
+GetNode(id string) *model.NetworkNode (+ its interfaces).
+
+DeleteNode(id string) – ensure no links / service requests depend on it.
+
+Interfaces
+
+UpsertInterface(nodeID string, iface *core.NetworkInterface) error
+
+DeleteInterface(nodeID, ifaceID string) error
+
+Links
+
+CreateLink(link *core.NetworkLink) error
+
+DeleteLink(id string) error
+
+ListLinks() etc.
+
+Service requests (new domain type)
+
+CreateServiceRequest(sr *ServiceRequest) error
+
+GetServiceRequest(id string) *ServiceRequest
+
+ListServiceRequests() []*ServiceRequest
+
+UpdateServiceRequest(sr *ServiceRequest) error
+
+DeleteServiceRequest(id string) error
+
+All of these should:
+
+Take the global lock (mu) in write-mode for mutating ops and read-mode for queries.
+
+Delegate to kb.KnowledgeBase and core.KnowledgeBase in a consistent manner.
+
+2.3 – Scenario-level helpers (for later chunks)
+
+Stub out but don’t fully implement yet:
+
+ClearScenario() error – wipe platforms, nodes, interfaces, links, service requests.
+
+Snapshot() *ScenarioSnapshot – aggregated struct with slices of all of the above, to implement NBI “scenario dump” calls later.
+
+Output: ScenarioState API as the single entry-point for NBI services; no direct writes to kb or core from gRPC handlers.
+
+Chunk 3 – PlatformDefinition NBI service
+
+Goal: Expose Aalyria-compatible PlatformDefinition CRUD over gRPC and wire it into ScenarioState. 
+
+Scope 3 Implementation Plan_ No…
+
+3.1 – Service definition
+
+Two options:
+
+Direct NetOps compatibility: Implement the existing NetOps CreateEntity/GetEntity/ListEntities/DeleteEntity for entity type PLATFORM_DEFINITION from nbi.proto. 
+
+Requirements for an Aalyria Spa…
+
+Simpler for now: Implement a dedicated PlatformService:
+
+service PlatformService {
+  rpc CreatePlatform(PlatformDefinition) returns (PlatformDefinition);
+  rpc GetPlatform(GetPlatformRequest) returns (PlatformDefinition);
+  rpc ListPlatforms(ListPlatformsRequest) returns (ListPlatformsResponse);
+  rpc UpdatePlatform(UpdatePlatformRequest) returns (PlatformDefinition);
+  rpc DeletePlatform(DeletePlatformRequest) returns (google.protobuf.Empty);
+}
+
+
+Given the Scope-3 plan emphasises entity-focused services, you can start with option 2 for simplicity and maybe add NetOps later as a compatibility shim. 
+
+Scope 3 Implementation Plan_ No…
+
+Generate Go stubs into nbi/gen or similar.
+
+3.2 – Implement server
+
+Create nbi/platform_service.go:
+
+type PlatformService struct { state *sim.State; log *zap.Logger }.
+
+Implement each RPC using the mapping functions from Chunk 1 + ScenarioState from Chunk 2:
+
+CreatePlatform
+
+Validate ID uniqueness (or generate ID if empty).
+
+Validate motion source fields (e.g. TLE provided for satellites) according to the Requirements doc. 
+
+Requirements for an Aalyria Spa…
+
+Map NBI proto → model.PlatformDefinition.
+
+Call state.CreatePlatform(...).
+
+Register with MotionModel if needed (see 3.3).
+
+Return newly stored proto (converted back).
+
+Get/List/Update/Delete
+
+Straightforward wrappers over ScenarioState.
+
+3.3 – Integrate with MotionModel & TimeController
+
+Enhance core.MotionModel (or whichever struct you use to drive SGP4) to support dynamic registration:
+
+AddPlatform(pd *model.PlatformDefinition) and RemovePlatform(id string).
+
+At CreatePlatform, register new platform with MotionModel.
+
+At DeletePlatform, remove it.
+
+Ensure TimeController tick loop used in cmd/simulator also works for the NBI server (we’ll wire that in Chunk 7).
+
+3.4 – Tests
+
+Unit test NBI handler with in-memory ScenarioState:
+
+Happy path create/get/list/update/delete.
+
+Invalid motion source (missing TLE for orbital type) returns appropriate gRPC status (INVALID_ARGUMENT).
+
+Deleting platform with attached nodes should fail with FAILED_PRECONDITION.
+
+Output: PlatformService running against the same KB you already use for SGP4, accessible via gRPC.
+
+Chunk 4 – NetworkNode + NetworkInterface NBI service
+
+Goal: Let external clients define nodes + interfaces in Aalyria’s shape and map that into your node model and scope-2 network interfaces. 
+
+Requirements for an Aalyria Spa…
+
+4.1 – Service definition
+
+Add NetworkNodeService:
+
+service NetworkNodeService {
+  rpc CreateNode(NetworkNode) returns (NetworkNode);
+  rpc GetNode(GetNodeRequest) returns (NetworkNode);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc UpdateNode(UpdateNodeRequest) returns (NetworkNode);
+  rpc DeleteNode(DeleteNodeRequest) returns (google.protobuf.Empty);
+}
+
+
+Use Aalyria’s NetworkNode message from network_element.proto directly. 
+
+Requirements for an Aalyria Spa…
+
+4.2 – Mapping logic
+
+In nbi/types:
+
+Map NetworkNode.node_id, name, type, etc. → model.NetworkNode.
+
+For each NetworkInterface embedded in the node:
+
+Create a core.NetworkInterface with:
+
+NodeID, interfaceId (local within node).
+
+Wired vs wireless settings.
+
+TransceiverModelID for wireless.
+
+IP/MAC addresses, comments as needed. 
+
+Requirements for an Aalyria Spa…
+
+4.3 – Server implementation
+
+In nbi/node_service.go:
+
+CreateNode
+
+Validate:
+
+Node ID unique; referenced platform_id exists if provided. 
+
+Requirements for an Aalyria Spa…
+
+All interfaces have unique interface_id within node.
+
+All wireless interfaces reference existing transceiver models (Scope-2).
+
+Map proto → domain.
+
+Call ScenarioState.CreateNode(node, interfaces).
+
+UpdateNode
+
+Allow full replacement for now:
+
+Read existing node, apply updates, re-validate.
+
+Update in ScenarioState with interfaces re-synced to core.KnowledgeBase.
+
+DeleteNode
+
+Ensure no NetworkLink or active ServiceRequests reference this node; else fail with FAILED_PRECONDITION.
+
+4.4 – Tests
+
+Node with inline interfaces:
+
+Create a satellite node referencing an existing Platform.
+
+Validate that core.KnowledgeBase now contains the expected interfaces.
+
+Invalid platform reference or transceiver ID -> INVALID_ARGUMENT.
+
+Delete node cleans up interfaces in core.KnowledgeBase.
+
+Output: External clients can define nodes and interfaces over NBI; simulator state is updated accordingly.
+
+Chunk 5 – NetworkLink NBI service
+
+Goal: Allow static links (mostly terrestrial / always-on) and simple satellite links to be defined via NBI, mapped to scope-2 NetworkLink objects. 
+
+Requirements for an Aalyria Spa…
+
+5.1 – Service definition
+
+Add NetworkLinkService:
+
+service NetworkLinkService {
+  rpc CreateLink(NetworkLink) returns (NetworkLink);
+  rpc GetLink(GetLinkRequest) returns (NetworkLink);
+  rpc ListLinks(ListLinksRequest) returns (ListLinksResponse);
+  rpc DeleteLink(DeleteLinkRequest) returns (google.protobuf.Empty);
+}
+
+
+Use NetworkLink or BidirectionalLink from Aalyria’s network_link.proto. 
+
+Requirements for an Aalyria Spa…
+
+5.2 – Mapping & storage
+
+Map NetworkLink.src_interface_id/dst_interface_id → your (nodeID, ifaceID) pairs.
+
+Store links in core.KnowledgeBase:
+
+For bidirectional, either:
+
+Represent as two directional links with shared ID prefix.
+
+Or extend your core.NetworkLink to mark direction and store both ends.
+
+5.3 – Server implementation
+
+CreateLink
+
+Validate:
+
+Both interfaces exist in ScenarioState (Node + Interface).
+
+For wired links, you can mark as always-available in ConnectivityService.
+
+For wireless, ensure both ends are wireless interfaces.
+
+Create core.NetworkLink objects and call ScenarioState.CreateLink(...).
+
+List/Get/Delete are straightforward.
+
+5.4 – Tests
+
+Create static terrestrial fiber link (wired) and confirm:
+
+Appears in core.KnowledgeBase.
+
+Connectivity engine treats it as always accessible.
+
+Create invalid link (missing interface) -> INVALID_ARGUMENT.
+
+Output: All static connectivity relationships can be built via NBI.
+
+Chunk 6 – ServiceRequest NBI service (data-only for now)
+
+Goal: Implement NBI surface for ServiceRequest entities and store them in the simulator. Full scheduling/fulfilment logic is Scope 4, but we need now the data model and CRUD. 
+
+Requirements for an Aalyria Spa…
+
+6.1 – Domain model
+
+Define model/servicerequest.go:
+
+type ServiceRequest struct {
+    ID               string
+    SrcNodeID        string
+    DstNodeID        string
+    FlowRequirements []FlowRequirement
+    Priority         int32
+    IsDisruptionTolerant bool
+    AllowPartnerResources bool
+    // status fields for future: IsProvisionedNow, ProvisionedIntervals, etc.
+}
+
+
+FlowRequirement struct matching key fields from proto:
+
+Min / requested bandwidth, max latency, validity interval. 
+
+Requirements for an Aalyria Spa…
+
+Add storage in ScenarioState:
+
+serviceRequests map[string]*ServiceRequest.
+
+6.2 – Service definition
+
+ServiceRequestService:
+
+service ServiceRequestService {
+  rpc CreateServiceRequest(ServiceRequest) returns (ServiceRequest);
+  rpc GetServiceRequest(GetServiceRequestRequest) returns (ServiceRequest);
+  rpc ListServiceRequests(ListServiceRequestsRequest) returns (ListServiceRequestsResponse);
+  rpc UpdateServiceRequest(UpdateServiceRequestRequest) returns (ServiceRequest);
+  rpc DeleteServiceRequest(DeleteServiceRequestRequest) returns (google.protobuf.Empty);
+}
+
+
+Using Aalyria’s ServiceRequest message. 
+
+Requirements for an Aalyria Spa…
+
+6.3 – Implementation
+
+Create
+
+Validate:
+
+src_node_id & dst_node_id exist in ScenarioState.
+
+At least one FlowRequirements entry.
+
+Map proto → domain, store in ScenarioState.CreateServiceRequest.
+
+Update
+
+Allow updates to requirements / priority, but not to ID.
+
+Delete
+
+Remove from ScenarioState map.
+
+For now, status fields (is_provisioned_now, provisioned_intervals) can be stored but not actively updated; they’ll be hooked into the routing/scheduling layer in a later scope. 
+
+Requirements for an Aalyria Spa…
+
+6.4 – Tests
+
+Simple create/get/update/delete tests.
+
+Validate that creating SR against non-existent nodes fails.
+
+Output: NBI supports defining demands, even if the actual scheduling is stubbed.
+
+Chunk 7 – Scenario-level operations & snapshot API
+
+Goal: Implement the “scenario configuration” part of Scope-3: ability to clear, bulk load, and snapshot the entire scenario graph. 
+
+Scope 3 Implementation Plan_ No…
+
+7.1 – ScenarioService definition
+
+Define ScenarioService:
+
+service ScenarioService {
+  rpc ClearScenario(ClearScenarioRequest) returns (google.protobuf.Empty);
+  rpc GetScenario(GetScenarioRequest) returns (ScenarioSnapshot);
+  rpc LoadScenario(LoadScenarioRequest) returns (google.protobuf.Empty);
+}
+
+
+ScenarioSnapshot includes repeated fields: PlatformDefinition, NetworkNode, NetworkLink, ServiceRequest (all Aalyria types). 
+
+Requirements for an Aalyria Spa…
+
+7.2 – Implement ScenarioState.ClearScenario & Snapshot
+
+ClearScenario:
+
+Acquire write lock.
+
+Call reset/clear on:
+
+kb.KnowledgeBase platforms & nodes.
+
+core.KnowledgeBase interfaces & links.
+
+In-memory ServiceRequest map.
+
+Reset MotionModel / ConnectivityService internal caches.
+
+Snapshot:
+
+Acquire read lock.
+
+Collect all current platforms, nodes, interfaces, links, service requests.
+
+Render to ScenarioSnapshot using the mapping functions.
+
+7.3 – Scenario bulk loading from textproto/JSON
+
+While your existing core/scenario_loader.go uses JSON, Scope-3 expects Spacetime-style scenario configuration (textproto or gRPC). 
+
+Requirements for an Aalyria Spa…
+
+Implement:
+
+LoadScenario(LoadScenarioRequest) that accepts either:
+
+A list of Aalyria entities (already as protos) to apply:
+
+e.g. repeated PlatformDefinition, NetworkNode, NetworkLink, ServiceRequest.
+
+Or a reference to a textproto file (optional extra), in which case you:
+
+Parse the textproto using generated types (these are the same protos as from api-main).
+
+Call into ScenarioState to create the entities in a defined order:
+
+Platforms
+
+Nodes (+ interfaces)
+
+Links
+
+ServiceRequests
+
+Keep the internal ordering consistent to make things reproducible.
+
+Optionally:
+
+Maintain a small CLI tool or test harness that reads a textproto scenario and calls NBI gRPC (using the same service definitions) to load it; that ensures “front-door only” usage, as per architecture intent. 
+
+Architecture for a Spacetime-Co…
+
+7.4 – Tests
+
+“Roundtrip” test:
+
+Build a small scenario via NBI.
+
+Call GetScenario, capture snapshot.
+
+Call ClearScenario.
+
+Call LoadScenario(snapshot).
+
+Verify equality of scenario state before & after.
+
+Output: Scenario can be fully built, wiped and inspected via NBI – no more relying solely on JSON loader.
+
+Chunk 8 – Validation, referential integrity & error semantics
+
+Goal: Implement robust validation and consistent failure semantics for all NBI entities, as called out in the Scope-3 plan and Requirements. 
+
+Scope 3 Implementation Plan_ No…
+
+8.1 – Central validation helpers
+
+Create nbi/validation.go with pure functions:
+
+ValidatePlatform(pd *PlatformDefinition) error
+
+ValidateNode(node *NetworkNode) error
+
+ValidateInterface(iface *NetworkInterface) error
+
+ValidateLink(link *NetworkLink) error
+
+ValidateServiceRequest(sr *ServiceRequest) error
+
+Validation rules (examples, tune per docs):
+
+Platform:
+
+ID non-empty, unique.
+
+Motion source set appropriately (TLE for orbits, coordinates for static). 
+
+Requirements for an Aalyria Spa…
+
+Node:
+
+At least one interface if representing a device.
+
+If PlatformID set, platform must exist.
+
+Interface:
+
+Unique interface ID within node.
+
+For wireless: TransceiverModelId must exist; essential RF fields non-empty.
+
+Link:
+
+Both endpoints exist and are compatible (wired-wired or wireless-wireless).
+
+ServiceRequest:
+
+Source/dest nodes exist; at least one FlowRequirement; any time intervals valid.
+
+8.2 – Referential integrity rules
+
+In ScenarioState mutators (and/or validation):
+
+You cannot delete:
+
+A Platform that has Nodes referencing it.
+
+A Node that:
+
+Has any interfaces being used in links.
+
+Is referenced by any ServiceRequests.
+
+An Interface that’s in any Link.
+
+Decide whether to:
+
+Hard-fail with FAILED_PRECONDITION and explicit message.
+
+Or support a “force delete” flag that cascades (in a later scope).
+
+8.3 – Error → gRPC status mapping
+
+Ensure every NBI handler wraps errors via status.Errorf:
+
+Invalid input → codes.InvalidArgument.
+
+Entity not found → codes.NotFound.
+
+Referential conflict → codes.FailedPrecondition.
+
+Internal conditions → codes.Internal.
+
+Output: NBI feels “solid”: you can’t accidentally create dangling references or delete entities out from under others.
+
+Chunk 9 – Concurrency, performance & data-path considerations
+
+Goal: Make sure Scope-3 NBI can handle realistic concurrency without races or crazy contention.
+
+9.1 – Locking strategy audit
+
+Confirm:
+
+kb.KnowledgeBase already uses an internal RWMutex (it does).
+
+core.KnowledgeBase also has its own RWMutex.
+
+For ScenarioState:
+
+Decide whether to:
+
+Take its own lock plus rely on nested KB locks (simpler).
+
+Or rely solely on KB locks (less control).
+
+Given complexity, prefer: ScenarioState uses a coarse RWMutex for NBI operations; simulation tick / connectivity evaluation should also respect this by using read locks when possible.
+
+9.2 – Sim loop + NBI concurrency
+
+Ensure TimeController / MotionModel / ConnectivityService loops:
+
+Use read locks only for reading positions and link state.
+
+Are safe to run concurrently with NBI writes (which take write lock).
+
+Add tests:
+
+Start a sim tick loop (maybe accelerated).
+
+From multiple goroutines, create/update/delete nodes, interfaces, links via NBI.
+
+Ensure no data race warnings (go test -race clean).
+
+9.3 – Performance baseline
+
+Define a baseline target in line with Roadmap (e.g. #platforms, #nodes, #interfaces). 
+
+Roadmap for Spacetime-Compatibl…
+
+Create small performance tests:
+
+Bulk create 1k platforms/nodes via NBI.
+
+Measure latency and memory.
+
+Output: Documented concurrency model; race-free; known performance characteristics.
+
+Chunk 10 – Observability: logging, metrics, tracing
+
+Goal: Make it debuggable and production-friendly.
+
+10.1 – Structured logging
+
+Introduce a logger (e.g. zap or slog) injected into:
+
+ScenarioState.
+
+Each NBI service implementation.
+
+Log at INFO on:
+
+Entity create/delete.
+
+Scenario load/clear.
+
+Log at DEBUG on:
+
+Detailed validation failures.
+
+Ensure logs include IDs and correlation info (e.g. gRPC request ID if available).
+
+10.2 – Metrics
+
+Add Prometheus-friendly metrics (or equivalent):
+
+nbi_requests_total{service,method,code}
+
+nbi_request_duration_seconds{service,method}
+
+Entity counts: scenario_platforms, scenario_nodes, scenario_links, scenario_service_requests.
+
+10.3 – Tracing (optional but nice)
+
+If you’re using OpenTelemetry anywhere, wrap gRPC server with interceptors:
+
+Create a span per RPC.
+
+Tag with entity type and IDs.
+
+Output: You can see what NBI is doing and measure behavior for bigger scenarios.
+
+Chunk 11 – End-to-end tests & example clients
+
+Goal: Prove the whole stack works the way Scope-3 intends, not just unit pieces. 
+
+Scope 3 Implementation Plan_ No…
+
+11.1 – E2E scenario test
+
+In tests/e2e_nbi_test.go:
+
+Spin up:
+
+ScenarioState with real kb, core instances.
+
+MotionModel + ConnectivityService + TimeController (like cmd/simulator).
+
+gRPC NBI server on an in-process listener.
+
+Using generated NBI Go client:
+
+Create a ground station platform + node + interface.
+
+Create a LEO satellite platform + node + interface (with TLE).
+
+Create a wireless link (or rely on ConnectivityService).
+
+Optionally create a ServiceRequest between them.
+
+Run the sim for some ticks.
+
+Assert:
+
+NBI GetScenario returns what you expect.
+
+Connectivity engine sees link accessible when geometry allows.
+
+11.2 – Negative & edge-case tests
+
+Try to:
+
+Delete platform with active node.
+
+Delete node with linked interfaces.
+
+Create ServiceRequest with unknown node.
+
+Confirm gRPC codes and messages.
+
+11.3 – Example client / scripts
+
+Provide:
+
+A small Go CLI or a Python script using the generated protos that:
+
+Connects to NBI endpoint.
+
+Builds a mini scenario (2 platforms + 2 nodes + 1 link).
+
+Calls GetScenario and pretty-prints.
+
+Output: You can demo Scope-3 with an actual gRPC client without touching internal code.
+
+Chunk 12 – Server wiring, configuration & packaging
+
+Goal: Wire all of the above into a runnable binary and make it easy to deploy/use.
+
+12.1 – New cmd/nbi-server
+
+Create cmd/nbi-server/main.go:
+
+Initialize:
+
+kb.KnowledgeBase (Scope 1).
+
+core.KnowledgeBase (Scope 2).
+
+MotionModel, ConnectivityService, TimeController.
+
+ScenarioState.
+
+Start:
+
+Simulation tick loop (TimeController drives MotionModel + ConnectivityService).
+
+gRPC server with:
+
+PlatformService.
+
+NetworkNodeService.
+
+NetworkLinkService.
+
+ServiceRequestService.
+
+ScenarioService.
+
+Make port / TLS / logging configurable via flags or env.
+
+12.2 – Optional: Dockerfile / container
+
+If this is meant to be used as a backend service, add:
+
+Dockerfile that builds the binary.
+
+Some basic runtime config docs.
+
+Output: A single service binary that implements Scope-3 on top of your existing core.
+
+Chunk 13 – Audit for any remaining Scope 1/2 gaps
+
+After implementing Scope-3, do a last pass against Scope 1 & 2 plans:
+
+Check that:
+
+All entities called out in Requirements have at least a data-model representation and a way to be created through NBI (even if some are “stubbed” in behavior): PlatformDefinition, NetworkNode, NetworkInterface, NetworkLink, ServiceRequest. 
+
+Requirements for an Aalyria Spa…
+
+SGP4 motion and Node/platform association works end-to-end:
+
+Node referencing Platform sees correct position updates.
+
+Transceiver models + interface mapping is sufficient for connectivity evaluation.
+
+If you find any missing pieces (e.g., underused Node ECEF position map, or partial transceiver fields), you can:
+
+Either fold them into an existing chunk above (e.g. as part of Chunk 0 or 8).
+
+Or add a small “Scope-1/2 patch” ticket.

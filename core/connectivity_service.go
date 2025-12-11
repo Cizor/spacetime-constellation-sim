@@ -94,13 +94,19 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 
 // evaluateLink applies LoS, elevation, range and link-budget
 // checks, and fills in latency / capacity / SNR / quality fields.
+// It respects the link's Status field: only links with Status == LinkStatusActive
+// are considered "up" even if geometry/RF allows them.
 func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
-	// Hard administrative impairment.
-	if link.IsImpaired {
+	// If the link is administratively impaired, it's always down.
+	if link.Status == LinkStatusImpaired || link.IsImpaired {
 		link.IsUp = false
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// Maintain backward compatibility: set IsImpaired if Status is Impaired
+		if link.Status == LinkStatusImpaired {
+			link.IsImpaired = true
+		}
 		return
 	}
 
@@ -113,6 +119,8 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		if link.MaxDataRateMbps == 0 {
 			link.MaxDataRateMbps = 1000 // 1 Gbit/s nominal
 		}
+		// Wired links are always "active" if not impaired.
+		link.Status = LinkStatusActive
 		link.IsUp = true
 		link.Quality = LinkQualityExcellent
 		link.SNRdB = 0 // not meaningful for wired here
@@ -127,6 +135,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set, default to Potential
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -137,6 +149,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set, default to Potential
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -146,6 +162,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set, default to Potential
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -155,6 +175,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set, default to Potential
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -166,6 +190,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set, default to Potential
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -177,6 +205,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 			link.Quality = LinkQualityDown
 			link.SNRdB = 0
 			link.MaxDataRateMbps = 0
+			// If Status was not set, default to Potential
+			if link.Status == LinkStatusUnknown {
+				link.Status = LinkStatusPotential
+			}
 			return
 		}
 	}
@@ -186,8 +218,31 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	link.SNRdB = snr
 	classifyLinkBySNR(link, snr)
 
-	// Link is considered up for any non-down quality bucket.
-	link.IsUp = link.Quality != LinkQualityDown
+	// If geometry and RF allow, the link is at least Potential.
+	// Its IsUp status then depends on whether the control plane has activated it.
+	if link.Quality != LinkQualityDown {
+		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
+		// Auto-activate if Status is Unknown or Potential (Potential may have been set
+		// when geometry didn't allow, so we auto-activate when geometry allows).
+		// Scope 4 components can explicitly use DeactivateLink to set Status to Potential
+		// and prevent auto-activation, or set Status to Impaired.
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusPotential {
+			// Auto-activate when geometry allows (maintains backward compatibility)
+			link.Status = LinkStatusActive
+		}
+		// Link is only "up" if Status is Active
+		if link.Status == LinkStatusActive {
+			link.IsUp = true
+		} else {
+			link.IsUp = false
+		}
+	} else {
+		link.IsUp = false
+		// If Status was not set and geometry doesn't allow, default to Potential
+		if link.Status == LinkStatusUnknown {
+			link.Status = LinkStatusPotential
+		}
+	}
 }
 
 // checkElevationConstraint applies the minimum elevation limit for

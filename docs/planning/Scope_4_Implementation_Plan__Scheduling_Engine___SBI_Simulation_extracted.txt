@@ -1,0 +1,2 @@
+Error opening PDF: fitz: no such file
+exit status 1
