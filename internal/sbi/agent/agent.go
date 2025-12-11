@@ -14,6 +14,8 @@ import (
 	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // SimAgent represents a simulated agent for a network node.
@@ -436,10 +438,122 @@ func (a *SimAgent) convertDeleteRouteToRouteEntry(deleteRoute *schedulingpb.Dele
 
 // execute executes a scheduled action and sends a Response.
 // This is called by the EventScheduler when the action's time arrives.
-// TODO (4.3): Implement full execution logic for all action types.
+// It switches on action.Type and calls the appropriate ScenarioState method,
+// then sends a Response back to the controller.
 func (a *SimAgent) execute(action *sbi.ScheduledAction) {
-	// TODO: Implement execution logic in 4.3
-	_ = action
+	var err error
+	var responseStatus *status.Status
+
+	// Execute the action based on type
+	switch action.Type {
+	case sbi.ScheduledUpdateBeam:
+		if action.Beam == nil {
+			err = fmt.Errorf("ScheduledUpdateBeam action has nil Beam")
+			break
+		}
+		err = a.State.ApplyBeamUpdate(a.NodeID, action.Beam)
+
+	case sbi.ScheduledDeleteBeam:
+		if action.Beam == nil {
+			err = fmt.Errorf("ScheduledDeleteBeam action has nil Beam")
+			break
+		}
+		err = a.State.ApplyBeamDelete(
+			action.Beam.NodeID,
+			action.Beam.InterfaceID,
+			action.Beam.TargetNodeID,
+			action.Beam.TargetIfID,
+		)
+
+	case sbi.ScheduledSetRoute:
+		if action.Route == nil {
+			err = fmt.Errorf("ScheduledSetRoute action has nil Route")
+			break
+		}
+		err = a.State.InstallRoute(a.NodeID, *action.Route)
+
+	case sbi.ScheduledDeleteRoute:
+		if action.Route == nil {
+			err = fmt.Errorf("ScheduledDeleteRoute action has nil Route")
+			break
+		}
+		err = a.State.RemoveRoute(a.NodeID, action.Route.DestinationCIDR)
+
+	case sbi.ScheduledSetSrPolicy, sbi.ScheduledDeleteSrPolicy:
+		// For Scope 4, SrPolicy is stubbed - just log and succeed
+		// TODO: Add proper logging
+		_ = action.SrPolicy
+		err = nil
+
+	default:
+		err = fmt.Errorf("unknown action type: %v", action.Type)
+	}
+
+	// Build response status
+	if err != nil {
+		responseStatus = status.New(codes.Internal, err.Error())
+	} else {
+		responseStatus = status.New(codes.OK, "OK")
+	}
+
+	// Parse request ID from action
+	var requestID int64
+	if action.RequestID != "" {
+		// Try to parse as int64
+		_, _ = fmt.Sscanf(action.RequestID, "%d", &requestID)
+	}
+
+	// Send Response
+	response := &schedulingpb.ReceiveRequestsMessageToController{
+		Response: &schedulingpb.ReceiveRequestsMessageToController_Response{
+			RequestId: requestID,
+			Status:    responseStatus.Proto(),
+		},
+	}
+
+	// Remove from pending map
+	a.mu.Lock()
+	delete(a.pending, action.EntryID)
+	a.mu.Unlock()
+
+	// Send response (non-blocking, best-effort)
+	if a.Stream != nil {
+		_ = a.Stream.Send(response)
+	}
+}
+
+// Reset clears the agent's pending schedule and generates a new token.
+// This should be called when the agent's schedule is reset (e.g., on startup
+// or after a schedule reset event). The agent will then send a Reset RPC
+// to the controller (in Chunk 5 when CDPI server is implemented).
+func (a *SimAgent) Reset() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear all pending actions
+	for entryID := range a.pending {
+		a.Scheduler.Cancel(entryID)
+	}
+	a.pending = make(map[string]*sbi.ScheduledAction)
+
+	// Generate a new token
+	a.token = generateToken()
+}
+
+// GetToken returns the current schedule manipulation token.
+// This is used by the controller to validate incoming requests.
+func (a *SimAgent) GetToken() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.token
+}
+
+// validateToken checks if the provided token matches the agent's current token.
+// Returns true if tokens match, false otherwise.
+func (a *SimAgent) validateToken(token string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return token == a.token
 }
 
 // generateToken generates a random token for schedule manipulation.
