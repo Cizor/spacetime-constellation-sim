@@ -120,18 +120,26 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	// If the link is administratively impaired, it's always down.
 	// Check IsImpaired first to handle un-impairing correctly.
+	// Note: We preserve WasExplicitlyDeactivated flag across impairment cycles.
 	if link.IsImpaired {
 		link.IsUp = false
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
 		link.Status = LinkStatusImpaired
+		// Preserve WasExplicitlyDeactivated flag - don't clear it during impairment
 		return
 	}
 	// If Status is Impaired but IsImpaired is false, clear the Status
 	// to allow normal re-evaluation (handles un-impairing case).
+	// However, if the link was explicitly deactivated, preserve that state
+	// by setting Status to Potential instead of Unknown.
 	if link.Status == LinkStatusImpaired {
-		link.Status = LinkStatusUnknown // Reset to Unknown to allow re-evaluation
+		if link.WasExplicitlyDeactivated {
+			link.Status = LinkStatusPotential // Preserve explicit deactivation
+		} else {
+			link.Status = LinkStatusUnknown // Reset to Unknown to allow re-evaluation
+		}
 	}
 
 	// Wired links are assumed always up (unless impaired) with a
@@ -144,8 +152,9 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 			link.MaxDataRateMbps = 1000 // 1 Gbit/s nominal
 		}
 		// Auto-activate wired links if Status is Unknown (backward compatibility).
-		// Respect explicitly-set Potential status to allow administrative disabling.
-		if link.Status == LinkStatusUnknown {
+		// Respect explicitly-set Potential status and WasExplicitlyDeactivated flag
+		// to allow administrative disabling.
+		if link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated {
 			link.Status = LinkStatusActive
 		}
 		// Link is only "up" if Status is Active
@@ -260,12 +269,12 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	// Its IsUp status then depends on whether the control plane has activated it.
 	if link.Quality != LinkQualityDown {
 		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
-		// Auto-activate Unknown links (default/unset status).
+		// Auto-activate Unknown links (default/unset status) that were not explicitly deactivated.
 		// Also auto-activate Potential links that were auto-downgraded
 		// (not explicitly deactivated). Links that were explicitly deactivated
 		// (WasExplicitlyDeactivated=true) do NOT auto-activate, ensuring explicit
 		// control plane actions are respected for both static and dynamic links.
-		if link.Status == LinkStatusUnknown || (link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated) {
+		if (link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated) || (link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated) {
 			// Auto-activate when geometry allows (maintains backward compatibility)
 			link.Status = LinkStatusActive
 			// Clear explicit deactivation flag when auto-activating

@@ -104,4 +104,3 @@ func TestDynamicLinkExplicitDeactivation(t *testing.T) {
 		t.Fatalf("expected dynamic link to be down after explicit deactivation")
 	}
 }
-

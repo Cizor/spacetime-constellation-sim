@@ -4,9 +4,11 @@ import (
 	"testing"
 )
 
-// TestUnimpairLink verifies that SetLinkImpaired(linkID, false) correctly
-// un-impairs a link, allowing it to be re-evaluated normally.
-func TestUnimpairLink(t *testing.T) {
+// TestDeactivatedLinkUnimpairDoesNotAutoActivate verifies that when a link
+// is explicitly deactivated, then impaired, then un-impaired, it does NOT
+// auto-activate. The WasExplicitlyDeactivated flag should be preserved and
+// respected even after impairment/un-impairment cycles.
+func TestDeactivatedLinkUnimpairDoesNotAutoActivate(t *testing.T) {
 	kb := NewKnowledgeBase()
 
 	// Create transceiver model
@@ -69,7 +71,26 @@ func TestUnimpairLink(t *testing.T) {
 		t.Fatalf("expected link to be up with good geometry")
 	}
 
-	// Impair the link
+	// Explicitly deactivate the link
+	link.Status = LinkStatusPotential
+	link.IsUp = false
+	link.WasExplicitlyDeactivated = true
+	if err := kb.UpdateNetworkLink(link); err != nil {
+		t.Fatalf("UpdateNetworkLink: %v", err)
+	}
+
+	cs.UpdateConnectivity()
+
+	// Verify link is deactivated
+	link = kb.GetNetworkLink("linkAB")
+	if link.Status != LinkStatusPotential {
+		t.Fatalf("expected link to be Potential after explicit deactivation, got %v", link.Status)
+	}
+	if !link.WasExplicitlyDeactivated {
+		t.Fatalf("expected WasExplicitlyDeactivated=true after explicit deactivation")
+	}
+
+	// Now impair the link
 	if err := kb.SetLinkImpaired("linkAB", true); err != nil {
 		t.Fatalf("SetLinkImpaired(true): %v", err)
 	}
@@ -78,36 +99,40 @@ func TestUnimpairLink(t *testing.T) {
 
 	// Verify link is impaired
 	link = kb.GetNetworkLink("linkAB")
-	if link.IsUp {
-		t.Fatalf("expected link to be down when impaired")
+	if link.Status != LinkStatusImpaired {
+		t.Fatalf("expected Status=LinkStatusImpaired, got %v", link.Status)
 	}
 	if !link.IsImpaired {
 		t.Fatalf("expected IsImpaired=true")
 	}
-	if link.Status != LinkStatusImpaired {
-		t.Fatalf("expected Status=LinkStatusImpaired, got %v", link.Status)
+	// WasExplicitlyDeactivated should still be preserved
+	if !link.WasExplicitlyDeactivated {
+		t.Fatalf("expected WasExplicitlyDeactivated=true to be preserved after impairment")
 	}
 
-	// Un-impair the link
+	// Now un-impair the link
 	if err := kb.SetLinkImpaired("linkAB", false); err != nil {
 		t.Fatalf("SetLinkImpaired(false): %v", err)
 	}
 
 	cs.UpdateConnectivity()
 
-	// Verify link is no longer impaired and can be re-evaluated
+	// Verify link does NOT auto-activate (should remain Potential)
 	link = kb.GetNetworkLink("linkAB")
 	if link.IsImpaired {
 		t.Fatalf("expected IsImpaired=false after un-impairing")
 	}
-	if link.Status == LinkStatusImpaired {
-		t.Fatalf("expected Status to be cleared from Impaired after un-impairing, got %v", link.Status)
+	if link.Status == LinkStatusActive {
+		t.Fatalf("expected link to remain Potential after un-impairing (was explicitly deactivated), got Status=%v", link.Status)
 	}
-	// Link should be re-evaluated and come up if geometry allows
-	if !link.IsUp {
-		t.Fatalf("expected link to come up after un-impairing (geometry is good)")
+	if link.Status != LinkStatusPotential {
+		t.Fatalf("expected Status=LinkStatusPotential after un-impairing (was explicitly deactivated), got %v", link.Status)
 	}
-	if link.Status != LinkStatusActive {
-		t.Fatalf("expected Status=LinkStatusActive after un-impairing, got %v", link.Status)
+	if !link.WasExplicitlyDeactivated {
+		t.Fatalf("expected WasExplicitlyDeactivated=true to be preserved")
+	}
+	if link.IsUp {
+		t.Fatalf("expected link to remain down after un-impairing (was explicitly deactivated)")
 	}
 }
+
