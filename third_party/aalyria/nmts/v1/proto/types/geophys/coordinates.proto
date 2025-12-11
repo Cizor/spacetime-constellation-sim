@@ -1,0 +1,10 @@
+syntax = "proto3";
+package nmts.v1.types.geophys;
+
+option go_package = "aalyria.com/spacetime/nmts/v1/proto/types/geophys";
+
+enum CoordinateFrame {
+  COORDINATE_FRAME_UNSPECIFIED = 0;
+  COORDINATE_FRAME_ECEF = 1;
+  COORDINATE_FRAME_WGS84 = 2;
+}

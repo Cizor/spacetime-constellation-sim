@@ -23,7 +23,9 @@ PROTO_SRC_DIRS := \
   $(PROTO_API_ROOT)/api/common \
   $(PROTO_API_ROOT)/api/nbi/v1alpha \
   $(PROTO_API_ROOT)/api/nbi/v1alpha/resources \
-  $(PROTO_API_ROOT)/api/types
+  $(PROTO_API_ROOT)/api/types \
+  $(PROTO_API_ROOT)/api/scheduling/v1alpha \
+  $(PROTO_API_ROOT)/api/telemetry/v1alpha
 
 # All .proto files in those directories
 PROTO_FILES := $(foreach dir,$(PROTO_SRC_DIRS),$(wildcard $(dir)/*.proto))
