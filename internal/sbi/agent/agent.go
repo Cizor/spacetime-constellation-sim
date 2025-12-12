@@ -15,7 +15,9 @@ import (
 	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // SimAgent represents a simulated agent for a network node.
@@ -37,6 +39,12 @@ type SimAgent struct {
 	pending map[string]*sbi.ScheduledAction // keyed by EntryID
 	token   string                           // schedule_manipulation_token
 
+	// Telemetry state
+	telemetryMu  sync.Mutex
+	telemetryInterval time.Duration
+	bytesTx      map[string]uint64 // per-interface transmitted bytes (monotonic)
+	lastTick     time.Time         // last telemetry tick time
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -45,14 +53,17 @@ type SimAgent struct {
 // NewSimAgent creates a new simulated agent with the given ID and dependencies.
 func NewSimAgent(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]) *SimAgent {
 	return &SimAgent{
-		AgentID:      agentID,
-		NodeID:       nodeID,
-		State:        state,
-		Scheduler:    scheduler,
-		TelemetryCli: telemetryCli,
-		Stream:       stream,
-		pending:      make(map[string]*sbi.ScheduledAction),
-		token:        generateToken(),
+		AgentID:           agentID,
+		NodeID:            nodeID,
+		State:             state,
+		Scheduler:         scheduler,
+		TelemetryCli:      telemetryCli,
+		Stream:            stream,
+		pending:           make(map[string]*sbi.ScheduledAction),
+		token:             generateToken(),
+		telemetryInterval: 1 * time.Second, // Default 1 second simulation time
+		bytesTx:           make(map[string]uint64),
+		lastTick:          time.Time{},
 	}
 }
 
@@ -111,6 +122,11 @@ func (a *SimAgent) Start(ctx context.Context) error {
 
 	// Start read loop in a goroutine
 	go a.readLoop()
+
+	// Start telemetry loop if TelemetryCli is available
+	if a.TelemetryCli != nil {
+		a.startTelemetryLoop()
+	}
 
 	return nil
 }
@@ -556,6 +572,166 @@ func (a *SimAgent) validateToken(token string) bool {
 	return token == a.token
 }
 
+// startTelemetryLoop starts the periodic telemetry emission loop.
+// It schedules the first telemetry tick and reschedules itself after each tick.
+func (a *SimAgent) startTelemetryLoop() {
+	if a.TelemetryCli == nil {
+		return
+	}
+
+	now := a.Scheduler.Now()
+	a.telemetryMu.Lock()
+	a.lastTick = now
+	a.telemetryMu.Unlock()
+
+	// Schedule first telemetry tick after the interval
+	nextTick := now.Add(a.telemetryInterval)
+	a.Scheduler.Schedule(nextTick, func() {
+		a.telemetryTick()
+	})
+}
+
+// telemetryTick collects interface metrics and sends them to the controller.
+// It reschedules itself for the next interval.
+func (a *SimAgent) telemetryTick() {
+	// Check if agent is still running
+	select {
+	case <-a.ctx.Done():
+		return
+	default:
+	}
+
+	now := a.Scheduler.Now()
+
+	// Calculate delta time since last tick
+	a.telemetryMu.Lock()
+	lastTick := a.lastTick
+	if lastTick.IsZero() {
+		lastTick = now
+	}
+	delta := now.Sub(lastTick)
+	a.lastTick = now
+	a.telemetryMu.Unlock()
+
+	// Build interface metrics
+	deltaSec := delta.Seconds()
+	metrics := a.buildInterfaceMetrics(deltaSec)
+
+	if len(metrics) == 0 {
+		// No interfaces to report - reschedule anyway
+		a.rescheduleTelemetry()
+		return
+	}
+
+	// Build ExportMetricsRequest
+	req := &telemetrypb.ExportMetricsRequest{
+		InterfaceMetrics: metrics,
+	}
+
+	// Send metrics to controller (with node_id in metadata)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("x-node-id", a.NodeID))
+
+	_, err := a.TelemetryCli.ExportMetrics(ctx, req)
+	if err != nil {
+		// Log error but continue telemetry loop
+		// TODO: Add proper logging
+		_ = err
+	}
+
+	// Reschedule next tick
+	a.rescheduleTelemetry()
+}
+
+// rescheduleTelemetry schedules the next telemetry tick.
+func (a *SimAgent) rescheduleTelemetry() {
+	now := a.Scheduler.Now()
+	nextTick := now.Add(a.telemetryInterval)
+	a.Scheduler.Schedule(nextTick, func() {
+		a.telemetryTick()
+	})
+}
+
+// buildInterfaceMetrics builds telemetry metrics for all interfaces on this agent's node.
+// It uses deriveInterfaceState to determine up/down status and bandwidth.
+func (a *SimAgent) buildInterfaceMetrics(deltaSec float64) []*telemetrypb.InterfaceMetrics {
+	if a.State == nil {
+		return nil
+	}
+
+	// Get all interfaces for this node
+	interfaces := a.State.ListInterfacesForNode(a.NodeID)
+	if len(interfaces) == 0 {
+		return nil
+	}
+
+	now := a.Scheduler.Now()
+	nowProto := timestamppb.New(now)
+
+	var result []*telemetrypb.InterfaceMetrics
+
+	for _, iface := range interfaces {
+		// Derive interface state (up/down, bandwidth)
+		up, bandwidthBps := a.deriveInterfaceState(a.NodeID, iface.ID)
+
+		// Update byte counters
+		a.telemetryMu.Lock()
+		bytesTx := a.bytesTx[iface.ID]
+		if up && bandwidthBps > 0 {
+			// Estimate bytes transmitted based on bandwidth and time delta
+			bytesDelta := uint64(bandwidthBps * deltaSec / 8)
+			bytesTx += bytesDelta
+			a.bytesTx[iface.ID] = bytesTx
+		}
+		a.telemetryMu.Unlock()
+
+		// Build operational state data point
+		var operStatus telemetrypb.IfOperStatus
+		if up {
+			operStatus = telemetrypb.IfOperStatus_IF_OPER_STATUS_UP
+		} else {
+			operStatus = telemetrypb.IfOperStatus_IF_OPER_STATUS_DOWN
+		}
+
+		// Build statistics data point
+		txBytes := int64(bytesTx)
+		rxBytes := int64(0) // Rx bytes not tracked yet
+
+		metrics := &telemetrypb.InterfaceMetrics{
+			InterfaceId: stringPtr(iface.ID),
+			OperationalStateDataPoints: []*telemetrypb.IfOperStatusDataPoint{
+				{
+					Time:  nowProto,
+					Value: &operStatus,
+				},
+			},
+			StandardInterfaceStatisticsDataPoints: []*telemetrypb.StandardInterfaceStatisticsDataPoint{
+				{
+					Time:    nowProto,
+					TxBytes: &txBytes,
+					RxBytes: &rxBytes,
+				},
+			},
+		}
+
+		result = append(result, metrics)
+	}
+
+	return result
+}
+
+// deriveInterfaceState determines the operational state and bandwidth for an interface.
+// This is a stub implementation; full implementation will be done in issue #150.
+// Returns (up bool, bandwidthBps float64).
+func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) {
+	// Stub implementation - will be fully implemented in issue #150
+	// For now, return false/0 to avoid incorrect telemetry
+	return false, 0
+}
+
 // generateToken generates a random token for schedule manipulation.
 func generateToken() string {
 	var b [16]byte
@@ -563,5 +739,10 @@ func generateToken() string {
 		return "fallback-token"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// stringPtr returns a pointer to the given string.
+func stringPtr(s string) *string {
+	return &s
 }
 
