@@ -85,6 +85,14 @@ func (a *SimAgent) ID() sbi.AgentID {
 	return a.AgentID
 }
 
+// SetStream sets the CDPI stream for this agent.
+// This must be called before Start() if the stream was not provided in the constructor.
+func (a *SimAgent) SetStream(stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Stream = stream
+}
+
 // HandleScheduledAction accepts a scheduled action from the controller.
 // This is the interface method used by the controller to send actions to agents.
 // The action is inserted into the agent's local schedule and executed at the correct time.
