@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -569,6 +570,28 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 			err = fmt.Errorf("ScheduledUpdateBeam action has nil Beam")
 			break
 		}
+		// If TargetIfID is empty, try to look it up from the link
+		if action.Beam.TargetIfID == "" && action.Beam.TargetNodeID != "" {
+			// Look up the link to find the target interface
+			links := a.State.ListLinks()
+			for _, link := range links {
+				if link == nil {
+					continue
+				}
+				// Check if this link connects our interface to the target node
+				srcIfRef := fmt.Sprintf("%s/%s", action.Beam.NodeID, action.Beam.InterfaceID)
+				if (link.InterfaceA == srcIfRef && link.InterfaceB != "" && a.getNodeIDFromInterfaceRef(link.InterfaceB) == action.Beam.TargetNodeID) ||
+					(link.InterfaceB == srcIfRef && link.InterfaceA != "" && a.getNodeIDFromInterfaceRef(link.InterfaceA) == action.Beam.TargetNodeID) {
+					// Extract interface ID from the other end
+					if link.InterfaceA == srcIfRef {
+						action.Beam.TargetIfID = a.getInterfaceIDFromRef(link.InterfaceB)
+					} else {
+						action.Beam.TargetIfID = a.getInterfaceIDFromRef(link.InterfaceA)
+					}
+					break
+				}
+			}
+		}
 		err = a.State.ApplyBeamUpdate(a.NodeID, action.Beam)
 
 	case sbi.ScheduledDeleteBeam:
@@ -943,6 +966,26 @@ func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) 
 // stringPtr returns a pointer to the given string.
 func stringPtr(s string) *string {
 	return &s
+}
+
+// getNodeIDFromInterfaceRef extracts the node ID from an interface reference.
+// Interface references can be in "node-ID/interface-ID" format or just "interface-ID".
+func (a *SimAgent) getNodeIDFromInterfaceRef(ifRef string) string {
+	parts := strings.SplitN(ifRef, "/", 2)
+	if len(parts) == 2 {
+		return parts[0]
+	}
+	return ""
+}
+
+// getInterfaceIDFromRef extracts the interface ID from an interface reference.
+// Interface references can be in "node-ID/interface-ID" format or just "interface-ID".
+func (a *SimAgent) getInterfaceIDFromRef(ifRef string) string {
+	parts := strings.SplitN(ifRef, "/", 2)
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return ifRef
 }
 
 

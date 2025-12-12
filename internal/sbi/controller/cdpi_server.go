@@ -122,10 +122,14 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 	s.agentsMu.Unlock()
 
 	// Clean up on exit
+	cleanupDone := false
 	defer func() {
 		s.agentsMu.Lock()
 		delete(s.agents, agentID)
-		close(handle.outgoing)
+		if !cleanupDone {
+			close(handle.outgoing)
+			cleanupDone = true
+		}
 		s.agentsMu.Unlock()
 	}()
 
@@ -146,7 +150,12 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 		msg, err := stream.Recv()
 		if err != nil {
 			// Stream closed or error
-			close(handle.outgoing)
+			s.agentsMu.Lock()
+			if !cleanupDone {
+				close(handle.outgoing)
+				cleanupDone = true
+			}
+			s.agentsMu.Unlock()
 			<-sendDone // Wait for send goroutine to finish
 			return err
 		}
@@ -440,9 +449,13 @@ func convertBeamSpecToUpdateBeam(beam *sbi.BeamSpec) *schedulingpb.UpdateBeam {
 		AntennaId: beam.InterfaceID,
 	}
 
-	// For Scope 4, we'll use a minimal beam configuration
-	// Endpoints is a map[string]*BeamEndpoint, but we'll leave it empty
-	// for now as it's not critical for basic functionality
+	// Populate Endpoints with target node ID so agent can extract TargetNodeID
+	// For Scope 4, we use a simplified approach where the endpoint key is the target node ID
+	if beam.TargetNodeID != "" {
+		beamProto.Endpoints = map[string]*schedulingpb.Endpoint{
+			beam.TargetNodeID: {}, // Empty endpoint is sufficient for Scope 4
+		}
+	}
 
 	return &schedulingpb.UpdateBeam{
 		Beam: beamProto,
