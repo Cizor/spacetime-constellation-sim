@@ -135,6 +135,11 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	// Check IsImpaired first to handle un-impairing correctly.
 	// Note: We preserve WasExplicitlyDeactivated flag across impairment cycles.
 	if link.IsImpaired {
+		// If we're transitioning to impaired state, save the current status
+		// (unless it's already impaired, in which case we've already saved it)
+		if link.Status != LinkStatusImpaired {
+			link.StatusBeforeImpairment = link.Status
+		}
 		link.IsUp = false
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
@@ -143,15 +148,23 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		// Preserve WasExplicitlyDeactivated flag - don't clear it during impairment
 		return
 	}
-	// If Status is Impaired but IsImpaired is false, clear the Status
-	// to allow normal re-evaluation (handles un-impairing case).
-	// However, if the link was explicitly deactivated, preserve that state
-	// by setting Status to Potential instead of Unknown.
+	// If Status is Impaired but IsImpaired is false, restore the original status
+	// (handles un-impairing case). This preserves the link's state before impairment.
 	if link.Status == LinkStatusImpaired {
-		if link.WasExplicitlyDeactivated {
-			link.Status = LinkStatusPotential // Preserve explicit deactivation
+		// Restore the status from before impairment if we have it
+		if link.StatusBeforeImpairment != LinkStatusImpaired && link.StatusBeforeImpairment != LinkStatusUnknown {
+			link.Status = link.StatusBeforeImpairment
+			link.StatusBeforeImpairment = LinkStatusUnknown // Clear the saved status
+		} else if link.WasExplicitlyDeactivated {
+			// If we don't have a saved status but link was explicitly deactivated,
+			// preserve that state by setting Status to Potential
+			link.Status = LinkStatusPotential
+			link.StatusBeforeImpairment = LinkStatusUnknown // Clear the saved status
 		} else {
-			link.Status = LinkStatusUnknown // Reset to Unknown to allow re-evaluation
+			// No saved status and not explicitly deactivated: reset to Unknown
+			// to allow normal re-evaluation (backward compatibility)
+			link.Status = LinkStatusUnknown
+			link.StatusBeforeImpairment = LinkStatusUnknown // Clear the saved status
 		}
 	}
 

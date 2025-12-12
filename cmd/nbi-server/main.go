@@ -183,7 +183,10 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 
 	// Create in-process gRPC client connection for agents
 	// Agents will connect to the same server we just started
-	clientConn, err := grpc.DialContext(ctx, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Use grpc.WithBlock() to ensure the server is ready before proceeding
+	clientConn, err := grpc.DialContext(ctx, lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock())
 	if err != nil {
 		return fmt.Errorf("failed to create client connection for agents: %w", err)
 	}

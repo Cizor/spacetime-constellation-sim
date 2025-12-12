@@ -62,4 +62,9 @@ type NetworkLink struct {
 	// between links that were auto-downgraded (should recover) and
 	// links that were explicitly deactivated (should NOT auto-activate).
 	WasExplicitlyDeactivated bool `json:"WasExplicitlyDeactivated,omitempty"`
+
+	// StatusBeforeImpairment stores the link's status before it was impaired.
+	// This is used to restore the original status when the link is un-impaired.
+	// Only set when transitioning from non-impaired to impaired state.
+	StatusBeforeImpairment LinkStatus `json:"StatusBeforeImpairment,omitempty"`
 }
