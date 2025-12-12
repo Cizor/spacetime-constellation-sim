@@ -54,7 +54,11 @@ func (s *Scheduler) RunInitialSchedule(ctx context.Context) error {
 		return fmt.Errorf("link route scheduling failed: %w", err)
 	}
 
-	// 3. (Later) ServiceRequest-aware scheduling, in subsequent issues.
+	// 3. ServiceRequest-aware scheduling
+	if err := s.ScheduleServiceRequests(ctx); err != nil {
+		return fmt.Errorf("service request scheduling failed: %w", err)
+	}
+
 	return nil
 }
 
@@ -471,3 +475,285 @@ func (s *Scheduler) agentIDForNode(nodeID string) (string, error) {
 	return agentID, nil
 }
 
+// ScheduleServiceRequests implements minimal ServiceRequest-aware scheduling:
+// - For each active ServiceRequest, find a path between src and dst
+// - Schedule UpdateBeam and SetRoute actions along the path
+func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
+	serviceRequests := s.State.ListServiceRequests()
+	if len(serviceRequests) == 0 {
+		s.log.Debug(ctx, "No service requests found for scheduling")
+		return nil
+	}
+
+	s.log.Debug(ctx, "Scheduling service requests",
+		logging.Int("sr_count", len(serviceRequests)),
+	)
+
+	// Build connectivity graph from potential/active links
+	graph := s.buildConnectivityGraph()
+
+	// For each service request, find a path and schedule actions
+	for _, sr := range serviceRequests {
+		if sr == nil || sr.SrcNodeID == "" || sr.DstNodeID == "" {
+			srID := "nil"
+			if sr != nil {
+				srID = sr.ID
+			}
+			s.log.Warn(ctx, "Skipping invalid service request",
+				logging.String("sr_id", srID),
+			)
+			continue
+		}
+
+		// Find a path from src to dst
+		path := s.findAnyPath(graph, sr.SrcNodeID, sr.DstNodeID)
+		if path == nil {
+			s.log.Debug(ctx, "No path found for service request",
+				logging.String("sr_id", sr.ID),
+				logging.String("src", sr.SrcNodeID),
+				logging.String("dst", sr.DstNodeID),
+			)
+			continue
+		}
+
+		// Schedule actions along the path
+		if err := s.scheduleActionsForPath(ctx, path, sr.ID); err != nil {
+			s.log.Warn(ctx, "Failed to schedule actions for service request path",
+				logging.String("sr_id", sr.ID),
+				logging.String("error", err.Error()),
+			)
+			// Continue with other service requests
+			continue
+		}
+
+		s.log.Debug(ctx, "Scheduled actions for service request",
+			logging.String("sr_id", sr.ID),
+			logging.Int("path_length", len(path)),
+		)
+	}
+
+	return nil
+}
+
+// connectivityGraph represents a simple undirected graph of node connectivity.
+type connectivityGraph struct {
+	adj map[string][]string // NodeID -> neighbor NodeIDs
+}
+
+// buildConnectivityGraph builds a connectivity graph from potential/active links.
+func (s *Scheduler) buildConnectivityGraph() *connectivityGraph {
+	graph := &connectivityGraph{
+		adj: make(map[string][]string),
+	}
+
+	// Get all links (potential or active)
+	allLinks := s.State.ListLinks()
+	for _, link := range allLinks {
+		if link == nil {
+			continue
+		}
+
+		// Only include links that are potential or active (usable)
+		if link.Status != core.LinkStatusPotential && link.Status != core.LinkStatusActive {
+			continue
+		}
+
+		// Get node IDs from interfaces
+		interfacesByNode := s.State.InterfacesByNode()
+		var nodeAID, nodeBID string
+		for _, ifaces := range interfacesByNode {
+			for _, iface := range ifaces {
+				if iface.ID == link.InterfaceA {
+					nodeAID = iface.ParentNodeID
+				}
+				if iface.ID == link.InterfaceB {
+					nodeBID = iface.ParentNodeID
+				}
+			}
+		}
+
+		if nodeAID == "" || nodeBID == "" {
+			continue
+		}
+
+		// Add undirected edge
+		graph.addEdge(nodeAID, nodeBID)
+	}
+
+	return graph
+}
+
+// addEdge adds an undirected edge between two nodes.
+func (g *connectivityGraph) addEdge(nodeA, nodeB string) {
+	if g.adj[nodeA] == nil {
+		g.adj[nodeA] = make([]string, 0)
+	}
+	if g.adj[nodeB] == nil {
+		g.adj[nodeB] = make([]string, 0)
+	}
+
+	// Check if edge already exists
+	for _, neighbor := range g.adj[nodeA] {
+		if neighbor == nodeB {
+			return // Edge already exists
+		}
+	}
+
+	g.adj[nodeA] = append(g.adj[nodeA], nodeB)
+	g.adj[nodeB] = append(g.adj[nodeB], nodeA)
+}
+
+// findAnyPath performs BFS to find any path from src to dst.
+// Returns a slice of node IDs [src, ..., dst], or nil if no path exists.
+func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID string) []string {
+	if srcNodeID == dstNodeID {
+		return []string{srcNodeID} // Self-loop
+	}
+
+	// BFS setup
+	queue := []string{srcNodeID}
+	visited := make(map[string]bool)
+	prev := make(map[string]string)
+
+	visited[srcNodeID] = true
+
+	// BFS loop
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+
+		if current == dstNodeID {
+			// Reconstruct path
+			path := make([]string, 0)
+			node := dstNodeID
+			for node != "" {
+				path = append(path, node)
+				node = prev[node]
+			}
+			// Reverse path (currently [dst, ..., src])
+			for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+				path[i], path[j] = path[j], path[i]
+			}
+			return path
+		}
+
+		// Explore neighbors
+		neighbors := graph.adj[current]
+		for _, neighbor := range neighbors {
+			if !visited[neighbor] {
+				visited[neighbor] = true
+				prev[neighbor] = current
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+
+	return nil // No path found
+}
+
+// scheduleActionsForPath schedules UpdateBeam and SetRoute actions for each hop in the path.
+func (s *Scheduler) scheduleActionsForPath(ctx context.Context, path []string, srID string) error {
+	if len(path) < 2 {
+		return fmt.Errorf("path must have at least 2 nodes, got %d", len(path))
+	}
+
+	now := s.Clock.Now()
+
+	// For each hop (path[i] -> path[i+1])
+	for i := 0; i < len(path)-1; i++ {
+		nodeAID := path[i]
+		nodeBID := path[i+1]
+
+		// Find the link between nodeA and nodeB
+		link, ifaceA, _, err := s.findLinkBetweenNodes(nodeAID, nodeBID)
+		if err != nil {
+			return fmt.Errorf("failed to find link between %s and %s: %w", nodeAID, nodeBID, err)
+		}
+
+		// Determine agent ID for nodeA (controlling agent for this hop)
+		agentAID, err := s.agentIDForNode(nodeAID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve agent for node %s: %w", nodeAID, err)
+		}
+
+		// Schedule UpdateBeam action
+		beamSpec, err := s.beamSpecFromLink(link)
+		if err != nil {
+			return fmt.Errorf("failed to construct BeamSpec: %w", err)
+		}
+
+		entryIDBeam := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s", srID, i, nodeAID, nodeBID)
+		if !s.scheduledEntryIDs[entryIDBeam] {
+			actionBeam := &sbi.ScheduledAction{
+				EntryID:   entryIDBeam,
+				AgentID:   sbi.AgentID(agentAID),
+				Type:      sbi.ScheduledUpdateBeam,
+				When:      now,
+				Beam:      beamSpec,
+				RequestID: "", // CDPI will fill this
+				SeqNo:     0,  // CDPI will fill this
+				Token:     "", // CDPI will fill this
+			}
+
+			if err := s.CDPI.SendCreateEntry(agentAID, actionBeam); err != nil {
+				return fmt.Errorf("failed to send UpdateBeam: %w", err)
+			}
+			s.scheduledEntryIDs[entryIDBeam] = true
+		}
+
+		// Schedule SetRoute action on nodeA to reach nodeB
+		route := s.newRouteEntryForNode(nodeBID, ifaceA.ID)
+		entryIDRoute := fmt.Sprintf("sr:%s:hop:%d:route:%s->%s", srID, i, nodeAID, nodeBID)
+		if !s.scheduledEntryIDs[entryIDRoute] {
+			actionRoute := s.newSetRouteAction(entryIDRoute, sbi.AgentID(agentAID), now, route)
+			if err := s.CDPI.SendCreateEntry(agentAID, actionRoute); err != nil {
+				return fmt.Errorf("failed to send SetRoute: %w", err)
+			}
+			s.scheduledEntryIDs[entryIDRoute] = true
+		}
+	}
+
+	return nil
+}
+
+// findLinkBetweenNodes finds the link and interfaces connecting two nodes.
+// Returns (link, ifaceA, ifaceB, error).
+func (s *Scheduler) findLinkBetweenNodes(nodeAID, nodeBID string) (*core.NetworkLink, *core.NetworkInterface, *core.NetworkInterface, error) {
+	allLinks := s.State.ListLinks()
+	interfacesByNode := s.State.InterfacesByNode()
+
+	for _, link := range allLinks {
+		if link == nil {
+			continue
+		}
+
+		// Find interfaces for this link
+		var ifaceA, ifaceB *core.NetworkInterface
+		for _, ifaces := range interfacesByNode {
+			for _, iface := range ifaces {
+				if iface.ID == link.InterfaceA {
+					ifaceA = iface
+				}
+				if iface.ID == link.InterfaceB {
+					ifaceB = iface
+				}
+			}
+		}
+
+		if ifaceA == nil || ifaceB == nil {
+			continue
+		}
+
+		// Check if this link connects nodeA and nodeB
+		if (ifaceA.ParentNodeID == nodeAID && ifaceB.ParentNodeID == nodeBID) ||
+			(ifaceA.ParentNodeID == nodeBID && ifaceB.ParentNodeID == nodeAID) {
+			// Ensure ifaceA is on nodeA and ifaceB is on nodeB
+			if ifaceA.ParentNodeID != nodeAID {
+				ifaceA, ifaceB = ifaceB, ifaceA
+			}
+			return link, ifaceA, ifaceB, nil
+		}
+	}
+
+	return nil, nil, nil, fmt.Errorf("no link found between %s and %s", nodeAID, nodeBID)
+}
