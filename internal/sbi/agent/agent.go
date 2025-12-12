@@ -39,6 +39,10 @@ type SimAgent struct {
 	token         string                           // schedule_manipulation_token (empty until first message)
 	lastSeqNoSeen uint64                           // last seen sequence number for logging/debugging
 
+	// SR Policy tracking (stub for Scope 4)
+	srMu       sync.Mutex
+	srPolicies map[string]*sbi.SrPolicySpec // keyed by PolicyID
+
 	// Telemetry state
 	telemetryMu  sync.Mutex
 	telemetryInterval time.Duration
@@ -69,6 +73,7 @@ func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.Scen
 		pending:           make(map[string]*sbi.ScheduledAction),
 		token:             "", // empty until first scheduling message establishes it
 		lastSeqNoSeen:     0,
+		srPolicies:        make(map[string]*sbi.SrPolicySpec),
 		telemetryInterval: cfg.Interval,
 		bytesTx:           make(map[string]uint64),
 		lastTick:          time.Time{},
@@ -234,6 +239,20 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 	action, err := a.convertCreateEntryToAction(req, requestID)
 	if err != nil {
 		return fmt.Errorf("failed to convert CreateEntryRequest: %w", err)
+	}
+
+	// Handle SR policies immediately (stub behavior for Scope 4)
+	if action.Type == sbi.ScheduledSetSrPolicy && action.SrPolicy != nil {
+		a.handleSetSrPolicy(action.SrPolicy)
+	} else if action.Type == sbi.ScheduledDeleteSrPolicy && action.SrPolicy != nil {
+		a.handleDeleteSrPolicy(action.SrPolicy.PolicyID)
+	}
+
+	// Handle SR policies immediately (stub behavior for Scope 4)
+	if action.Type == sbi.ScheduledSetSrPolicy && action.SrPolicy != nil {
+		a.handleSetSrPolicy(action.SrPolicy)
+	} else if action.Type == sbi.ScheduledDeleteSrPolicy && action.SrPolicy != nil {
+		a.handleDeleteSrPolicy(action.SrPolicy.PolicyID)
 	}
 
 	// Insert into pending and schedule
@@ -573,9 +592,8 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 		err = a.State.RemoveRoute(a.NodeID, action.Route.DestinationCIDR)
 
 	case sbi.ScheduledSetSrPolicy, sbi.ScheduledDeleteSrPolicy:
-		// For Scope 4, SrPolicy is stubbed - just log and succeed
-		// TODO: Add proper logging
-		_ = action.SrPolicy
+		// For Scope 4, SrPolicy is stubbed - already handled in handleCreateEntry
+		// No-op here since policies are stored immediately when CreateEntry is received
 		err = nil
 
 	default:
@@ -632,6 +650,66 @@ func (a *SimAgent) Reset() {
 	// Clear token and seqno - next scheduling message will establish new token
 	a.token = ""
 	a.lastSeqNoSeen = 0
+
+	// Clear SR policies
+	a.srMu.Lock()
+	a.srPolicies = make(map[string]*sbi.SrPolicySpec)
+	a.srMu.Unlock()
+}
+
+// handleSetSrPolicy stores an SR policy in the agent's SR policy registry.
+// This is a stub implementation for Scope 4 - it does not affect routing.
+func (a *SimAgent) handleSetSrPolicy(spec *sbi.SrPolicySpec) {
+	if spec == nil || spec.PolicyID == "" {
+		return
+	}
+
+	a.srMu.Lock()
+	defer a.srMu.Unlock()
+
+	if a.srPolicies == nil {
+		a.srPolicies = make(map[string]*sbi.SrPolicySpec)
+	}
+
+	// Store a copy to prevent external mutation
+	cp := *spec
+	a.srPolicies[spec.PolicyID] = &cp
+
+	// TODO: Add proper logging
+	_ = a.AgentID
+	_ = a.NodeID
+}
+
+// handleDeleteSrPolicy removes an SR policy from the agent's registry.
+// This is a stub implementation for Scope 4.
+func (a *SimAgent) handleDeleteSrPolicy(policyID string) {
+	if policyID == "" {
+		return
+	}
+
+	a.srMu.Lock()
+	defer a.srMu.Unlock()
+
+	delete(a.srPolicies, policyID)
+
+	// TODO: Add proper logging
+	_ = a.AgentID
+	_ = a.NodeID
+}
+
+// DumpSrPolicies returns all SR policies currently stored on the agent.
+// This is a debug helper for tests/CLI tools and is not exposed via NBI yet.
+func (a *SimAgent) DumpSrPolicies() []*sbi.SrPolicySpec {
+	a.srMu.Lock()
+	defer a.srMu.Unlock()
+
+	out := make([]*sbi.SrPolicySpec, 0, len(a.srPolicies))
+	for _, p := range a.srPolicies {
+		// Return shallow copies to prevent external mutation
+		cp := *p
+		out = append(out, &cp)
+	}
+	return out
 }
 
 // GetToken returns the current schedule manipulation token.
