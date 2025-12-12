@@ -84,3 +84,22 @@ func (t *TelemetryState) GetMetrics(nodeID, ifaceID string) *InterfaceMetrics {
 	return &copy
 }
 
+// ListAll returns all stored interface metrics.
+// Returns a slice of copies; modifications to the returned structs
+// do not affect TelemetryState.
+func (t *TelemetryState) ListAll() []*InterfaceMetrics {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	out := make([]*InterfaceMetrics, 0, len(t.byIf))
+	for _, v := range t.byIf {
+		if v == nil {
+			continue
+		}
+		// Make a copy to avoid mutation outside.
+		cp := *v
+		out = append(out, &cp)
+	}
+	return out
+}
+

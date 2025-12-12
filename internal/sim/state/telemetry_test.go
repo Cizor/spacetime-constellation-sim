@@ -132,3 +132,77 @@ func TestTelemetryState_UpdateMetrics_NilInput(t *testing.T) {
 	}
 }
 
+func TestTelemetryState_ListAll(t *testing.T) {
+	ts := NewTelemetryState()
+
+	// Empty state should return empty slice
+	all := ts.ListAll()
+	if len(all) != 0 {
+		t.Errorf("ListAll on empty state returned %d items, want 0", len(all))
+	}
+
+	// Add some metrics
+	ts.UpdateMetrics(&InterfaceMetrics{
+		NodeID:      "n1",
+		InterfaceID: "if1",
+		Up:          true,
+		BytesTx:     100,
+	})
+	ts.UpdateMetrics(&InterfaceMetrics{
+		NodeID:      "n1",
+		InterfaceID: "if2",
+		Up:          false,
+		BytesTx:     200,
+	})
+	ts.UpdateMetrics(&InterfaceMetrics{
+		NodeID:      "n2",
+		InterfaceID: "if1",
+		Up:          true,
+		BytesTx:     300,
+	})
+
+	all = ts.ListAll()
+	if len(all) != 3 {
+		t.Fatalf("ListAll returned %d items, want 3", len(all))
+	}
+
+	// Verify all metrics are present
+	found := make(map[string]bool)
+	for _, m := range all {
+		key := m.NodeID + "/" + m.InterfaceID
+		found[key] = true
+	}
+	if !found["n1/if1"] || !found["n1/if2"] || !found["n2/if1"] {
+		t.Errorf("ListAll missing expected metrics, found keys: %v", found)
+	}
+}
+
+func TestTelemetryState_ListAll_ReturnsCopies(t *testing.T) {
+	ts := NewTelemetryState()
+	ts.UpdateMetrics(&InterfaceMetrics{
+		NodeID:      "n1",
+		InterfaceID: "if1",
+		Up:          true,
+		BytesTx:     100,
+	})
+
+	all := ts.ListAll()
+	if len(all) != 1 {
+		t.Fatalf("ListAll returned %d items, want 1", len(all))
+	}
+
+	// Mutate the returned copy
+	all[0].BytesTx = 999
+	all[0].Up = false
+
+	// Fetch again and ensure original is unchanged
+	original := ts.GetMetrics("n1", "if1")
+	if original == nil {
+		t.Fatalf("GetMetrics returned nil")
+	}
+	if original.BytesTx != 100 || original.Up != true {
+		t.Errorf("Original metrics mutated: got BytesTx %d, Up %t; want BytesTx %d, Up %t",
+			original.BytesTx, original.Up, 100, true)
+	}
+}
+
