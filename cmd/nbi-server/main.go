@@ -204,6 +204,12 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 		return fmt.Errorf("failed to start agents: %w", err)
 	}
 
+	// Set initial simulation time before running initial schedule.
+	// This ensures EventScheduler.Now() returns the correct time when scheduling events.
+	// The sim loop will start at StartTime and advance by Tick on the first iteration,
+	// so we set the time to StartTime here to match the initial state.
+	tc.SetTime(tc.StartTime)
+
 	// Run initial schedule
 	// Note: We log a warning but don't fail startup if initial scheduling fails,
 	// as the scheduler can be retried later and the simulation can continue.
