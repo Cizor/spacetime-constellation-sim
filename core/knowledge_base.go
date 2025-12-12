@@ -134,10 +134,16 @@ func (kb *KnowledgeBase) ReplaceInterfacesForNode(nodeID string, interfaces []*N
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
+	// Collect interface IDs to delete first, then delete them.
+	// Modifying a map during iteration is undefined behavior in Go.
+	var idsToDelete []string
 	for id, iface := range kb.interfaces {
 		if iface != nil && iface.ParentNodeID == nodeID {
-			kb.deleteInterfaceLocked(id)
+			idsToDelete = append(idsToDelete, id)
 		}
+	}
+	for _, id := range idsToDelete {
+		kb.deleteInterfaceLocked(id)
 	}
 
 	for _, iface := range interfaces {

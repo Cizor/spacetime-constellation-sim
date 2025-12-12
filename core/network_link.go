@@ -66,5 +66,7 @@ type NetworkLink struct {
 	// StatusBeforeImpairment stores the link's status before it was impaired.
 	// This is used to restore the original status when the link is un-impaired.
 	// Only set when transitioning from non-impaired to impaired state.
-	StatusBeforeImpairment LinkStatus `json:"StatusBeforeImpairment,omitempty"`
+	// A pointer is used to distinguish between unset (nil) and explicitly
+	// set to Unknown (0 dB is a valid status for links loaded from JSON).
+	StatusBeforeImpairment *LinkStatus `json:"StatusBeforeImpairment,omitempty"`
 }

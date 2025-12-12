@@ -138,7 +138,8 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		// If we're transitioning to impaired state, save the current status
 		// (unless it's already impaired, in which case we've already saved it)
 		if link.Status != LinkStatusImpaired {
-			link.StatusBeforeImpairment = link.Status
+			statusCopy := link.Status
+			link.StatusBeforeImpairment = &statusCopy
 		}
 		link.IsUp = false
 		link.Quality = LinkQualityDown
@@ -152,19 +153,20 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	// (handles un-impairing case). This preserves the link's state before impairment.
 	if link.Status == LinkStatusImpaired {
 		// Restore the status from before impairment if we have it
-		if link.StatusBeforeImpairment != LinkStatusImpaired && link.StatusBeforeImpairment != LinkStatusUnknown {
-			link.Status = link.StatusBeforeImpairment
-			link.StatusBeforeImpairment = LinkStatusUnknown // Clear the saved status
+		// Use pointer check to distinguish between unset (nil) and explicitly set to Unknown.
+		if link.StatusBeforeImpairment != nil && *link.StatusBeforeImpairment != LinkStatusImpaired {
+			link.Status = *link.StatusBeforeImpairment
+			link.StatusBeforeImpairment = nil // Clear the saved status
 		} else if link.WasExplicitlyDeactivated {
 			// If we don't have a saved status but link was explicitly deactivated,
 			// preserve that state by setting Status to Potential
 			link.Status = LinkStatusPotential
-			link.StatusBeforeImpairment = LinkStatusUnknown // Clear the saved status
+			link.StatusBeforeImpairment = nil // Clear the saved status
 		} else {
 			// No saved status and not explicitly deactivated: reset to Unknown
 			// to allow normal re-evaluation (backward compatibility)
 			link.Status = LinkStatusUnknown
-			link.StatusBeforeImpairment = LinkStatusUnknown // Clear the saved status
+			link.StatusBeforeImpairment = nil // Clear the saved status
 		}
 	}
 

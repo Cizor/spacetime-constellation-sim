@@ -86,7 +86,7 @@ func TestStatusRestorationOnUnimpair(t *testing.T) {
 	if link.Status != LinkStatusImpaired {
 		t.Fatalf("expected Status=LinkStatusImpaired, got %v", link.Status)
 	}
-	if link.StatusBeforeImpairment != LinkStatusActive {
+	if link.StatusBeforeImpairment == nil || *link.StatusBeforeImpairment != LinkStatusActive {
 		t.Fatalf("expected StatusBeforeImpairment=LinkStatusActive, got %v", link.StatusBeforeImpairment)
 	}
 
@@ -102,8 +102,8 @@ func TestStatusRestorationOnUnimpair(t *testing.T) {
 	if link.Status != LinkStatusActive {
 		t.Fatalf("expected Status to be restored to LinkStatusActive after un-impairing, got %v", link.Status)
 	}
-	if link.StatusBeforeImpairment != LinkStatusUnknown {
-		t.Fatalf("expected StatusBeforeImpairment to be cleared after restoration, got %v", link.StatusBeforeImpairment)
+	if link.StatusBeforeImpairment != nil {
+		t.Fatalf("expected StatusBeforeImpairment to be cleared (nil) after restoration, got %v", link.StatusBeforeImpairment)
 	}
 	if !link.IsUp {
 		t.Fatalf("expected link to be up after status restoration")
