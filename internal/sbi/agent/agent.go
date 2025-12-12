@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -36,9 +34,10 @@ type SimAgent struct {
 	Stream       grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]
 
 	// Internal state
-	mu      sync.Mutex
-	pending map[string]*sbi.ScheduledAction // keyed by EntryID
-	token   string                           // schedule_manipulation_token
+	mu            sync.Mutex
+	pending       map[string]*sbi.ScheduledAction // keyed by EntryID
+	token         string                           // schedule_manipulation_token (empty until first message)
+	lastSeqNoSeen uint64                           // last seen sequence number for logging/debugging
 
 	// Telemetry state
 	telemetryMu  sync.Mutex
@@ -68,7 +67,8 @@ func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.Scen
 		TelemetryCli:      telemetryCli,
 		Stream:            stream,
 		pending:           make(map[string]*sbi.ScheduledAction),
-		token:             generateToken(),
+		token:             "", // empty until first scheduling message establishes it
+		lastSeqNoSeen:     0,
 		telemetryInterval: cfg.Interval,
 		bytesTx:           make(map[string]uint64),
 		lastTick:          time.Time{},
@@ -199,16 +199,36 @@ func (a *SimAgent) handleMessage(msg *schedulingpb.ReceiveRequestsMessageFromCon
 // handleCreateEntry processes a CreateEntryRequest message.
 // It validates the token, converts the proto to ScheduledAction, and schedules it.
 func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEntryRequest) error {
-	// Validate token
-	a.mu.Lock()
-	tokenMatch := req.GetScheduleManipulationToken() == a.token
-	a.mu.Unlock()
-
-	if !tokenMatch {
-		// Token mismatch - log and ignore (forgiving behavior for Scope 4)
+	// Validate and establish token
+	token := req.GetScheduleManipulationToken()
+	if token == "" {
+		// Missing token - log and ignore
 		// TODO: Add proper logging
 		return nil
 	}
+
+	a.mu.Lock()
+	// First valid message establishes the token
+	if a.token == "" {
+		a.token = token
+	} else if a.token != token {
+		// Token mismatch - log and ignore stale message
+		// TODO: Add proper logging with expected/got tokens
+		a.mu.Unlock()
+		return nil
+	}
+
+	// Validate seqno
+	seqNo := req.GetSeqno()
+	if seqNo <= 0 {
+		// Non-positive seqno - log but proceed
+		// TODO: Add debug logging
+	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
+		// Non-monotonic seqno - log warning but proceed
+		// TODO: Add warning log with last/current seqno
+	}
+	a.lastSeqNoSeen = seqNo
+	a.mu.Unlock()
 
 	// Convert proto to ScheduledAction
 	action, err := a.convertCreateEntryToAction(req, requestID)
@@ -223,12 +243,41 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 // handleDeleteEntry processes a DeleteEntryRequest message.
 // It cancels the previously scheduled action by EntryID.
 func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error {
-	entryID := req.GetId()
-	if entryID == "" {
-		return fmt.Errorf("DeleteEntryRequest has empty entry ID")
+	// Validate token
+	token := req.GetScheduleManipulationToken()
+	if token == "" {
+		// Missing token - log and ignore
+		// TODO: Add proper logging
+		return nil
 	}
 
 	a.mu.Lock()
+	// First valid message establishes the token
+	if a.token == "" {
+		a.token = token
+	} else if a.token != token {
+		// Token mismatch - log and ignore
+		// TODO: Add proper logging
+		a.mu.Unlock()
+		return nil
+	}
+
+	// Validate seqno
+	seqNo := req.GetSeqno()
+	if seqNo <= 0 {
+		// Non-positive seqno - log but proceed
+		// TODO: Add debug logging
+	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
+		// Non-monotonic seqno - log warning but proceed
+		// TODO: Add warning log
+	}
+	a.lastSeqNoSeen = seqNo
+
+	entryID := req.GetId()
+	if entryID == "" {
+		a.mu.Unlock()
+		return fmt.Errorf("DeleteEntryRequest has empty entry ID")
+	}
 	defer a.mu.Unlock()
 
 	// Find and cancel the scheduled action
@@ -246,15 +295,35 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 // It drops any pending entries with When < cutoffTime.
 func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 	// Validate token
-	a.mu.Lock()
-	tokenMatch := req.GetScheduleManipulationToken() == a.token
-	a.mu.Unlock()
-
-	if !tokenMatch {
-		// Token mismatch - log and ignore
+	token := req.GetScheduleManipulationToken()
+	if token == "" {
+		// Missing token - log and ignore
 		// TODO: Add proper logging
 		return nil
 	}
+
+	a.mu.Lock()
+	// First valid message establishes the token
+	if a.token == "" {
+		a.token = token
+	} else if a.token != token {
+		// Token mismatch - log and ignore
+		// TODO: Add proper logging
+		a.mu.Unlock()
+		return nil
+	}
+
+	// Validate seqno
+	seqNo := req.GetSeqno()
+	if seqNo <= 0 {
+		// Non-positive seqno - log but proceed
+		// TODO: Add debug logging
+	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
+		// Non-monotonic seqno - log warning but proceed
+		// TODO: Add warning log
+	}
+	a.lastSeqNoSeen = seqNo
+	defer a.mu.Unlock()
 
 	// Extract cutoff time
 	cutoffTime, err := a.extractTimeFromFinalize(req)
@@ -546,10 +615,10 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 	}
 }
 
-// Reset clears the agent's pending schedule and generates a new token.
+// Reset clears the agent's pending schedule and resets token/seqno.
 // This should be called when the agent's schedule is reset (e.g., on startup
 // or after a schedule reset event). The agent will then send a Reset RPC
-// to the controller (in Chunk 5 when CDPI server is implemented).
+// to the controller, which will issue a new token.
 func (a *SimAgent) Reset() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -560,8 +629,9 @@ func (a *SimAgent) Reset() {
 	}
 	a.pending = make(map[string]*sbi.ScheduledAction)
 
-	// Generate a new token
-	a.token = generateToken()
+	// Clear token and seqno - next scheduling message will establish new token
+	a.token = ""
+	a.lastSeqNoSeen = 0
 }
 
 // GetToken returns the current schedule manipulation token.
@@ -785,17 +855,10 @@ func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) 
 	return hasActiveLink, bandwidthBps
 }
 
-// generateToken generates a random token for schedule manipulation.
-func generateToken() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "fallback-token"
-	}
-	return hex.EncodeToString(b[:])
-}
 
 // stringPtr returns a pointer to the given string.
 func stringPtr(s string) *string {
 	return &s
 }
+
 
