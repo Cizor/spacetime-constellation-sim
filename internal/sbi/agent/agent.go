@@ -342,16 +342,13 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 		// TODO: Add warning log
 	}
 	a.lastSeqNoSeen = seqNo
-	defer a.mu.Unlock()
 
 	// Extract cutoff time
 	cutoffTime, err := a.extractTimeFromFinalize(req)
 	if err != nil {
+		a.mu.Unlock()
 		return fmt.Errorf("failed to extract cutoff time: %w", err)
 	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	// Drop entries with When < cutoff
 	for entryID, action := range a.pending {
@@ -361,6 +358,7 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 			delete(a.pending, entryID)
 		}
 	}
+	a.mu.Unlock()
 
 	return nil
 }
