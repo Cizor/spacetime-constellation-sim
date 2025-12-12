@@ -316,12 +316,18 @@ func runSimLoop(
 			return
 		case <-ticker.C:
 			simTime = simTime.Add(tc.Tick)
+			
+			// Update TimeController's internal time so EventScheduler.Now() returns correct time
+			// This is critical for EventScheduler integration (Issue #168)
+			tc.SetTime(simTime)
+			
 			if err := state.RunSimTick(simTime, motion, connectivity, func() {
 				syncNodePositions(state.PhysicalKB(), state.NetworkKB())
 			}); err != nil {
 				log.Warn(ctx, "simulation tick failed", logging.String("error", err.Error()))
 			}
 			// Run due events from the event scheduler (for SBI actions)
+			// This ensures scheduled actions execute at the correct simulation time (Issue #168)
 			if eventScheduler != nil {
 				eventScheduler.RunDue()
 			}

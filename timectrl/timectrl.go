@@ -76,6 +76,14 @@ func (tc *TimeController) AddListener(fn func(time.Time)) {
 	tc.listeners = append(tc.listeners, fn)
 }
 
+// SetTime updates the current simulation time. This is used by external
+// run loops that manually advance time (e.g., in cmd/nbi-server).
+func (tc *TimeController) SetTime(t time.Time) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.currentTime = t
+}
+
 // Start runs the controller for the specified duration in a separate goroutine.
 // It returns a channel that is closed when the controller finishes.
 func (tc *TimeController) Start(duration time.Duration) <-chan struct{} {
