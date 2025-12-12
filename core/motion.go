@@ -77,6 +77,7 @@ func (m *MotionModel) AddPlatform(pd *model.PlatformDefinition) error {
 	prop := newPlatformPropagator(copy, m.tleFetcher)
 	m.entries[pd.ID] = motionEntry{
 		platform:   copy,
+		original:   pd, // Keep reference to original so we can update it
 		propagator: prop,
 	}
 	return nil
@@ -122,6 +123,10 @@ func (m *MotionModel) UpdatePositions(simTime time.Time) error {
 			continue
 		}
 		entry.propagator.UpdatePosition(simTime, entry.platform)
+		// Update the original platform's coordinates so external code can observe changes
+		if entry.original != nil {
+			entry.original.Coordinates = entry.platform.Coordinates
+		}
 		if updater != nil {
 			if err := updater.UpdatePlatformPosition(entry.platform.ID, entry.platform.Coordinates); err != nil {
 				lastErr = err
@@ -132,8 +137,9 @@ func (m *MotionModel) UpdatePositions(simTime time.Time) error {
 }
 
 type motionEntry struct {
-	platform   *model.PlatformDefinition
-	propagator platformPropagator
+	platform      *model.PlatformDefinition // Cloned copy for internal use
+	original      *model.PlatformDefinition // Reference to original for external updates
+	propagator    platformPropagator
 }
 
 type platformPropagator interface {
