@@ -51,7 +51,14 @@ type SimAgent struct {
 }
 
 // NewSimAgent creates a new simulated agent with the given ID and dependencies.
+// It uses default telemetry configuration.
 func NewSimAgent(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]) *SimAgent {
+	return NewSimAgentWithConfig(agentID, nodeID, state, scheduler, telemetryCli, stream, DefaultTelemetryConfig())
+}
+
+// NewSimAgentWithConfig creates a new simulated agent with telemetry configuration.
+func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController], telemetryConfig TelemetryConfig) *SimAgent {
+	cfg := telemetryConfig.ApplyDefaults()
 	return &SimAgent{
 		AgentID:           agentID,
 		NodeID:            nodeID,
@@ -61,7 +68,7 @@ func NewSimAgent(agentID sbi.AgentID, nodeID string, state *state.ScenarioState,
 		Stream:            stream,
 		pending:           make(map[string]*sbi.ScheduledAction),
 		token:             generateToken(),
-		telemetryInterval: 1 * time.Second, // Default 1 second simulation time
+		telemetryInterval: cfg.Interval,
 		bytesTx:           make(map[string]uint64),
 		lastTick:          time.Time{},
 	}
@@ -123,8 +130,8 @@ func (a *SimAgent) Start(ctx context.Context) error {
 	// Start read loop in a goroutine
 	go a.readLoop()
 
-	// Start telemetry loop if TelemetryCli is available
-	if a.TelemetryCli != nil {
+	// Start telemetry loop if TelemetryCli is available and interval is set
+	if a.TelemetryCli != nil && a.telemetryInterval > 0 {
 		a.startTelemetryLoop()
 	}
 
