@@ -454,8 +454,10 @@ func averageNoiseFigure(tx, rx *TransceiverModel) float64 {
 		if model == nil {
 			continue
 		}
-		if nf := model.SystemNoiseFigureDB; nf != 0 {
-			sum += nf
+		// Use pointer check to distinguish between unset (nil) and explicitly set to zero.
+		// A noise figure of 0 dB is valid (perfect receiver with no added noise).
+		if model.SystemNoiseFigureDB != nil {
+			sum += *model.SystemNoiseFigureDB
 			count++
 		}
 	}

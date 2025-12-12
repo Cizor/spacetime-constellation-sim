@@ -65,7 +65,7 @@ lint:
 
 ## Generate protobuf / gRPC code for Aalyria APIs (Scope 3)
 proto:
-	@if not exist "$(PROTO_OUT_DIR)" mkdir "$(PROTO_OUT_DIR)"
+	@mkdir -p "$(PROTO_OUT_DIR)"
 	protoc -I $(PROTO_API_ROOT) -I $(PROTO_GOOGLE_ROOT) \
 	  --go_out=$(PROTO_OUT_DIR) --go_opt=paths=source_relative \
 	  --go-grpc_out=$(PROTO_OUT_DIR) --go-grpc_opt=paths=source_relative \

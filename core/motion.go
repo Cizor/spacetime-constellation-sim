@@ -137,9 +137,9 @@ func (m *MotionModel) UpdatePositions(simTime time.Time) error {
 }
 
 type motionEntry struct {
-	platform      *model.PlatformDefinition // Cloned copy for internal use
-	original      *model.PlatformDefinition // Reference to original for external updates
-	propagator    platformPropagator
+	platform   *model.PlatformDefinition // Cloned copy for internal use
+	original   *model.PlatformDefinition // Reference to original for external updates
+	propagator platformPropagator
 }
 
 type platformPropagator interface {
