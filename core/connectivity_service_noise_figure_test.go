@@ -83,4 +83,3 @@ func TestAverageNoiseFigure_Unset(t *testing.T) {
 		t.Fatalf("expected average of two unset noise figures to be 0, got %f", avg2)
 	}
 }
-

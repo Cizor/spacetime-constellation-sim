@@ -210,8 +210,10 @@ func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
 	}
 
 	// Store our own copy so callers cannot mutate KB-owned state without locks.
-	stored := *link
-	kb.links[link.ID] = &stored
+	// Allocate on the heap to avoid dangling pointer when function returns.
+	stored := new(NetworkLink)
+	*stored = *link
+	kb.links[link.ID] = stored
 
 	// Adjacency: linksByInterface and interface.LinkIDs.
 	kb.attachLinkToInterface(link.ID, link.InterfaceA)

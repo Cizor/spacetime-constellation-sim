@@ -153,12 +153,13 @@ func main() {
 
 		// --- Push ECEF positions into network KB (Scope 2) ---
 		// Scope 1 uses metres; Scope 2 geometry layer uses km.
-		netKB.SetNodeECEFPosition("sat1", core.Vec3{
+		// Use network node IDs ("node-sat1", "node-ground1"), not platform IDs.
+		netKB.SetNodeECEFPosition("node-sat1", core.Vec3{
 			X: sat.Coordinates.X / 1000.0,
 			Y: sat.Coordinates.Y / 1000.0,
 			Z: sat.Coordinates.Z / 1000.0,
 		})
-		netKB.SetNodeECEFPosition("ground1", core.Vec3{
+		netKB.SetNodeECEFPosition("node-ground1", core.Vec3{
 			X: ground.Coordinates.X / 1000.0,
 			Y: ground.Coordinates.Y / 1000.0,
 			Z: ground.Coordinates.Z / 1000.0,
