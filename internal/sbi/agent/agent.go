@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -731,12 +732,57 @@ func (a *SimAgent) buildInterfaceMetrics(deltaSec float64) []*telemetrypb.Interf
 }
 
 // deriveInterfaceState determines the operational state and bandwidth for an interface.
-// This is a stub implementation; full implementation will be done in issue #150.
+// It checks all links connected to this interface and determines:
+// - up: true if at least one link is Active (Status=LinkStatusActive) and IsUp=true
+// - bandwidthBps: the maximum MaxDataRateMbps across all active links, converted to bits per second
 // Returns (up bool, bandwidthBps float64).
 func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) {
-	// Stub implementation - will be fully implemented in issue #150
-	// For now, return false/0 to avoid incorrect telemetry
-	return false, 0
+	if a.State == nil {
+		return false, 0
+	}
+
+	// Get all links - we'll filter by interface
+	allLinks := a.State.ListLinks()
+	
+	// Build possible interface references (with and without nodeID prefix)
+	ifaceRef := nodeID + "/" + ifaceID
+	
+	// Filter links that connect to this interface
+	var links []*core.NetworkLink
+	for _, link := range allLinks {
+		if link == nil {
+			continue
+		}
+		// Check if this link connects to our interface (either direction)
+		if link.InterfaceA == ifaceID || link.InterfaceA == ifaceRef ||
+			link.InterfaceB == ifaceID || link.InterfaceB == ifaceRef {
+			links = append(links, link)
+		}
+	}
+
+	if len(links) == 0 {
+		return false, 0
+	}
+
+	// Check if any link is active and up
+	var maxBandwidthMbps float64
+	hasActiveLink := false
+
+	for _, link := range links {
+		// Link is considered "up" if it's Active and IsUp
+		if link.Status == core.LinkStatusActive && link.IsUp {
+			hasActiveLink = true
+			// Track maximum bandwidth across all active links
+			if link.MaxDataRateMbps > maxBandwidthMbps {
+				maxBandwidthMbps = link.MaxDataRateMbps
+			}
+		}
+	}
+
+	// Convert Mbps to bps (bits per second)
+	bandwidthBps := maxBandwidthMbps * 1e6
+
+	return hasActiveLink, bandwidthBps
 }
 
 // generateToken generates a random token for schedule manipulation.
