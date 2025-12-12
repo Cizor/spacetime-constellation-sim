@@ -9,6 +9,7 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
+	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
 // Scheduler implements the controller-side scheduling logic for Scope 4.
@@ -40,7 +41,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi *CD
 }
 
 // RunInitialSchedule runs the initial scheduling pass, including link-driven
-// beam scheduling. This should be called once at scenario startup after
+// beam scheduling and route scheduling. This should be called once at scenario startup after
 // agents are connected.
 func (s *Scheduler) RunInitialSchedule(ctx context.Context) error {
 	// 1. Link-driven beam schedule
@@ -48,7 +49,12 @@ func (s *Scheduler) RunInitialSchedule(ctx context.Context) error {
 		return fmt.Errorf("link-driven beam scheduling failed: %w", err)
 	}
 
-	// 2. (Later) route and ServiceRequest-aware scheduling, in subsequent issues.
+	// 2. Route scheduling for single-hop links
+	if err := s.ScheduleLinkRoutes(ctx); err != nil {
+		return fmt.Errorf("link route scheduling failed: %w", err)
+	}
+
+	// 3. (Later) ServiceRequest-aware scheduling, in subsequent issues.
 	return nil
 }
 
@@ -275,5 +281,193 @@ func (s *CDPIServer) hasAgent(agentID string) bool {
 	defer s.agentsMu.RUnlock()
 	_, exists := s.agents[agentID]
 	return exists
+}
+
+// ScheduleLinkRoutes implements static single-hop route scheduling:
+// - For each potential link, determine visibility intervals [T_on, T_off]
+// - Schedule ScheduledSetRoute actions at T_on for both endpoints
+// - Schedule ScheduledDeleteRoute actions at T_off for both endpoints
+func (s *Scheduler) ScheduleLinkRoutes(ctx context.Context) error {
+	now := s.Clock.Now()
+	horizon := now.Add(1 * time.Hour) // Fixed 1-hour planning horizon for now
+
+	// Get all potential links
+	potentialLinks := s.getPotentialLinks()
+	if len(potentialLinks) == 0 {
+		s.log.Debug(ctx, "No potential links found for route scheduling")
+		return nil
+	}
+
+	s.log.Debug(ctx, "Scheduling routes for potential links",
+		logging.Int("link_count", len(potentialLinks)),
+		logging.String("horizon", horizon.Format(time.RFC3339)),
+	)
+
+	// For each potential link, determine visibility windows and schedule route actions
+	for _, link := range potentialLinks {
+		if err := s.scheduleRoutesForLink(ctx, link, now, horizon); err != nil {
+			s.log.Warn(ctx, "Failed to schedule routes for link",
+				logging.String("link_id", link.ID),
+				logging.String("error", err.Error()),
+			)
+			// Continue with other links even if one fails
+			continue
+		}
+	}
+
+	return nil
+}
+
+// scheduleRoutesForLink schedules SetRoute and DeleteRoute actions for a single link.
+// For each visibility interval [T_on, T_off]:
+// - At T_on: schedule SetRoute on both endpoints (node A -> node B, node B -> node A)
+// - At T_off: schedule DeleteRoute on both endpoints
+func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.NetworkLink, now, horizon time.Time) error {
+	// For now, use a simple approach: assume link is available from now to horizon
+	// TODO: In future, compute actual visibility windows by sampling connectivity
+	T_on := now
+	T_off := horizon
+
+	// Get interface details to determine node IDs
+	interfacesByNode := s.State.InterfacesByNode()
+	var ifaceA, ifaceB *core.NetworkInterface
+	for _, ifaces := range interfacesByNode {
+		for _, iface := range ifaces {
+			if iface.ID == link.InterfaceA {
+				ifaceA = iface
+			}
+			if iface.ID == link.InterfaceB {
+				ifaceB = iface
+			}
+		}
+	}
+	if ifaceA == nil || ifaceB == nil {
+		return fmt.Errorf("interface not found: ifaceA=%v, ifaceB=%v", ifaceA != nil, ifaceB != nil)
+	}
+
+	nodeAID := ifaceA.ParentNodeID
+	nodeBID := ifaceB.ParentNodeID
+
+	// Determine agent IDs for both nodes
+	agentAID, err := s.agentIDForNode(nodeAID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve agent for node A: %w", err)
+	}
+	agentBID, err := s.agentIDForNode(nodeBID)
+	if err != nil {
+		return fmt.Errorf("failed to resolve agent for node B: %w", err)
+	}
+
+	// Schedule SetRoute actions at T_on for both endpoints
+	// Node A -> Node B
+	entryIDAOn := fmt.Sprintf("route:%s:A->B:on:%d", link.ID, T_on.UnixNano())
+	if !s.scheduledEntryIDs[entryIDAOn] {
+		routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
+		actionAOn := s.newSetRouteAction(entryIDAOn, sbi.AgentID(agentAID), T_on, routeA)
+		if err := s.CDPI.SendCreateEntry(agentAID, actionAOn); err != nil {
+			return fmt.Errorf("failed to send SetRoute for node A: %w", err)
+		}
+		s.scheduledEntryIDs[entryIDAOn] = true
+	}
+
+	// Node B -> Node A
+	entryIDBOn := fmt.Sprintf("route:%s:B->A:on:%d", link.ID, T_on.UnixNano())
+	if !s.scheduledEntryIDs[entryIDBOn] {
+		routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
+		actionBOn := s.newSetRouteAction(entryIDBOn, sbi.AgentID(agentBID), T_on, routeB)
+		if err := s.CDPI.SendCreateEntry(agentBID, actionBOn); err != nil {
+			return fmt.Errorf("failed to send SetRoute for node B: %w", err)
+		}
+		s.scheduledEntryIDs[entryIDBOn] = true
+	}
+
+	// Schedule DeleteRoute actions at T_off for both endpoints
+	// Node A -> Node B
+	entryIDAOff := fmt.Sprintf("route:%s:A->B:off:%d", link.ID, T_off.UnixNano())
+	if !s.scheduledEntryIDs[entryIDAOff] {
+		routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
+		actionAOff := s.newDeleteRouteAction(entryIDAOff, sbi.AgentID(agentAID), T_off, routeA)
+		if err := s.CDPI.SendCreateEntry(agentAID, actionAOff); err != nil {
+			return fmt.Errorf("failed to send DeleteRoute for node A: %w", err)
+		}
+		s.scheduledEntryIDs[entryIDAOff] = true
+	}
+
+	// Node B -> Node A
+	entryIDBOff := fmt.Sprintf("route:%s:B->A:off:%d", link.ID, T_off.UnixNano())
+	if !s.scheduledEntryIDs[entryIDBOff] {
+		routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
+		actionBOff := s.newDeleteRouteAction(entryIDBOff, sbi.AgentID(agentBID), T_off, routeB)
+		if err := s.CDPI.SendCreateEntry(agentBID, actionBOff); err != nil {
+			return fmt.Errorf("failed to send DeleteRoute for node B: %w", err)
+		}
+		s.scheduledEntryIDs[entryIDBOff] = true
+	}
+
+	s.log.Debug(ctx, "Scheduled route actions for link",
+		logging.String("link_id", link.ID),
+		logging.String("node_a", nodeAID),
+		logging.String("node_b", nodeBID),
+		logging.String("on_time", T_on.Format(time.RFC3339)),
+		logging.String("off_time", T_off.Format(time.RFC3339)),
+	)
+
+	return nil
+}
+
+// newRouteEntryForNode creates a RouteEntry for routing to a destination node.
+// Uses a consistent DestinationCIDR scheme: "node:<nodeID>/32"
+func (s *Scheduler) newRouteEntryForNode(destNodeID, outInterfaceID string) *model.RouteEntry {
+	return &model.RouteEntry{
+		DestinationCIDR: fmt.Sprintf("node:%s/32", destNodeID),
+		NextHopNodeID:   destNodeID,
+		OutInterfaceID:  outInterfaceID,
+	}
+}
+
+// newSetRouteAction creates a ScheduledAction for SetRoute.
+func (s *Scheduler) newSetRouteAction(entryID string, agentID sbi.AgentID, when time.Time, route *model.RouteEntry) *sbi.ScheduledAction {
+	return &sbi.ScheduledAction{
+		EntryID:   entryID,
+		AgentID:   agentID,
+		Type:      sbi.ScheduledSetRoute,
+		When:      when,
+		Route:     route,
+		RequestID: "", // CDPI will fill this
+		SeqNo:     0,  // CDPI will fill this
+		Token:     "", // CDPI will fill this
+	}
+}
+
+// newDeleteRouteAction creates a ScheduledAction for DeleteRoute.
+func (s *Scheduler) newDeleteRouteAction(entryID string, agentID sbi.AgentID, when time.Time, route *model.RouteEntry) *sbi.ScheduledAction {
+	return &sbi.ScheduledAction{
+		EntryID:   entryID,
+		AgentID:   agentID,
+		Type:      sbi.ScheduledDeleteRoute,
+		When:      when,
+		Route:     route,
+		RequestID: "", // CDPI will fill this
+		SeqNo:     0,  // CDPI will fill this
+		Token:     "", // CDPI will fill this
+	}
+}
+
+// agentIDForNode determines which agent should receive actions for a node.
+// For Scope 4, we use a simple mapping: agent_id equals node_id.
+func (s *Scheduler) agentIDForNode(nodeID string) (string, error) {
+	if nodeID == "" {
+		return "", fmt.Errorf("nodeID is empty")
+	}
+
+	// For Scope 4, agent_id equals node_id
+	agentID := nodeID
+
+	// Verify agent exists in CDPI
+	if !s.CDPI.hasAgent(agentID) {
+		return "", fmt.Errorf("agent %s not found in CDPI server", agentID)
+	}
+
+	return agentID, nil
 }
 
