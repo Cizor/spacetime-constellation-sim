@@ -149,14 +149,14 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 	}
 
 	actionOn := &sbi.ScheduledAction{
-		EntryID:  entryIDOn,
-		AgentID:  sbi.AgentID(agentID),
-		Type:     sbi.ScheduledUpdateBeam,
-		When:     onTime,
-		Beam:     beamSpec,
+		EntryID:   entryIDOn,
+		AgentID:   sbi.AgentID(agentID),
+		Type:      sbi.ScheduledUpdateBeam,
+		When:      onTime,
+		Beam:      beamSpec,
 		RequestID: "", // CDPI will fill this
-		SeqNo:    0,   // CDPI will fill this
-		Token:    "",  // CDPI will fill this
+		SeqNo:     0,  // CDPI will fill this
+		Token:     "", // CDPI will fill this
 	}
 
 	if err := s.CDPI.SendCreateEntry(agentID, actionOn); err != nil {

@@ -37,9 +37,9 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	// Create nodes and interfaces
 	nodeA := &model.NetworkNode{ID: "nodeA"}
 	ifaceA := &core.NetworkInterface{
-		ID:           "ifA",
-		ParentNodeID: "nodeA",
-		Medium:       core.MediumWireless,
+		ID:            "ifA",
+		ParentNodeID:  "nodeA",
+		Medium:        core.MediumWireless,
 		TransceiverID: "trx-ku",
 		IsOperational: true,
 	}
@@ -49,9 +49,9 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 
 	nodeB := &model.NetworkNode{ID: "nodeB"}
 	ifaceB := &core.NetworkInterface{
-		ID:           "ifB",
-		ParentNodeID: "nodeB",
-		Medium:       core.MediumWireless,
+		ID:            "ifB",
+		ParentNodeID:  "nodeB",
+		Medium:        core.MediumWireless,
 		TransceiverID: "trx-ku",
 		IsOperational: true,
 	}
@@ -211,4 +211,3 @@ func TestScheduler_ServiceRequestStatusNoPath(t *testing.T) {
 		t.Errorf("ProvisionedIntervals = %d when no path found, want 0", len(sr.ProvisionedIntervals))
 	}
 }
-
