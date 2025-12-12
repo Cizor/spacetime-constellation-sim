@@ -74,3 +74,12 @@ type fakeTelemetryClient struct {
 type fakeStream struct {
 	grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]
 }
+
+func (f *fakeStream) Send(msg *schedulingpb.ReceiveRequestsMessageToController) error {
+	return nil
+}
+
+func (f *fakeStream) Recv() (*schedulingpb.ReceiveRequestsMessageFromController, error) {
+	// Block forever to simulate an active stream
+	select {}
+}
