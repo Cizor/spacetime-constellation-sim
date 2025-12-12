@@ -1,0 +1,578 @@
+[
+  {
+    "number": 183,
+    "title": "[Scope 4][Chunk 13] Epic – Example scenario & documentation for SBI scheduling and telemetry",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/183",
+    "body": "## Background\n\nChunk 13 is the final step of Scope 4 and focuses on producing:\n- A **minimal, golden example scenario** that demonstrates the *end-to-end* behavior of the SBI scheduling pipeline, agent execution, link activation, routing, and telemetry.\n- Documentation that describes how to load, run, and observe this scenario.\n- A **validation checklist** to confirm that Scope 4 is fully implemented and functioning.\n\nThis scenario serves as the canonical demonstration of:\n- CDPI scheduling (beam on/off, route set/delete)\n- Agent-side schedule execution\n- Telemetry export and controller metrics updates\n- Integration of ScenarioState, Scheduler, CDPI Server, Agents, and TelemetryService\n- Expected logs and system behavior over time\n\nIt also functions as a regression test for future scopes.\n\n## Goals\n\n- Provide a ready-to-run demo scenario with:\n  - One LEO satellite\n  - One ground station\n  - A single potential link that becomes visible for a known interval\n  - One ServiceRequest (optional)\n- Create clear documentation describing:\n  - How to load the scenario (NBI or config file)\n  - How to run the simulator with SBI enabled\n  - How logs should look (sample CDPI + Telemetry output)\n  - Expected state transitions (link up/down, routing install/remove)\n- Produce a **Scope 4 completion checklist** verifying:\n  - CDPI correctness\n  - Agent execution\n  - Scheduling engine behavior\n  - Telemetry loop\n  - Integration and lifecycle wiring\n\n## Tasks\n\n### 1. Create example scenario\n- Build a small scenario JSON or NBI script containing:\n  - One LEO satellite with downlink interface\n  - One ground station with uplink interface\n  - Declared potential link between them\n  - Defined orbit such that the satellite comes into view at predictable times\n  - Optional: a ServiceRequest requiring connectivity between nodes\n\n### 2. Add documentation under `docs/sbi/example/`\n- “How to load the example scenario”\n- “How to run the simulator with SBI enabled”\n- Provide expected console logs for:\n  - Agent Hello, Reset\n  - Scheduler CreateEntryRequests\n  - Agent Responses\n  - Link activation/deactivation\n  - Telemetry reports (Up=true/false, BytesTx increasing)\n\n### 3. Provide expected behavior walkthrough\nDocument step-by-step:\n- At **T1** link becomes visible → scheduler emits UpdateBeam + SetRoute\n- Agent executes actions → state changes in ScenarioState\n- Telemetry loop begins reporting interface Up + Tx bytes\n- At **T2** link goes out-of-view → scheduler emits DeleteBeam + DeleteRoute\n- Telemetry reflects Up=false\n\n### 4. Add Scope 4 completion checklist\nInclude checks covering:\n- CDPI ReceiveRequests semantics implemented:\n  - Hello, Reset, CreateEntry, DeleteEntry, Finalize, SetSrPolicy/DeleteSrPolicy (stub)\n- Agent local scheduling queue works\n- Scheduler emits correct commands for link intervals\n- ScenarioState updates links and routing via agent execution\n- Telemetry loop runs and controller state receives metrics\n- End-to-end gRPC integration confirmed\n\n### 5. Add README reference + navigation\nLink this example from:\n- Root README\n- SBI documentation index\n- Developer onboarding page\n\n## Acceptance Criteria\n\n- A runnable example scenario file exists under `examples/` or `docs/sbi/example/`.\n- Documentation fully describes loading, running, and expected results.\n- Screenshots or text logs show:\n  - CDPI scheduling messages\n  - Agent responses\n  - Telemetry exports\n- Checklist is complete and matches Roadmap + Scope 4 requirements.\n- All instructions validated by running the scenario manually.\n- No missing SBI components—Chunk 13 marks the end of Scope 4 readiness.\n",
+    "labels": [
+      {
+        "id": 9737775966,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrXg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/enhancement",
+        "name": "enhancement",
+        "color": "a2eeef",
+        "default": true,
+        "description": "New feature or request"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 184,
+    "title": "[Scope 4][Chunk 13] Define minimal SBI example scenario (LEO sat + ground station)",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/184",
+    "body": "## Background\n\nScope 4 should ship with a small, “golden” scenario that exercises the full SBI path:\n\n- CDPI scheduling (CreateEntry / DeleteEntry / Finalize).\n- Agent-side schedule execution (UpdateBeam / DeleteBeam, SetRoute / DeleteRoute).\n- Telemetry loop (ExportMetrics → TelemetryState).\n- Basic scheduler logic (link-driven beams, minimal ServiceRequest-aware routing).\n\nThe Scope 4 plan calls out a **simple LEO satellite + ground station** scenario as the canonical demo:\n\n- 1 LEO satellite with a downlink antenna.\n- 1 ground station with an uplink antenna.\n- A single ServiceRequest from ground → satellite (or vice versa).\n- A clear “in view” window where the link becomes available, then disappears.\n\nThis issue defines and checks in that scenario with just enough documentation to make it usable as a regression test and as a quick demo for developers.\n\n## Goal\n\nCreate a minimal but complete example scenario that:\n\n- Can be loaded via your existing NBI / scenario loading path.\n- Uses Scope 2 connectivity so the sat-ground link has a clear in-view interval.\n- Exercises Scope 4 SBI behaviour end-to-end:\n  - Scheduler derives UpdateBeam/DeleteBeam + SetRoute/DeleteRoute actions.\n  - Agent executes those actions at the right sim times.\n  - Telemetry loop reports Up/Down and BytesTx for the sat-ground interfaces.\n- Is small and deterministic enough to be used as a “golden” regression scenario.\n\nThe output of this issue is:\n\n- Scenario definition (JSON/YAML/config) checked into the repo under a clear path.\n- A small README / comments explaining how to run just this scenario.\n- A note on the expected qualitative behaviour (not full-blown docs; that’s later in Chunk 13).\n\n## Where to look\n\n- Existing scenario configs / fixtures from earlier scopes:\n  - Look under paths like:\n    - cmd/simulator/testdata\n    - sim/fixtures\n    - internal/testdata\n  - Re-use any helpers for loading scenarios via NBI (e.g. LoadScenarioFromFile or similar).\n- Scenario-related types:\n  - ScenarioState and how scenarios are created, e.g. in:\n    - sim/state\n    - internal/sim/state\n  - NBI ScenarioService if you already have a LoadScenario style RPC.\n- Connectivity / orbital model:\n  - Wherever you defined:\n    - Nodes and interfaces.\n    - Orbits / ground locations.\n    - Links and in-view windows.\n- Scope 4 SBI wiring:\n  - CDPIServer and TelemetryServer registration in cmd/simulator or equivalent.\n  - Scheduler wiring (Chunk 8).\n  - Agent startup (Chunk 9).\n\nSearch terms:\n\n- \"ScenarioState\"\n- \"LoadScenario\"\n- \"test scenario\"\n- \"LEO\"\n- \"ground station\"\n- \"cmd/simulator main\"\n\n## Tasks\n\n### 1. Define the minimal scenario structure\n\nCreate a new scenario file, for example:\n\n- scenarios/scope4_leo_ground.json\n\nContents (conceptually):\n\n- Nodes:\n  - A single LEO satellite node:\n    - NodeID: \"sat-1\"\n    - Type: \"satellite\" (or equivalent).\n    - One downlink interface, e.g. \"if-sat-down\".\n  - A single ground station node:\n    - NodeID: \"gs-1\"\n    - Type: \"ground_station\" (or equivalent).\n    - One uplink interface, e.g. \"if-gs-up\".\n- Links:\n  - A single potential link between:\n    - sat-1/if-sat-down ↔ gs-1/if-gs-up.\n  - Marked as \"potential\" in connectivity model; Scope 2 determines when it’s in view.\n- Orbits / positions:\n  - Simple orbital / ground parameters so Scope 2 produces a clear in-view window:\n    - e.g. link \"in view\" between T1 and T2 (you don’t need to hardcode times; just ensure it’s non-degenerate).\n- ServiceRequests:\n  - A single ServiceRequest, e.g.:\n    - SrcNodeID: \"gs-1\"\n    - DstNodeID: \"sat-1\"\n    - At least one FlowRequirement (bandwidth requirement etc.), matching your existing model.\n\nTry to keep this scenario as small as possible:\n\n- 2 nodes.\n- 2 interfaces.\n- 1 link.\n- 1 ServiceRequest.\n\n### 2. Hook the scenario into the simulator\n\nAdd code in your simulator entry point (or test runner) to load this scenario:\n\n- If you have a CLI flag for scenarios:\n\n      --scenario=scope4_leo_ground\n\n  then:\n\n  - Map this name to the file path (e.g. scenarios/scope4_leo_ground.json).\n  - Ensure ScenarioState is constructed in the same way as other scenarios.\n\n- If you are using NBI to load scenarios:\n\n  - Add a helper function or small test harness that:\n    - Constructs the Scenario proto message equivalent to scope4_leo_ground.\n    - Calls ScenarioService.LoadScenario or equivalent.\n  - Optionally provide a small Go test that sets this up (see Task 4).\n\nEnsure that after loading:\n\n- ScenarioState contains both nodes and the potential link.\n- The Telescope / Orbit / connectivity model is initialized (Scope 1–2).\n- SBI components are wired (Chunk 8–9):\n  - CDPIServer registered on gRPC server.\n  - TelemetryServer registered.\n  - Scheduler created with the ScenarioState.\n  - Agents created for \"sat-1\" and/or \"gs-1\" (depending on your agent model).\n  - Telemetry interval configured via existing flag (e.g. --telemetry-interval=1s).\n\n### 3. Provide a minimal run recipe (developer-facing)\n\nAdd a short README section or a dedicated doc file, for example:\n\n- docs/scope4_example_scenario.md\n- or a section in an existing README.\n\nExplain:\n\n- How to build the simulator:\n\n      go build ./cmd/simulator\n\n- How to run this specific scenario (example):\n\n      ./simulator \\\n        --scenario=scope4_leo_ground \\\n        --enable-sbi=true \\\n        --telemetry-interval=1s\n\n- What a developer should expect at a high level:\n\n  - Around time T1:\n    - Scheduler issues UpdateBeam + SetRoute for the sat-ground link.\n    - Agent applies UpdateBeam/SetRoute; link becomes active.\n    - Telemetry metrics for sat-1/if-sat-down and gs-1/if-gs-up show Up=true and BytesTx increasing.\n  - Around time T2:\n    - Scheduler issues DeleteBeam + DeleteRoute.\n    - Agent deactivates the link and removes routes.\n    - Telemetry shows Up=false.\n\nKeep this description concise; Chunk 13 will have separate issues for more detailed docs and a full checklist.\n\n### 4. Optional: small smoke-test for the scenario\n\nAdd a simple Go test as a smoke check, e.g.:\n\n- internal/sim/scope4_example_test.go\n\nThe test can:\n\n- Load the scope4_leo_ground scenario into an in-memory ScenarioState.\n- Instantiate a fake or short-lived EventScheduler and run the sim for a small horizon.\n- Assert basic invariants like:\n\n      - ScenarioState has 2 nodes and 1 potential link.\n      - Scheduler enqueues at least one UpdateBeam/DeleteBeam action.\n      - After running events, the link’s Active flag toggles at least once.\n\nThis doesn’t need to be a fully deterministic integration test; it’s a smoke test so the scenario doesn’t silently rot.\n\n## Acceptance criteria\n\n- Scenario definition:\n\n  - A new scenario file (e.g. scenarios/scope4_leo_ground.json) exists.\n  - It defines:\n    - 1 LEO satellite node with a single downlink interface.\n    - 1 ground station node with a single uplink interface.\n    - 1 potential link between them.\n    - 1 ServiceRequest from one node to the other.\n  - The scenario is minimal (no extra unused nodes/links).\n\n- Simulator wiring:\n\n  - There is a clear way (CLI flag or test harness) to load and run this scenario.\n  - When run with SBI enabled:\n    - CDPI server, Telemetry server, Scheduler, and Agents are active.\n    - The link transitions from “potential” to “active” and back during the sim run.\n    - The agent executes UpdateBeam/DeleteBeam and SetRoute/DeleteRoute at the appropriate times.\n\n- Developer-facing instructions:\n\n  - A short doc/README section exists describing:\n    - How to run the scope4_leo_ground scenario.\n    - What qualitative behaviour to look for (link up/down, routes installed/removed, telemetry Up/BytesTx).\n\n- (Optional but nice):\n\n  - A smoke test loads the scenario and verifies basic properties, preventing accidental breakage.\n\n- Repository health:\n\n  - go build ./... passes with the new scenario and wiring in place.\n  - go test ./... passes, including any new smoke test added for this scenario.\n",
+    "labels": [
+      {
+        "id": 9738529202,
+        "node_id": "LA_kwDOQfMfks8AAAACRHYpsg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:example",
+        "name": "type:example",
+        "color": "b851e6",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 185,
+    "title": "[Scope 4][Chunk 13] Document expected SBI scheduling & telemetry behavior for the example scenario",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/185",
+    "body": "## Background\n\nWith the minimal SBI example scenario defined (one LEO satellite, one ground station, and a simple ServiceRequest), we now need clear documentation describing **what the simulator is expected to do** when SBI is enabled.\n\nThis documentation becomes the \"golden reference\" for:\n- Developer onboarding  \n- Regression testing  \n- Validating correct operation of Scheduler, CDPI, Agent, and Telemetry  \n\nIt should be precise enough that a developer can manually verify SBI behavior by reading logs or stepping through the sim.\n\n## Goal\n\nProduce a **step-by-step expected-behavior document** explaining what should happen during a typical run of the example scenario, including:\n\n### 1. Scheduling events\n- When the satellite comes into view of the ground station:\n  - Scheduler generates `UpdateBeam` at T_on\n  - Scheduler generates `SetRoute` for each endpoint\n- When leaving view:\n  - Scheduler generates `DeleteBeam` at T_off\n  - Scheduler generates `DeleteRoute`\n\n### 2. CDPI messaging flow\n- Agent sends `Hello`\n- Controller maps AgentID → NodeID\n- Controller issues CreateEntryRequests  \n- Agent schedules them locally  \n- Agent executes at correct sim-time  \n- Agent sends Responses back to CDPI\n\n### 3. ScenarioState changes\n- Link becomes active at T_on  \n- Routing tables updated  \n- Link becomes inactive at T_off  \n- Routing removed  \n\n### 4. Telemetry behavior\n- InterfaceMetrics reports:\n  - Up=true between T_on and T_off  \n  - BytesTx increasing while link is active  \n  - Up=false after T_off  \n\n### 5. Logging expectations\nProvide sample log lines (controller-side + agent-side), indicating:\n- Scheduling decisions  \n- CDPI CreateEntry/DeleteEntry/Finalize  \n- Agent execution  \n- Telemetry exports  \n\n## Tasks\n\n### 1. Write developer-facing document\nAdd a markdown file under `docs/sbi/` such as:\n\n```\ndocs/sbi/example_scenario_behaviour.md\n```\n\nDocument:\n\n- Scenario description  \n- Timeline diagram (`T0 → T_on → T_off`)  \n- Expected CDPI messages  \n- Expected Agent executions  \n- Expected Telemetry samples  \n- Expected ScenarioState transformations  \n\n### 2. Add diagrams (ASCII or Mermaid)\nInclude:\n- Link in-view timeline  \n- Agent scheduling pipeline:\n  - Scheduler → CDPI → Agent → ScenarioState  \n\n### 3. Acceptance checklist\nInclude a section that helps the developer validate SBI correctness manually:\n\n- [ ] Agent receives Hello/Reset correctly  \n- [ ] Scheduler emits UpdateBeam before T_on  \n- [ ] Link active flag toggles correctly  \n- [ ] Telemetry shows link Up=true during view window  \n- [ ] Telemetry bytes increase monotonically  \n- [ ] Routes installed/removed at correct times  \n\n## Acceptance Criteria\n\n- A new documentation file exists and is committed under `docs/sbi/`\n- Document describes:\n  - Expected scheduler outputs  \n  - Expected CDPI message flow  \n  - Expected agent executions  \n  - Expected telemetry updates  \n  - Expected ScenarioState transitions  \n- Document includes simple diagrams\n- Document includes a validation checklist\n- The doc becomes the baseline reference for future regression tests and demo material.\n",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 186,
+    "title": "[Scope 4][Chunk 13] Document expected SBI behavior timeline (T₁ link-up, T₂ link-down, scheduled actions)",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/186",
+    "body": "## Background\n\nChunk 13 delivers a fully worked *golden example* that demonstrates Scope 4 end-to-end behavior.  \nAfter defining the minimal example scenario (LEO satellite + ground station + one ServiceRequest), the next requirement is to provide **clear, time-aligned documentation** of expected SBI actions and simulator state transitions.\n\nThis documentation will be used as:\n\n- A validation reference for developers.\n- A debugging reference when SBI behavior deviates.\n- A reader-friendly, stepwise explanation of how CDPI actions, agent execution, KB updates, and telemetry interact.\n\n## Goal\n\nProduce a structured document (`docs/examples/sbi_leo_ground_timeline.md`) that explains, in chronological order:\n\n1. **T₀ Scenario load**\n   - Agents connect and issue `Hello`.\n   - Controller assigns tokens.\n   - No schedule entries yet.\n\n2. **T₁ Satellite enters link visibility**\n   - Scheduler emits `UpdateBeam` + `SetRoute` for relevant nodes.\n   - CDPI server sends CreateEntryRequests.\n   - Agent schedules the actions in its local EventScheduler.\n\n3. **T₁+Δ Agent executes scheduled actions**\n   - KB link state flips to Active.\n   - KB route tables updated.\n   - Agent returns a Response to controller.\n   - Telemetry loop shows interface Up.\n\n4. **T₂ Satellite exits visibility**\n   - Scheduler emits DeleteBeam + DeleteRoute.\n   - Agent executes them.\n   - Link returns to Inactive.\n   - Telemetry shows interface Down.\n\n5. Optional:\n   - Behavior of ServiceRequest path computation.\n   - Example telemetry values (bytes counters increasing between T₁ and T₂).\n\nThe document should explicitly call out:\n\n- Which component initiates each step (scheduler, controller, agent).\n- Which SBI message types appear (CreateEntryRequest, Response, ExportMetrics).\n- Expected KB state transitions (Active → Inactive).\n- Expected telemetry fields (Up flag, BytesTx increasing).\n\n## Tasks\n\n### 1. Create documentation file\nCreate a new file:\n\n```\ndocs/examples/sbi_leo_ground_timeline.md\n```\n\n### 2. Write chronological timeline\nInclude:\n\n- A diagram or ASCII timeline showing T₀ → T₁ → T₂.\n- Tables for:\n  - CDPI messages sent.\n  - Agent responses.\n  - KB state transitions.\n  - Telemetry snapshots.\n\n### 3. Include example log snippets\nAdd realistic (but concise) log excerpts:\n\n- Controller logs showing CreateEntry and DeleteEntry dissemination.\n- Agent logs showing scheduling and execution.\n- Telemetry logs showing Up/Down transitions.\n\n### 4. Reference earlier chunks\nWhere applicable, cross-reference:\n\n- Chunk 4 agent execution semantics.\n- Chunk 5 CDPI message handling.\n- Chunk 6 telemetry behavior.\n- Chunk 8 scheduling algorithm.\n\n### 5. Verification checklist\nAdd a final checklist:\n\n- [ ] Beam becomes Active at T₁.  \n- [ ] Route installed at T₁.  \n- [ ] Telemetry reports `Up=true` shortly after T₁.  \n- [ ] Beam removed and route deleted at T₂.  \n- [ ] Telemetry transitions to `Up=false` after T₂.  \n\n## Acceptance Criteria\n\n- Document exists at `docs/examples/sbi_leo_ground_timeline.md`.\n- Timeline describes:\n  - CDPI messages,\n  - Agent local scheduling,\n  - KB updates,\n  - Telemetry evolution.\n- Log snippets are realistic and align with implemented SBI logic.\n- No code changes required; this is purely documentation.\n- The document can be used by a new developer to understand expected SBI behavior end-to-end.\n",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 187,
+    "title": "[Scope 4][Chunk 13] Document expected SBI behavior timeline (T₁ in-view → beam/route setup → telemetry → T₂ out-of-view)",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/187",
+    "body": "## Background\n\nChunk 13 provides a complete “golden” scenario demonstrating Scope 4 SBI behavior end-to-end.  \nTo make this scenario reproducible and auditable, we must **write a clear, chronological, event-based description** of what *should* happen during the example run.\n\nThis timeline will be referenced by:\n\n- QA for manual validation  \n- Developers for debugging regressions  \n- Anyone inspecting logs for expected scheduling / agent / telemetry behavior  \n- Future Scope 5+ work that relies on predictable SBI semantics  \n\nThe documentation must describe **what happens when the satellite comes into view (T₁)** and **when it goes out of view (T₂)**, including:\n\n- Scheduler beam & route scheduling  \n- Agent execution behavior  \n- CDPI messages  \n- ScenarioState changes  \n- Telemetry updates  \n- Expected logs  \n- Expected metrics deltas  \n\nThis becomes the authoritative reference for verifying SBI correctness in Chunk 13.\n\n---\n\n## Goal\n\nProduce a structured documentation page outlining the **expected timeline of events** in the minimal SBI example scenario, including:\n\n1. **At or before T₁** — scheduler prepares UpdateBeam  \n2. **At T₁** — beam activated, route installed, telemetry “Up”  \n3. **Between T₁ and T₂** — telemetry increments BytesTx  \n4. **At T₂** — scheduler sends DeleteBeam/DeleteRoute  \n5. **After T₂** — beam inactive, telemetry shows “Down”\n\nThe documentation must describe each stage in terms of:\n\n- CDPI messages (controller → agent)  \n- CDPI responses (agent → controller)  \n- ScenarioState changes  \n- TelemetryState updates  \n- What the logs should show  \n- How to verify correctness manually  \n\n---\n\n## Tasks\n\n### 1. Define scenario timeline structure\nDocument the following sequence:\n\n1. **T₀ (initialization)**  \n   - Agents start  \n   - CDPI handshake (Hello, token assignment)  \n   - Scheduler begins link-interval analysis  \n\n2. **T₁ (link comes into view)**  \n   - Scheduler issues UpdateBeam + SetRoute  \n   - Agent schedules events  \n   - At exactly T₁:  \n     - Beam becomes active  \n     - Route becomes active  \n     - Telemetry starts showing Up=true  \n\n3. **Between T₁ and T₂**  \n   - Telemetry loop periodically sends metrics  \n   - BytesTx increments based on bandwidth × Δt  \n   - Logs show recurring ExportMetrics  \n\n4. **T₂ (link leaves view)**  \n   - Scheduler issues DeleteBeam + DeleteRoute  \n   - Agent runs deactivation actions  \n   - Telemetry transitions to Up=false  \n\n5. **After T₂**  \n   - No further scheduled activity  \n   - Telemetry remains stable and Down  \n\nDocument these using precise descriptions and references to the SBI message formats.\n\n---\n\n### 2. Include expected SBI messages\nFor each moment (T₁, T₂), list:\n\n- CreateEntryRequest (UpdateBeam)  \n- CreateEntryRequest (SetRoute)  \n- DeleteEntryRequest (DeleteBeam)  \n- DeleteEntryRequest (DeleteRoute)  \n- Agent Response messages  \n- Tokens and seqnos (but simplified for readability)\n\nEach section must show **what message is expected, when, and why**.\n\n---\n\n### 3. Include expected log output patterns\nDocument the expected log lines at each phase:\n\n- **Scheduler logs** (entry creation, deletion)  \n- **Agent logs** (scheduled execution, success/failure)  \n- **CDPI server logs** (responses received)  \n- **Telemetry logs** (ExportMetrics sent/received)\n\nThis does not need exact timestamps, only structural examples.\n\n---\n\n### 4. Include expected TelemetryState evolution\nDocument what should be observed in metrics:\n\n- At T₀: interface Up=false, BytesTx=0  \n- At T₁+Δ: Up=true, BytesTx increasing  \n- Before T₂: BytesTx highest  \n- After T₂: Up=false, BytesTx stable  \n\n---\n\n### 5. Provide a verification checklist\nCreate a final section summarizing:\n\n- What to look for in logs  \n- What CDPI messages must appear  \n- What telemetry patterns must appear  \n- How to verify ScenarioState transitions  \n- How to confirm scheduler behavior  \n\nThis checklist becomes the “golden test” for SBI.\n\n---\n\n## Acceptance Criteria\n\n- A **single, clearly written documentation page** exists (docs/sbi/example_timeline.md or similar).  \n- Timeline includes **all four pillars**: scheduler → agent → ScenarioState → telemetry.  \n- Both T₁ activation and T₂ deactivation paths are documented.  \n- Expected SBI message flows are described step-by-step.  \n- Expected telemetry behavior (Up flag change + BytesTx evolution) is documented.  \n- Expected logs for each component are included.  \n- The document serves as the **reference specification** for validating Chunk 13.  \n",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 188,
+    "title": "[Scope 4][Chunk 13] Add developer-facing “How to run SBI in the simulator” guide",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/188",
+    "body": "[Scope 4][Chunk 13] Add developer-facing “How to run SBI in the simulator” guide",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 189,
+    "title": "[Scope 4][Chunk 13] Add sample logs for expected SBI scheduling + telemetry behavior",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/189",
+    "body": "## Background\n\nFor the golden SBI example scenario (Chunk 13), we must provide **realistic sample logs** illustrating how controller, agents, and telemetry behave during a simple LEO–ground-station pass.\n\nThese logs serve multiple purposes:\n\n- Act as a **reference** for developers debugging SBI integration.\n- Help validate that the system is producing the expected SBI message flow.\n- Provide concrete documentation examples for the README and Scenario Guide.\n\nLogs should be short, readable, and based on actual behavior of the CDPI server, scheduler, agents, and telemetry loop.\n\n## Goal\n\nProduce a curated set of logs capturing:\n\n1. **Scenario start-up**\n   - Agents connecting and sending `Hello`.\n   - CDPI server registering agents.\n\n2. **Scheduler issuing actions**\n   - `CreateEntryRequest` for `UpdateBeam` before link comes into view.\n   - `CreateEntryRequest` for `SetRoute`.\n   - Later, `DeleteBeam` and `DeleteRoute` at link-off time.\n\n3. **Agent execution**\n   - Agent logs for scheduled action execution.\n   - KB changes (beam activation/deactivation).\n   - Agent’s `Response` messages back to controller.\n\n4. **Telemetry loop**\n   - Interface going `Up`.\n   - Telemetry reports (`BytesTx` increasing).\n   - Interface going `Down`.\n\nThese logs do **not** need to be produced by running the full system yet—hand-crafted approximations consistent with expected behavior are acceptable.\n\n## Tasks\n\n### 1. Prepare clean, readable log snippets\n- Include timestamps in a simplified format.\n- Use consistent prefixes:  \n  - `controller:`  \n  - `scheduler:`  \n  - `agent:<nodeID>:`  \n  - `telemetry:`  \n\n- Ensure the sequence matches the LEO pass:\n  - Beam ON before pass start.  \n  - Route set.  \n  - Telemetry reports show interface `Up`.  \n  - Beam OFF after pass end.  \n  - Telemetry reports interface `Down`.\n\n### 2. Document expected CDPI flow\nProvide sample messages such as:\n\n- `Hello(agent_id=\"sat-1\")`\n- `CreateEntryRequest(entry_id=\"beam-1\", when=T_on)`\n- `Response(request_id=\"beam-1\", status=OK)`\n\n### 3. Document expected agent logs\nExample entries:\n\n- `agent sat-1: executing UpdateBeam beam-1 at T_on`\n- `agent sat-1: interface gimbal-0 active`\n\n### 4. Document telemetry examples\nShow 2–3 telemetry cycles:\n\n- First report: interface transitions to `Up`.\n- Mid-pass: `BytesTx` increases.\n- After beam delete: interface transitions to `Down`.\n\n### 5. Add file(s) under:\ndocs/examples/sbi/logs.md\n\nThis file will contain all curated logs.\n\n## Acceptance Criteria\n\n- A complete `logs.md` file exists under `docs/examples/sbi/`.\n- Logs cover:\n  - CDPI server startup interactions (Hello).\n  - Scheduler actions (UpdateBeam/SetRoute + DeleteBeam/DeleteRoute).\n  - Agent execution + Responses.\n  - Telemetry loop with both Up/Down states.\n- All logs are consistent with expected SBI semantics from previous chunks.\n- Style guidelines followed: clear timestamps, consistent prefixes, no excessive noise.\n- Example logs referenced from the main Chunk 13 example-scenario doc.\n\n",
+    "labels": [
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 190,
+    "title": "[Scope 4][Chunk 13] Add walkthrough: loading, running, and observing the SBI example scenario",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/190",
+    "body": "## Background\n\nThe SBI example scenario introduced in Chunk 13 must be accompanied by a concrete, developer-friendly walkthrough.  \nThis walkthrough is not code — it is documentation demonstrating **how to run the simulator with SBI enabled**, what the user should expect to observe, and how to verify each sub-component (CDPI, scheduler, agent, telemetry) is behaving correctly.\n\nThis issue ensures that the example scenario becomes a **repeatable demonstration**, usable by developers onboarding into Scope 4 or debugging regressions.\n\n## Goal\n\nCreate a step-by-step walkthrough in the repository that shows:\n\n1. **How to load the example scenario** (LEO satellite + ground station + 1 ServiceRequest).  \n2. **How to start the simulator with SBI enabled**, including any command-line flags.  \n3. **How to confirm that agents registered with CDPI** (Hello messages, tokens, etc.).  \n4. **How to observe scheduler-issued actions** (UpdateBeam, DeleteBeam, SetRoute, DeleteRoute).  \n5. **How to verify agent execution** (pending queue changes, KB state updates).  \n6. **How to see telemetry arriving** (e.g., via debug logs or TelemetryState inspection).  \n7. **What the expected outputs look like**, including timing of T_on/T_off link transitions.  \n\nThe goal is a *full narrative run-through* that mirrors intended real-world behavior.\n\n## Tasks\n\n### 1. Create documentation file\nAdd a new document, for example:\n\n```\ndocs/sbi/example_walkthrough.md\n```\n\nPopulate it with:\n\n- Scenario description  \n- Diagram (even ASCII) of satellite ↔ ground  \n- Roles of scheduler, CDPI server, agents, telemetry  \n- Step-by-step instructions to run the example\n\n### 2. Document “How to run the simulator”\nInclude:\n\n- Expected command(s) to start the sim  \n- Required flags (e.g., `--enable-sbi`, `--telemetry-interval=1s`)  \n- Any environment variables if needed  \n- What logs the user should expect immediately  \n\n### 3. Walk through CDPI behavior\nDocument:\n\n- Example `Hello` message from agent  \n- Controller token assignment  \n- First scheduled entries sent by scheduler  \n- Example log lines for CreateEntry/DeleteEntry/FinalizeRequest  \n\n### 4. Walk through agent behavior\nExplain:\n\n- Pending queue population  \n- Execution callbacks fired by EventScheduler  \n- Example log lines of UpdateBeam / SetRoute  \n- What happens when T_on and T_off are reached  \n\n### 5. Walk through telemetry output\nInclude:\n\n- Example telemetry entries (up flag toggling based on link active state)  \n- BytesTx monotonic growth while link is active  \n- How to query TelemetryState (temporary helper or debug dump)  \n\n### 6. Provide a “What success looks like” section\nA bullet list:\n\n- CDPI connection succeeded  \n- Scheduler emitted actions  \n- Agent executed actions at correct simulated time  \n- Link became active/inactive  \n- Routes installed/removed  \n- Telemetry reported interface state transitions  \n\n### 7. Ensure consistency with existing example scenario\nDouble-check:\n\n- Node IDs and interface IDs match the example scenario  \n- Time windows in documentation correspond to actual values in the scenario  \n- No references to removed API fields or outdated behavior  \n\n## Acceptance Criteria\n\n- A **single, coherent walkthrough document** exists in `docs/sbi/`.  \n- A new contributor can follow the document and successfully:  \n  - Load the example scenario  \n  - Run the simulator  \n  - Observe scheduler → CDPI → agent behavior  \n  - Observe correct telemetry evolution during T_on/T_off  \n- All steps use the actual command-line flags & APIs from the codebase.  \n- No broken references or missing steps.  \n- CI passes (docs-only change).  \n",
+    "labels": [
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 191,
+    "title": "[Scope 4][Chunk 13] Add sample SBI run logs demonstrating beam/routing activation & telemetry",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/191",
+    "body": "## Background\n\nChunk 13 focuses on producing a complete, developer-facing documentation package that demonstrates how SBI works end-to-end in the simulator. A missing piece is a **sequence diagram** that visually explains the control-plane behavior between:\n\n- The **Scheduler** (controller logic)\n- The **CDPIServer**\n- The **Agent** on a node (satellite or ground)\n- The **ScenarioState** (where link activation and routes are applied)\n- The **TelemetryService** (periodic ExportMetrics)\n\nRight now, SBI documentation is textual and relies on readers reconstructing message flow from description. A sequence diagram will make it dramatically easier for new contributors to understand lifecycle events and the relationship between scheduling, agent execution, and telemetry.\n\nThe diagram should represent at minimum one beam activation cycle:\n\n1. Scheduler identifies a link’s in-view interval.\n2. Scheduler emits `CreateEntryRequest(UpdateBeam)` for time T_on.\n3. CDPI server delivers the scheduled entry to the agent.\n4. Agent receives request, stores it, schedules local execution.\n5. At T_on, Agent executes beam update → applies state via ScenarioState.\n6. Agent sends `Response` back to controller.\n7. Telemetry loop runs and begins reporting interface “Up”.\n8. Later at T_off, scheduler triggers DeleteBeam, agent executes, telemetry updates.\n\nThis becomes the canonical reference in the documentation directory.\n\n---\n\n## Goal\n\nProduce a clear sequence diagram (Mermaid or PlantUML preferred) that illustrates the SBI request/response lifecycle and metrics generation.\n\nThe diagram should:\n\n- Show all major actors:\n  - Scheduler  \n  - CDPIServer  \n  - Agent  \n  - ScenarioState  \n  - TelemetryService  \n- Show message flow for both:\n  - **CreateEntryRequest / DeleteEntryRequest**\n  - **Agent execution and Response**\n  - **Periodic ExportMetrics**\n\n- Highlight simulation-time-based scheduling via EventScheduler.\n- Be formatted as a standalone `.md` file under `docs/sbi/sequence-diagrams/beam-activation.md`.\n\n---\n\n## Tasks\n\n1. **Create documentation directory (if missing):**\ndocs/sbi/sequence-diagrams/\n2. **Add a new file:**\n\n3. Inside the file, include:\n- A short explanation (2–3 paragraphs).\n- A **Mermaid sequence diagram**, e.g.:\n\n  ```mermaid\n  sequenceDiagram\n    autonumber\n    Scheduler->>CDPIServer: Send CreateEntryRequest(UpdateBeam)\n    CDPIServer->>Agent: Deliver scheduled entry\n    Agent->>Agent: Queue action for time T_on\n    Note over Agent: At simulation time T_on\n    Agent->>ScenarioState: ApplyBeamUpdate(...)\n    Agent->>CDPIServer: Response(OK)\n    Agent->>TelemetryService: ExportMetrics (interface Up)\n    ...\n    Scheduler->>CDPIServer: CreateEntryRequest(DeleteBeam)\n    CDPIServer->>Agent: Deliver delete request\n    Agent->>ScenarioState: ApplyBeamDelete(...)\n    Agent->>TelemetryService: ExportMetrics (interface Down)\n  ```\n\n4. Validate that the diagram renders in GitHub correctly.\n\n5. Add a reference link to the main SBI docs (`docs/sbi/README.md`).\n\n---\n\n## Acceptance Criteria\n\n- A new documentation file exists at:\n\ndocs/sbi/sequence-diagrams/beam-activation.md\n\n- Diagram renders correctly on GitHub.\n- Shows full SBI lifecycle: scheduling → CDPI → agent → state update → telemetry.\n- Matches implementation semantics from Scope 4 Chunks 4, 5, 6, and 8.\n- Included in SBI documentation index.\n- No information spills outside the file; diagram fenced and self-contained.\n\n\n\n\n",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 192,
+    "title": "[Scope 4][Chunk 13] Add controller/agent SBI behavior walkthrough documentation",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/192",
+    "body": "## Background\n\nChunk 13 focuses on producing a small, “golden” scenario plus documentation that explains how SBI behaves end-to-end:\n\n- How a scenario with a LEO satellite + ground station is loaded.\n- How the scheduler issues UpdateBeam / DeleteBeam and SetRoute / DeleteRoute.\n- How the Agent executes these actions at the correct simulated times.\n- What telemetry looks like when the link becomes active/inactive.\n- How CDPI messages flow (Hello, CreateEntry, Response, Finalize, Reset).\n- What developers should expect to see in logs.\n\nThis documentation becomes the **primary reference** for onboarding new contributors or debugging scheduling behavior.\n\nThis issue specifically adds a *step-by-step behavioral walkthrough* of controller/agent interactions during a run.\n\n## Goal\n\nProduce a developer-facing document (Markdown inside `docs/scope4/`), describing:\n\n- The SBI control-plane lifecycle from scenario load → scheduler decisions → CDPI messages → Agent execution → Telemetry updates.\n- A chronological timeline with simulated timestamps.\n- Example log snippets showing:\n  - Agent Hello\n  - Controller CreateEntryRequest\n  - Agent Response\n  - Beam activation & routing changes\n  - Telemetry ExportMetrics payloads\n- How state evolves inside:\n  - ScenarioState (link active flags, routes)\n  - Agent local schedule queue\n  - TelemetryState\n\nThis documentation must be **concrete**, matching the actual behavior of your implementation.\n\n## Tasks\n\n### 1. Create the documentation file\nAdd a new Markdown file:\n\ndocs/scope4/sbi-behavior-walkthrough.md\n\nStructure:\n\n1. **Introduction:**\n   - What SBI is and how it fits into simulation.\n2. **Scenario Initialization:**\n   - NBI loads nodes, interfaces, and links.\n   - CDPI & Telemetry servers start.\n   - Agents attach and send Hello.\n3. **Scheduling Phase:**\n   - Example: link in view between `T_on = 120s` and `T_off = 540s`.\n   - Controller schedules UpdateBeam at `T_on - lead`.\n   - Controller schedules DeleteBeam at `T_off`.\n4. **Agent Execution Phase:**\n   - Agent receives CreateEntryRequest.\n   - Local queue insertion.\n   - EventScheduler triggers execution.\n   - ScenarioState updated.\n5. **Telemetry Phase:**\n   - At each telemetry interval:\n     - Interface Up/Down evaluated.\n     - BytesTx estimated.\n     - ExportMetrics sent and stored controller-side.\n6. **Full timeline table:**\n\n| Sim Time | Component | Event |\n|---------|-----------|--------|\n| 0s | Agent | Hello |\n| 0s | Controller | Send token |\n| 110s | Scheduler | UpdateBeam CreateEntry |\n| 120s | Agent | Execute UpdateBeam → link active |\n| 121s | Agent | Telemetry shows `Up=true` |\n| 540s | Agent | Execute DeleteBeam → link inactive |\n\n7. **Log Examples:**\n   Provide realistic log snippets for the entire sequence.\n\n8. **Expected Developer Workflow:**\n   - How to run the example scenario.\n   - How to inspect logs, metrics, and schedule queues.\n\n---\n\n### 2. Ensure correctness against actual implementation\nVerify the walkthrough aligns with:\n\n- Existing scheduler behavior.\n- Actual message names from generated SBI protos.\n- Agent execution semantics.\n- Telemetry loop logic.\n\n---\n\n## Acceptance Criteria\n\n- A complete Markdown document exists at `docs/scope4/sbi-behavior-walkthrough.md`.\n- Content includes:\n  - End-to-end CDPI lifecycle explanation.\n  - Timeline of scheduled actions & executions.\n  - Example logs.\n  - Telemetry evolution sequence.\n  - Developer guide for reproducing the scenario.\n- All examples accurately reflect your real structures, event flow, and naming.\n- Follows the same tone/style as prior Scope 4 documentation.\n- No missing sections, no TODO placeholders.\n\n",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 193,
+    "title": "[Scope 4][Chunk 13] Add sample log transcript demonstrating SBI scheduling lifecycle",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/193",
+    "body": "## Background\n\nChunk 13 is focused on producing **developer-facing documentation** and a **golden example scenario** that demonstrates how a full SBI-driven run *looks* when everything is wired together (CDPI, Agents, Scheduler, Telemetry).\n\nA critical part of this documentation is a **realistic log transcript** showing:\n\n- Controller startup\n- Agent hello → token assignment\n- Scheduler creating beam/route actions\n- CDPI sending CreateEntryRequests\n- Agent scheduling + executing actions\n- Responses flowing back\n- Telemetry periodically emitted\n- Link transitions (in-view / out-of-view)\n- Scenario end\n\nThis transcript becomes part of the golden example and helps developers visually confirm that the SBI system is functioning through all phases.\n\n## Goal\n\nProduce a **single consolidated log transcript** (sanitized + annotated) that demonstrates:\n\n1. **Scenario startup**\n   - Loading scenario\n   - Scheduler initialization\n   - Agent initialization\n\n2. **CDPI handshake**\n   - Agent → Hello(agent_id)\n   - Controller → assign token\n   - Controller registers agent\n\n3. **Scheduled actions dispatched**\n   - Controller → CreateEntryRequest(UpdateBeam) at T_on\n   - Controller → CreateEntryRequest(SetRoute) at T_on\n   - Controller → CreateEntryRequest(DeleteBeam/DeleteRoute) at T_off\n\n4. **Agent lifecycle**\n   - Agent logs scheduling action locally\n   - Agent executes UpdateBeam/DeleteBeam, InstallRoute/RemoveRoute\n   - Agent sends Response(request_id=..., status=OK)\n\n5. **Telemetry**\n   - Every N seconds, agent emits telemetry packet\n   - Controller updates TelemetryState\n   - Log shows interface up/down and byte counters increasing\n\n6. **Scenario transitions**\n   - Link goes into view → UpdateBeam/SetRoute triggered\n   - Link goes out of view → DeleteBeam/DeleteRoute triggered\n\n7. **Shutdown**\n   - Scheduler ends\n   - Agents stop cleanly\n   - Final telemetry snapshot logged\n\nThis must look like a real run so that future developers can visually compare logs to diagnose problems.\n\n## Tasks\n\n### 1. Generate realistic log transcript\n- Use INFO-level logging for major events.\n- Use DEBUG-level logging for detailed state transitions.\n- Use WARN for things like \"token mismatch ignored\" (optional).\n- Log data should reflect actual fields:\n  - `entry_id`\n  - `request_id`\n  - `seqno`\n  - `manipulation_token`\n  - `interface_id`\n  - `node_id`\n  - timestamps from the sim clock\n\n### 2. Provide annotations for clarity\n- Insert inline comments explaining key transitions (e.g., *\"Scheduler detected link in view\"*, *\"Agent executed UpdateBeam\"*).\n- Some logs should be grouped by phase.\n\n### 3. Add transcript to docs folder\nRecommended location:\n\n```\ndocs/examples/sbi-example/log-transcript.md\n```\n\n### 4. Ensure log transcript stays consistent with:\n- Actual field names in CDPI messages\n- Agent logging introduced in Chunk 12\n- Telemetry metrics format from Chunk 6\n- Scheduler logic from Chunk 8\n\n### 5. Add a short troubleshooting section\nExplain what deviations mean, e.g.:\n\n- Missing Response → agent not sending execution acknowledgement  \n- Telemetry not increasing → deriveInterfaceState or interface state logic error  \n- No CreateEntryRequest logged → Scheduler conditions not triggered  \n\n## Acceptance Criteria\n\n- A complete, realistic, end-to-end SBI scheduling transcript exists at:\n  - `docs/examples/sbi-example/log-transcript.md`\n- Transcript includes:\n  - Controller startup logs  \n  - Agent hello/token assignment  \n  - Scheduling of beam + route actions  \n  - CDPI CreateEntryRequest logs  \n  - Agent execution logs  \n  - Response messages  \n  - Telemetry cycles showing up/down + bytes counters  \n- Transcript includes annotations explaining key events.\n- Transcript is reproducible from the reference example scenario.\n- CI/docs build does not break.\n",
+    "labels": [
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 194,
+    "title": "[Scope 4][Chunk 13] Document expected SBI example behavior and sample logs",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/194",
+    "body": "## Background\n\nWith the minimal SBI example scenario defined (1 LEO satellite + 1 ground station + a single `ServiceRequest`), you now need **clear documentation of the expected behavior** so that:\n\n- You (and future contributors) can quickly sanity-check that Scope 4 is working end-to-end.\n- There is a human-readable narrative tying together:\n  - CDPI scheduling actions (UpdateBeam/DeleteBeam, SetRoute/DeleteRoute).\n  - Agent execution and state changes in `ScenarioState`.\n  - Telemetry emission (`ExportMetrics`) and how interface `Up`/`Down` + `BytesTx` evolve.\n- You can copy/paste **realistic-looking logs** for:\n  - CDPI server.\n  - Agents.\n  - Telemetry server (optional but helpful).\n- This document becomes the “how it behaves when everything is hooked up correctly” reference for future regressions.\n\nChunk 13.1 gave you *what* the example scenario is; this issue documents **what happens over time** when you run it with Scope 4 enabled.\n\n## Goal\n\nProduce a concise but **end-to-end walkthrough doc** (e.g. `docs/scope4_example_behavior.md`) for the SBI example scenario that:\n\n- Describes the scenario in one or two paragraphs.\n- Explains the expected timeline at a high level:\n  - Before satellite comes into view.\n  - As satellite comes into view (T1).\n  - While in view (T1 → T2).\n  - As satellite leaves view (T2).\n- Ties each phase of the timeline to:\n  - Scheduler decisions (what actions it schedules and when).\n  - CDPI messages (CreateEntry/DeleteEntry/Finalize/Responses).\n  - Agent actions and state changes (beams/links, routes).\n  - Telemetry metrics (interface `Up` → `Down`, `BytesTx` increasing).\n- Includes at least one **sample log snippet** for:\n  - CDPI server.\n  - One agent.\n  - Telemetry server (even if minimal).\n- Mentions how to **validate** that the run roughly matches the documented behavior (even if timestamps are approximate).\n\nThis document should be readable by someone who didn’t work on Scope 4 but is comfortable with Go, gRPC, and your architecture.\n\n## Where to look\n\nExisting pieces you will rely on:\n\n- **Example scenario definition** (Chunk 13.1):\n  - Where the LEO sat + ground station are defined (NBI calls or JSON/config).\n  - The `ServiceRequest` that ties them together (src → dst).\n- **Scheduler logic** (Chunk 8):\n  - `internal/sbi/controller/scheduler.go` (or equivalent).\n  - How it:\n    - Detects link in-view intervals.\n    - Schedules `UpdateBeam` / `DeleteBeam`.\n    - Optionally installs static `RouteEntry` for single-hop paths.\n- **Agent implementation** (Chunks 4, 7):\n  - `internal/sbi/agent`:\n    - Handling of `CreateEntryRequest`, `DeleteEntryRequest`, `FinalizeRequest`, `Reset`.\n    - Execution of scheduled actions (`ApplyBeamUpdate`, `ApplyBeamDelete`, `InstallRoute`, `RemoveRoute`).\n- **Telemetry path** (Chunk 6):\n  - `TelemetryState` + `TelemetryServer` implementation.\n  - Agent-side telemetry loop using `EventScheduler`.\n- **Logging hooks** (Chunk 12):\n  - Structured logging around:\n    - CDPI server send/receive paths.\n    - Agent scheduling/execution.\n    - Telemetry ExportMetrics and updates.\n\nSearch terms in your repo:\n\n- `Scheduler struct`\n- `CDPIServer`\n- `ReceiveRequests`\n- `ExportMetrics`\n- `TelemetryState`\n- `ServiceRequest`\n- `ApplyBeamUpdate`, `InstallRoute`\n\n## Tasks\n\n### 1. Draft the example narrative\n\nCreate a new doc, e.g. `docs/scope4_example_behavior.md` (or update an existing one if you already created a stub).\n\nInclude:\n\n- **Scenario summary**:\n  - 1 LEO satellite (`sat-1`).\n  - 1 ground station (`gs-1`).\n  - A single `ServiceRequest` from `gs-1` → `sat-1` (or vice versa).\n- **Time windows**:\n  - Define approximate times:\n    - `T0`: simulation start, satellite out of view.\n    - `T1`: satellite comes into view.\n    - `T2`: satellite goes out of view.\n  - Note that exact times depend on orbital configuration, but behavior pattern should match.\n\nExplain, in prose:\n\n- What scheduler does before `T1` (likely nothing, or pre-scheduling).\n- What happens between `T1` and `T2`:\n  - Beams/links become active.\n  - Routes are installed.\n  - Telemetry shows interface `Up` and increasing `BytesTx`.\n- What happens after `T2`:\n  - Links/beam are deactivated.\n  - Routes are removed.\n  - Telemetry shows interface `Down` and `BytesTx` no longer increasing.\n\n### 2. Describe controller (CDPI) behavior\n\nAdd a section **“Controller (CDPI) behavior”**:\n\n- **Hello/Reset**:\n  - Agent connects to CDPI via `ReceiveRequests`.\n  - Sends a `Hello` and optionally a `Reset`.\n  - Controller associates agent ID with a node.\n- **CreateEntry requests**:\n  - For each in-view interval [T1, T2]:\n    - `CreateEntryRequest` for `UpdateBeam` at or before `T1`.\n    - `CreateEntryRequest` for `DeleteBeam` at `T2`.\n    - Optional `SetRoute` / `DeleteRoute` entries around T1/T2.\n- **Responses**:\n  - When actions execute successfully on agent, controller receives `Response` with `Status=OK`.\n\nFor each phase (before view, in view, after view), list the **expected kinds of CDPI log lines**, for example:\n\n- Agent `Hello` and token assignment.\n- `CreateEntryRequest` with `entry_id`, `when`, `type`.\n- `Response` with `request_id`, `status`.\n\nDo **not** hard-code exact timestamps; focus on **relative ordering** and the logical story.\n\n### 3. Describe agent behavior and ScenarioState changes\n\nAdd a section **“Agent behavior & ScenarioState changes”**:\n\n- For `UpdateBeam`:\n  - Agent schedules execution at `When`.\n  - On execution, calls `ScenarioState.ApplyBeamUpdate(...)`.\n  - This marks link active and, if implemented, updates bandwidth, route, or internal flags.\n- For `DeleteBeam`:\n  - Agent calls `ApplyBeamDelete(...)` and link becomes inactive.\n- For route actions:\n  - `SetRoute` → installs `RouteEntry` on each node.\n  - `DeleteRoute` → removes `RouteEntry`.\n\nDescribe what you expect to see:\n\n- At `T1`:\n  - At least one downlink interface on `sat-1` and one uplink on `gs-1` transition to `Up=true`.\n  - A route entry appears in the nodes’ routing tables (if your Chunk 8 logic does this).\n- At `T2`:\n  - The link is no longer active; `Up=false`.\n  - Routes removed.\n\nThis section should help someone grep logs or inspect in-memory state to confirm behavior.\n\n### 4. Describe telemetry expectations\n\nAdd a section **“Telemetry expectations”**:\n\n- Explain that the agent telemetry loop:\n  - Runs every `TelemetryInterval` in **sim time**.\n  - For each interface, derives:\n    - `Up` flag from `deriveInterfaceState`.\n    - `BytesTx` by accumulating `bandwidth_bps * Δt / 8` while link is up.\n- Describe expected metric evolution:\n\n  - Before `T1`:\n    - Interface `Up=false`, `BytesTx=0`.\n  - Between `T1` and `T2`:\n    - Interface `Up=true`.\n    - `BytesTx` increases monotonically on every telemetry tick.\n  - After `T2`:\n    - Interface `Up=false`.\n    - `BytesTx` either stays constant or increases only for other links; the example link should stop growing.\n\nDocument which node/interface IDs are relevant in the example (e.g. `sat-1:if-downlink-0`, `gs-1:if-uplink-0`).\n\n### 5. Add sample log snippets\n\nAdd a section **“Sample logs”** with short, realistic snippets (sanitized, not full-length):\n\n- **CDPI server logs**:\n  - Agent `Hello`.\n  - Creating an entry (`UpdateBeam`).\n  - Receiving a `Response`.\n\n- **Agent logs**:\n  - Scheduling of action (entryID, `When`, type).\n  - Execution and success.\n  - Telemetry tick logs (optional, even if at debug level).\n\n- **Telemetry server logs** (optional but useful):\n  - A couple of `ExportMetrics` calls showing:\n    - Node ID.\n    - Interface ID.\n    - `Up` flag.\n    - `BytesTx` values evolving.\n\nThe point is to show **shape and structure** of logs, not exact values.\n\n### 6. Add a quick “How to run and validate” checklist\n\nAt the bottom of the doc, add a **“How to run & validate”** section:\n\n- Basic steps:\n  - Load the example scenario (NBI call / CLI / config).\n  - Start the simulator with:\n    - SBI enabled.\n    - CDPI + Telemetry gRPC servers registered.\n    - Logging level that shows structured lines added in Chunk 12.\n  - Run the sim over a time window that covers `[T0, T2]`.\n\n- Validation checklist:\n  - CDPI logs show `Hello` + `CreateEntry` + `Response` for the example agent.\n  - Agent logs show scheduled actions at expected relative times.\n  - ScenarioState reflects link `Active` between T1 and T2.\n  - Telemetry logs / metrics show:\n    - `Up=true` between T1 and T2.\n    - `BytesTx` increasing during that interval, then flattening.\n\n## Acceptance criteria\n\n- A new document exists (e.g. `docs/scope4_example_behavior.md`) and is committed.\n- The document includes:\n  - A clear narrative of the example scenario and its time phases (`T0`, `T1`, `T2`).\n  - A description of controller/CDPI behavior for this scenario.\n  - A description of agent behavior and `ScenarioState` changes (links/routes).\n  - A description of telemetry expectations (`Up`/`Down`, `BytesTx` evolution).\n  - At least one sample log snippet each for CDPI, agent, and (optionally) Telemetry.\n  - A short “How to run & validate” section with a checklist.\n- The narrative is consistent with:\n  - Implementation of scheduler (Chunk 8).\n  - Agent model and CDPI semantics (Chunks 4 and 7).\n  - Telemetry loop and `TelemetryState` (Chunk 6).\n- The doc is written so that:\n  - A new contributor can follow it to verify that Scope 4 SBI is “basically working”.\n  - It can be used as a reference when diagnosing regressions in scheduling, agent actions, or telemetry.\n",
+    "labels": [
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 195,
+    "title": "[Scope 4][Chunk 13] Add golden SBI example scenario to CI regression suite",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/195",
+    "body": "## Background\n\nBy this point in **Scope 4 / Chunk 13**, you have:\n\n- A minimal SBI example scenario defined (LEO sat + ground station + one ServiceRequest).\n- CDPI controller/agent implementation:\n  - Controller-side `CDPIServer` and scheduler.\n  - Per-node `Agent` that:\n    - Receives scheduled entries.\n    - Applies beam/route actions to `ScenarioState`.\n    - Emits telemetry via `TelemetryService.ExportMetrics`.\n- Telemetry path:\n  - `TelemetryState` storing `InterfaceMetrics`.\n  - `TelemetryServer` implementing `ExportMetrics`.\n  - Agent-side telemetry loop driven by `EventScheduler`.\n- In-process SBI + Telemetry tests from **Chunk 11**:\n  - CDPI in-process gRPC test.\n  - Telemetry in-process `ExportMetrics` test.\n\nWhat’s **missing** is a **single golden, end-to-end example test** that:\n\n- Loads the **example scenario** (from Chunk 13).\n- Runs a short simulation with SBI **fully enabled**:\n  - Agents + CDPI + Scheduler + Telemetry + EventScheduler + ScenarioState.\n- Asserts a few **high-level invariants** that represent “Scope 4 is working”:\n  - At some point, the sat–ground link becomes active.\n  - Routing entries are installed when the link is in view.\n  - Telemetry shows:\n    - Interface up when link is active.\n    - Interface down after link is deactivated.\n    - Monotonic `BytesTx` while link is active.\n- Is wired into `go test ./...` (or a dedicated CI job) so regressions are caught early.\n\nThis issue creates that **golden SBI regression test** around the example scenario.\n\n## Goal\n\nCreate a **single, focused integration test** that:\n\n- Uses the **minimal LEO-sat + ground-station example scenario**.\n- Brings up:\n  - `ScenarioState`.\n  - Real `EventScheduler` (or a fake clock version for determinism).\n  - `TelemetryState` + `TelemetryServer`.\n  - `CDPIServer`.\n  - `Scheduler` (controller scheduling logic).\n  - One or more real `Agent` instances for the nodes.\n- Runs a short, deterministic simulation where:\n  - Time advances from `T0` → `T_end`.\n  - Satellite passes over the ground station.\n- Asserts that:\n\n  - **Scheduling**:\n    - At least one `UpdateBeam` and `DeleteBeam` was scheduled and executed.\n    - At least one `SetRoute` and `DeleteRoute` was applied.\n  - **Connectivity / state**:\n    - The sat–ground link is active for some interval.\n    - The link is inactive before/after that window.\n  - **Telemetry**:\n    - Telemetry reports show the relevant interface `Up=true` while link active.\n    - `BytesTx` monotonically increases while the link is active.\n    - `Up=false` after the DeleteBeam/DeleteRoute actions.\n\nIntegrate this as a **“golden scope 4 example”** test that can be run locally and in CI.\n\n## Where to look\n\nCore components to reuse:\n\n- Example scenario (Chunk 13.1):\n  - Scenario definition / fixture:\n    - Minimal LEO satellite node.\n    - Ground station node.\n    - Interfaces + link geometry.\n    - One `ServiceRequest` between them.\n  - Location:\n    - Example JSON/config or helper function (e.g. `sim/examples/scope4_leo_ground.go` or similar).\n- Scenario lifecycle wiring (Chunk 9):\n  - The place where you already wire:\n    - `ScenarioState`.\n    - `EventScheduler`.\n    - `CDPIServer`.\n    - `Scheduler`.\n    - `TelemetryState` + `TelemetryServer`.\n    - `Agent` instances.\n  - Reuse this wiring or factor it into a helper for tests, e.g.:\n    - `simtest.NewScope4Harness(...)`.\n- SBI / telemetry components:\n  - `internal/sbi/controller` – `CDPIServer` and `Scheduler`.\n  - `internal/sbi/agent` – `Agent` implementation.\n  - `internal/sbi/telemetry` (or similar) – `TelemetryServer` and `TelemetryState`.\n- Time and scheduler:\n  - Real `EventScheduler` implementation from Chunk 3.\n  - Or the fake scheduler if you want fully deterministic stepping (recommended).\n\nSearch terms in the repo:\n\n- `Scope 4 example`\n- `LEO` / `ground station`\n- `NewScope4Scenario` / `example scenario`\n- `CDPIServer`\n- `TelemetryServer`\n- `EventScheduler`\n- `Agent struct`\n- `TelemetryState`\n\n## Tasks\n\n### 1. Introduce a Scope 4 “harness” helper (if not already present)\n\nCreate a small test helper to spin up a Scope 4 environment for the example:\n\n- New package or file under tests, e.g.:\n\n  - `internal/sbi/scope4test/harness.go`\n  - or `simtest/scope4_example_harness.go`\n\n- Provide a struct like:\n\n      type Scope4Harness struct {\n          State      *simstate.ScenarioState\n          Clock      sbi.EventScheduler\n          Telemetry  *telemetry.TelemetryState\n          TelemetryS *telemetry.TelemetryServer\n          CDPI       *controller.CDPIServer\n          Scheduler  *controller.Scheduler\n          Agents     []*agent.Agent\n          // Any extra handles for inspection\n      }\n\n- Helper constructor:\n\n      func NewScope4HarnessForExampleScenario(t *testing.T) *Scope4Harness\n\n  that:\n\n  - Loads the **example scenario**.\n  - Instantiates `ScenarioState`.\n  - Sets up `Clock`:\n    - Either:\n      - Real EventScheduler + a fake SimClock adapter.\n      - Or a deterministic `FakeEventScheduler` from previous chunks.\n  - Creates:\n    - `TelemetryState` + `TelemetryServer`.\n    - `CDPIServer`.\n    - `Scheduler`.\n    - Agents for each node, wired to:\n      - `ScenarioState`, `Clock`, `Telemetry` client, CDPI client.\n\n- Start agents and register all gRPC services in-process (like Chunk 11 tests).\n\n### 2. Load and validate the example scenario\n\nUsing the example scenario definition from Chunk 13.1:\n\n- Ensure the harness:\n\n  - Loads exactly:\n    - 1 satellite node.\n    - 1 ground station node.\n    - A potential sat–ground link.\n    - One `ServiceRequest` between them.\n\n- Add simple asserts in the harness (or the test) to fail early if:\n\n  - Nodes are missing.\n  - The sat–ground potential link is not present.\n  - The `ServiceRequest` is missing.\n\nThis ensures the golden test cannot accidentally run with a malformed scenario.\n\n### 3. Drive the simulation timeline\n\nIn a new test file, e.g.:\n\n- `internal/sbi/scope4test/scope4_golden_example_test.go`\n\nAdd a test:\n\n- `func TestScope4GoldenExampleScenario(t *testing.T)`\n\nTest flow:\n\n1. Build harness:\n\n       h := NewScope4HarnessForExampleScenario(t)\n\n2. Initialize simulation time:\n\n   - Let `T0 := h.Clock.Now()`.\n\n3. Trigger scheduler:\n\n   - Call a method on the scheduler to pre-compute schedule for the scenario, e.g.:\n\n         h.Scheduler.RunOnce()\n\n   - Or start a simple scheduler loop for a short horizon if you already have that pattern.\n\n4. Advance simulation:\n\n   - In a loop, increment time in small steps, e.g. 1s or 10s of sim time:\n\n         for step := 0; step < N; step++ {\n             h.Clock.Advance(delta)   // if using a fake scheduler/clock\n             h.Clock.RunDue()         // run due events\n             // Optionally let agents or scheduler do periodic work\n         }\n\n   - Choose `N` and `delta` such that:\n     - The sat–ground link definitely enters and exits view.\n     - Scheduled UpdateBeam/DeleteBeam and SetRoute/DeleteRoute are executed.\n\n5. At key times (or at the end), inspect:\n\n   - `ScenarioState` for link status.\n   - `ScenarioState` for routing entries.\n   - `TelemetryState` for interface metrics.\n\n### 4. Assert scheduling & KB state invariants\n\nAdd explicit checks in the test:\n\n- **Scheduling → beams**:\n\n  - Using either:\n    - Scheduler’s internal counters / hooks, or\n    - Directly checking `ScenarioState`:\n\n        - Assert: There exists a time window where the sat–ground link is `Active == true`.\n        - Assert: Before and after that window, `Active == false`.\n\n- **Scheduling → routes**:\n\n  - For sat node and ground station:\n\n    - Assert: At some point while link is active:\n      - There is at least one `RouteEntry` pointing from one node to the other via the correct interface.\n    - Assert: After the link goes out of view and DeleteRoute actions fire:\n      - The corresponding route entries are removed.\n\nUse helper functions if necessary:\n\n- `LinkActiveBetween(t1, t2)`.\n- `HasRoute(nodeID, destCIDR)`.\n\n### 5. Assert telemetry invariants\n\nUse `TelemetryState` to check interface metrics:\n\n- Identify the interface ID used for the sat–ground link from the scenario.\n\n- Assert:\n\n  - At least one telemetry report exists for that interface.\n  - There exists a sample where:\n    - `Up == true`.\n    - `BytesTx > 0`.\n\n- If you record a sequence of telemetry reports over the simulation:\n\n  - Verify `BytesTx` is **monotonic non-decreasing** while `Up == true`.\n  - Verify that once the link has been deleted and enough time has passed:\n    - Telemetry reports show `Up == false` for that interface.\n\nIf your telemetry loop uses a fixed interval:\n\n- You can sample `TelemetryState` after advancing time by a couple of intervals to ensure reports were emitted.\n\n### 6. Wire test into CI (optional but recommended)\n\nEnsure the test:\n\n- Runs as part of `go test ./...` without requiring external services.\n- Has a reasonable runtime (e.g. < 1–2 seconds locally).\n- Is stable and deterministic:\n\n  - Prefer fake clocks/schedulers over real time if needed.\n  - Avoid timing-based `time.Sleep` calls.\n\nIf your CI has job grouping:\n\n- Optionally tag this as an integration test but still keep it within the main pipeline.\n\n### 7. Documentation hook (optional)\n\nAdd a short note in your Scope 4 docs (or `docs/scope4/README.md`):\n\n- Mention that:\n\n  - `TestScope4GoldenExampleScenario` (or equivalent name) exists.\n  - It serves as the **“Scope 4 golden regression test”** for SBI behavior.\n  - Developers can run it to validate their changes before modifying SBI logic.\n\nThis makes the test discoverable and reinforces it as the canonical example.\n\n## Acceptance criteria\n\n- A new test, e.g. `TestScope4GoldenExampleScenario`, exists and:\n\n  - Spins up a minimal Scope 4 environment:\n    - `ScenarioState`, `EventScheduler`, `CDPIServer`, `Scheduler`, `TelemetryState`/`TelemetryServer`, and agents.\n  - Loads the **LEO sat + ground station example scenario**.\n  - Advances simulation time through at least one sat pass over the ground station.\n\n- The test asserts **all** of the following (directly or via helpers):\n\n  - **Beams/links**:\n    - The sat–ground link becomes active for some interval during the run.\n    - The link is inactive before and after that interval.\n\n  - **Routes**:\n    - A route is installed between the two nodes when the link is active.\n    - The route is removed after the link is deactivated.\n\n  - **Telemetry**:\n    - Telemetry reports exist for the interface on the sat–ground link.\n    - At least one report shows `Up == true` and `BytesTx > 0`.\n    - `BytesTx` is monotonically non-decreasing while the link is active.\n    - At some point after link deletion, telemetry shows `Up == false`.\n\n- The test is:\n\n  - Deterministic and does not rely on wall-clock `time.Sleep`.\n  - Fast enough for normal `go test ./...` runs.\n  - Included in CI, either as part of the main suite or a clearly documented integration group.\n\n- Repository health:\n\n  - `go build ./...` passes with the new harness and test.\n  - `go test ./...` passes locally and in CI with the golden Scope 4 example test enabled.\n",
+    "labels": [
+      {
+        "id": 9737891558,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxu5g",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:test",
+        "name": "type:test",
+        "color": "3c874f",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  },
+  {
+    "number": 196,
+    "title": "[Scope 4][Chunk 13] Write walkthrough doc for SBI example scenario (expected behavior & logs)",
+    "state": "open",
+    "html_url": "https://github.com/Cizor/spacetime-constellation-sim/issues/196",
+    "body": "## Background\n\nScope 4 now has:\n\n- A minimal SBI example scenario defined (LEO satellite + ground station + one `ServiceRequest`).\n- CDPI (scheduling) and Telemetry services implemented and wired into the simulator.\n- Agents, scheduler, and telemetry loop integrated with the scenario lifecycle.\n\nWhat’s missing is a **single, narrative walkthrough document** that:\n\n- Shows a developer exactly how to **run** the Scope 4 SBI example scenario.\n- Explains **what to expect** at key times (T₁: sat in view, T₂: sat out of view).\n- Demonstrates how to **inspect logs and metrics** to confirm that:\n  - CDPI scheduling is working (CreateEntry / DeleteEntry / Finalize / Responses).\n  - Agents are executing actions against `ScenarioState`.\n  - Telemetry is being exported and captured by `TelemetryState`.\n\nThis doc will act as:\n\n- A “golden” example for Scope 4 behavior.\n- A handy reference for debugging when something breaks later.\n- A checkable artifact when validating “Scope 4 is done”.\n\n## Goal\n\nCreate a **walkthrough markdown document** (for example:\n\n- `docs/examples/scope4_sbi_example.md`\n\nthat:\n\n- Describes the example scenario (nodes, links, `ServiceRequest`).\n- Shows how to load/run it using the existing CLI / simulator entrypoints.\n- Explains the expected behavior at:\n\n  - Time T₁ (satellite comes into view).\n  - Time T₂ (satellite leaves view).\n\n- Includes **realistic example logs** and/or CLI outputs that demonstrate:\n\n  - CDPI messages (Hello, CreateEntry, DeleteEntry, Finalize, Responses).\n  - Agent logs for scheduling/executing actions.\n  - Telemetry logs / inspection of `TelemetryState`.\n\nThe doc should be written for an internal developer who already knows Go and the repo layout, but not necessarily Scope 4.\n\n## Where to look\n\nExisting pieces you will reference from the doc (no code changes here, just links/paths):\n\n- Example scenario definition from previous Chunk 13 issue:\n  - Scenario config file (JSON/YAML) or NBI script:\n    - e.g. under `examples/scope4/leo_ground_sbi.json`\n    - or a Go helper in `internal/examples/`.\n- Simulator entrypoint:\n  - `cmd/simulator/main.go`\n  - Any wrapper script or `make` target you’ve already added (e.g. `make run-example-scope4`).\n- SBI / Telemetry servers:\n  - CDPI server:\n    - `internal/sbi/controller/cdpi_server.go` (or similar).\n  - Telemetry server:\n    - `internal/sbi/telemetry_server.go` (or similar).\n- Agent and scheduler:\n  - `internal/sbi/agent/`\n  - `internal/sbi/controller/scheduler.go`\n- Logging:\n  - Whatever logging helper you use (e.g. `internal/logging` or `log/slog` usage).\n  - Where agent/CDPI/telemetry logs end up (stdout, file, etc).\n\nSearch terms in the repo:\n\n- `scope4`\n- `SBI`\n- `CDPIServer`\n- `TelemetryServer`\n- `Agent struct`\n- `Scheduler struct`\n- `InterfaceMetrics`, `TelemetryState`\n\n## Tasks\n\n### 1. Create walkthrough document skeleton\n\n- Add a new markdown file, for example:\n\n  - `docs/examples/scope4_sbi_example.md`\n\n- Structure it with clear sections:\n\n  - `# Scope 4 SBI Example: LEO sat + ground station`\n  - `## Prerequisites`\n  - `## Scenario overview`\n  - `## How to run the example`\n  - `## What you should see (expected behavior)`\n  - `## Inspecting logs and telemetry`\n  - `## Troubleshooting`\n  - `## Related docs / next steps`\n\n### 2. Document prerequisites and setup\n\nIn `Prerequisites`:\n\n- Mention:\n\n  - Go version required (e.g. Go 1.xx).\n  - Any external tools:\n    - `make`\n    - `grpcurl` (optional, if you use it in the walkthrough).\n  - How to build the simulator:\n\n        make build\n        go build ./...\n\n  - Any flags/config files needed to enable SBI and telemetry:\n\n        ./simulator \\\n          --enable-sbi=true \\\n          --telemetry-interval=1s \\\n          --config=examples/scope4/leo_ground_sbi.json\n\n- Clarify whether the example uses:\n\n  - In-process NBI to load the scenario, or\n  - A static config loaded at startup.\n\n### 3. Describe the example scenario\n\nIn `Scenario overview`:\n\n- Explain the topology in prose:\n\n  - 1 LEO satellite node with downlink interface.\n  - 1 ground-station node with uplink interface.\n  - A single potential link between them.\n  - One `ServiceRequest` from ground → sat (or vice versa).\n\n- Include a textual diagram, for example:\n\n      [Ground Station] <---- potential link ----> [LEO Satellite]\n\n- Describe the time window:\n\n  - At time T₁, the link becomes “in view”.\n  - At time T₂, the link goes out of view.\n\n- Reference which file defines this:\n\n  - `examples/scope4/leo_ground_sbi.json` (or equivalent).\n\n### 4. Step-by-step: run the scenario\n\nIn `How to run the example`:\n\n- Provide explicit commands, e.g.:\n\n  1. Build the binary:\n\n         make build\n\n  2. Start simulator with SBI/Telemetry enabled:\n\n         ./simulator \\\n           --config=examples/scope4/leo_ground_sbi.json \\\n           --enable-sbi=true \\\n           --telemetry-interval=1s\n\n  3. Optionally, show how to:\n\n     - Run with a specific log level:\n\n           ./simulator ... --log-level=debug\n\n     - Enable any flags specific to Scope 4 (if present).\n\n- Clarify:\n\n  - Whether the sim runs for a bounded time or until Ctrl+C.\n  - Where logs are emitted (stdout vs file).\n\n### 5. Document expected behavior (timeline)\n\nIn `What you should see (expected behavior)`:\n\n- Describe a rough timeline:\n\n  - **T₀ – startup:**\n\n    - Agents start.\n    - Each agent calls Hello on CDPI.\n    - Scheduler may pre-compute schedule.\n\n  - **T₁ – satellite comes into view:**\n\n    - Scheduler issues:\n      - `CreateEntry` for `UpdateBeam` to activate the sat-ground link.\n      - `CreateEntry` for `SetRoute` on each node.\n    - Agent:\n      - Executes `UpdateBeam` and `SetRoute` via `ScenarioState` helpers.\n      - Sends `Response` messages to CDPI.\n    - Telemetry:\n      - On next telemetry tick, interface `Up=true`, `BytesTx` starts increasing.\n\n  - **T₂ – satellite goes out of view:**\n\n    - Scheduler issues:\n      - `CreateEntry` for `DeleteBeam`.\n      - `CreateEntry` for `DeleteRoute`.\n    - Agent:\n      - Executes deletions in `ScenarioState`.\n      - Sends `Response`.\n    - Telemetry:\n      - Interface `Up=false` afterwards; `BytesTx` stops increasing.\n\n- Make it clear that exact timestamps depend on scenario config, but the qualitative behavior should match.\n\n### 6. Show sample logs and outputs\n\nIn `Inspecting logs and telemetry`:\n\n- Provide **short, realistic** log snippets for:\n\n  - CDPI server logging:\n\n        [CDPI] agent connected: agent_id=\"sat-1\" node_id=\"sat-node-1\"\n        [CDPI] send CreateEntry: agent_id=\"sat-1\" entry_id=\"beam-1\" when=\"2025-01-01T01:23:00Z\" type=\"UpdateBeam\"\n        [CDPI] response: agent_id=\"sat-1\" request_id=\"req-123\" status=\"OK\"\n\n  - Agent logging:\n\n        [agent] scheduled action: entry_id=\"beam-1\" when=\"2025-01-01T01:23:00Z\" type=\"UpdateBeam\"\n        [agent] executing action: entry_id=\"beam-1\" type=\"UpdateBeam\"\n        [agent] applied beam update: node=\"sat-node-1\" iface=\"downlink-0\" target=\"ground-1\"\n\n  - Telemetry logging:\n\n        [telemetry] ExportMetrics: node=\"sat-node-1\" iface=\"downlink-0\" up=true bytes_tx=10240\n        [telemetry] ExportMetrics: node=\"sat-node-1\" iface=\"downlink-0\" up=false bytes_tx=20480\n\n- Optionally, include examples of querying telemetry via:\n\n  - A small CLI or helper endpoint, e.g.:\n\n        ./simctl telemetry get --node sat-node-1 --iface downlink-0\n\n  - Or using `grpcurl` against the TelemetryService.\n\n### 7. Troubleshooting section\n\nAdd a short `Troubleshooting` section:\n\n- Common issues and how to check them:\n\n  - “I don’t see any CDPI logs”:\n    - Check `--enable-sbi=true`.\n    - Confirm CDPI server is registered on gRPC server.\n  - “Telemetry shows interface always down”:\n    - Confirm link becomes `Active` in `ScenarioState`.\n    - Verify scheduler actually scheduled `UpdateBeam`.\n  - “No `CreateEntry` logs”:\n    - Ensure scheduler is actually running (e.g. a goroutine or tick loop).\n    - Check if scenario has potential links / `ServiceRequest` configured.\n\n### 8. Link from main docs\n\n- Add a short link from a higher-level doc, for example:\n\n  - `docs/scope4_overview.md` (or `README.md` section):\n    - “See `docs/examples/scope4_sbi_example.md` for a complete example.”\n\n- Optionally, update any `mkdocs` / `docusaurus` config if you publish docs.\n\n## Acceptance criteria\n\n- New doc exists at:\n\n  - `docs/examples/scope4_sbi_example.md` (or clearly equivalent path).\n  - Follows the structure:\n    - Background/prereqs\n    - Scenario overview\n    - How to run\n    - Expected behavior (timeline)\n    - Logs/telemetry inspection\n    - Troubleshooting\n    - Links to related docs\n\n- The walkthrough:\n\n  - Provides **copy-pasteable commands** to run the example scenario.\n  - Clearly explains expected behavior at T₀, T₁, and T₂.\n  - Includes at least one realistic log snippet for:\n    - CDPI server.\n    - Agent.\n    - Telemetry.\n\n- The doc references:\n\n  - The actual scenario config file path.\n  - The simulator binary / main entrypoint.\n  - Any relevant flags (e.g. `--enable-sbi`, `--telemetry-interval`).\n\n- Documentation quality:\n\n  - `go vet` / `go test ./...` still pass (no code changes required for this issue).\n  - Markdown passes basic linting if applicable (no broken headings, fenced blocks, or obvious typos).\n  - The example can be followed by a new dev to get from “clone repo” to “seeing SBI logs and telemetry” without needing extra tribal knowledge.\n",
+    "labels": [
+      {
+        "id": 9737775959,
+        "node_id": "LA_kwDOQfMfks8AAAACRGqrVw",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/documentation",
+        "name": "documentation",
+        "color": "0075ca",
+        "default": true,
+        "description": "Improvements or additions to documentation"
+      },
+      {
+        "id": 9737891218,
+        "node_id": "LA_kwDOQfMfks8AAAACRGxtkg",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/type:docs",
+        "name": "type:docs",
+        "color": "3f94bb",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782134341,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-GRQ",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/scope:4-sbi",
+        "name": "scope:4-sbi",
+        "color": "5a2e28",
+        "default": false,
+        "description": ""
+      },
+      {
+        "id": 9782142868,
+        "node_id": "LA_kwDOQfMfks8AAAACRw-nlA",
+        "url": "https://api.github.com/repos/Cizor/spacetime-constellation-sim/labels/chunk:13-sbi-example",
+        "name": "chunk:13-sbi-example",
+        "color": "ad3d93",
+        "default": false,
+        "description": ""
+      }
+    ]
+  }
+]
