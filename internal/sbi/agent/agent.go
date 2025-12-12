@@ -54,6 +54,9 @@ type SimAgent struct {
 	// Logging
 	log logging.Logger
 
+	// Metrics (optional, shared pointer from controller or global)
+	Metrics *sbi.SBIMetrics
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -763,6 +766,10 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 			logging.String("entry_id", action.EntryID),
 			logging.String("action_type", action.Type.String()),
 		)
+		// Increment metrics on successful execution
+		if a.Metrics != nil {
+			a.Metrics.IncActionsExecuted()
+		}
 	}
 
 	// Parse request ID from action

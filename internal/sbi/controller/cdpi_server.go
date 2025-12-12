@@ -31,6 +31,7 @@ type CDPIServer struct {
 	agentsMu sync.RWMutex
 	agents   map[string]*AgentHandle // tracked by AgentID
 	log      logging.Logger
+	Metrics  *sbi.SBIMetrics // optional metrics counter
 }
 
 // AgentHandle represents an active agent connection to the controller.
@@ -70,10 +71,11 @@ func NewCDPIServer(state *state.ScenarioState, clock sbi.EventScheduler, log log
 		log = logging.Noop()
 	}
 	return &CDPIServer{
-		State:  state,
-		Clock:  clock,
-		agents: make(map[string]*AgentHandle),
-		log:    log,
+		State:   state,
+		Clock:   clock,
+		agents:  make(map[string]*AgentHandle),
+		log:     log,
+		Metrics: nil, // optional, can be set after construction
 	}
 }
 
@@ -197,6 +199,14 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 			if statusProto != nil {
 				// Extract status code from proto
 				statusCode = fmt.Sprintf("%d", statusProto.GetCode())
+				// Update metrics based on status
+				if s.Metrics != nil {
+					if statusProto.GetCode() == int32(codes.OK) {
+						s.Metrics.IncResponsesOK()
+					} else {
+						s.Metrics.IncResponsesError()
+					}
+				}
 			}
 			s.log.Debug(context.Background(), "cdpi: response from agent",
 				logging.String("agent_id", agentID),
@@ -295,6 +305,16 @@ func (s *CDPIServer) SendCreateEntry(agentID string, action *sbi.ScheduledAction
 	// Send to agent's outgoing channel
 	select {
 	case handle.outgoing <- msg:
+		// Successfully queued
+		s.log.Debug(context.Background(), "cdpi: send create entry",
+			logging.String("agent_id", agentID),
+			logging.String("entry_id", action.EntryID),
+			logging.Any("when", action.When),
+			logging.String("action_type", action.Type.String()),
+		)
+		if s.Metrics != nil {
+			s.Metrics.IncCreateEntrySent()
+		}
 		return nil
 	default:
 		return status.Errorf(codes.ResourceExhausted, "cdpi: outgoing channel full for agent %q", agentID)
@@ -347,6 +367,9 @@ func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error {
 			logging.String("agent_id", agentID),
 			logging.String("entry_id", entryID),
 		)
+		if s.Metrics != nil {
+			s.Metrics.IncDeleteEntrySent()
+		}
 		return nil
 	default:
 		s.log.Warn(context.Background(), "cdpi: outgoing channel full",
@@ -404,6 +427,9 @@ func (s *CDPIServer) SendFinalize(agentID string, cutoff time.Time) error {
 			logging.String("agent_id", agentID),
 			logging.Any("cutoff", cutoff),
 		)
+		if s.Metrics != nil {
+			s.Metrics.IncFinalizeSent()
+		}
 		return nil
 	default:
 		s.log.Warn(context.Background(), "cdpi: outgoing channel full",

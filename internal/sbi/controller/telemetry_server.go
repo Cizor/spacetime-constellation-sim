@@ -6,6 +6,7 @@ import (
 
 	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
+	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -22,6 +23,7 @@ type TelemetryServer struct {
 
 	Telemetry *state.TelemetryState
 	log       logging.Logger
+	Metrics   *sbi.SBIMetrics // optional metrics counter
 }
 
 // NewTelemetryServer creates a new TelemetryServer with the given TelemetryState.
@@ -32,6 +34,7 @@ func NewTelemetryServer(telemetry *state.TelemetryState, log logging.Logger) *Te
 	return &TelemetryServer{
 		Telemetry: telemetry,
 		log:       log,
+		Metrics:   nil, // optional, can be set after construction
 	}
 }
 
@@ -106,6 +109,11 @@ func (s *TelemetryServer) ExportMetrics(
 		s.log.Debug(ctx, "exported metrics",
 			logging.Int("count", processed),
 		)
+	}
+
+	// Increment metrics counter for each ExportMetrics call
+	if s.Metrics != nil {
+		s.Metrics.IncTelemetryReports()
 	}
 
 	return &emptypb.Empty{}, nil
