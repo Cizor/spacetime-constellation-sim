@@ -109,4 +109,3 @@ func TestStatusRestorationOnUnimpair(t *testing.T) {
 		t.Fatalf("expected link to be up after status restoration")
 	}
 }
-
