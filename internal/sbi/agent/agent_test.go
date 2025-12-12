@@ -27,7 +27,7 @@ func TestSimAgent_ID(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent(id, "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent(id, "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	if got := agent.ID(); got != id {
 		t.Fatalf("ID() = %q, want %q", got, id)
@@ -45,7 +45,7 @@ func TestSimAgent_HandleScheduledAction(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent(id, "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent(id, "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	route := &model.RouteEntry{
 		DestinationCIDR: "10.0.0.0/24",

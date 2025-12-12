@@ -46,7 +46,7 @@ func TestSimAgent_HandleFinalize_PrunePastEntriesKeepFuture(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForFinalizeTest{}
 	stream := &fakeStreamForFinalizeTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -126,7 +126,7 @@ func TestSimAgent_HandleFinalize_CutoffBeforeAllEntriesNoPruning(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForFinalizeTest{}
 	stream := &fakeStreamForFinalizeTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -194,7 +194,7 @@ func TestSimAgent_HandleFinalize_CutoffAfterAllEntriesAllPruned(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForFinalizeTest{}
 	stream := &fakeStreamForFinalizeTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx

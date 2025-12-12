@@ -34,7 +34,7 @@ func TestCDPIServer_SendCreateEntry_AttachesTokenAndIncrementsSeqno(t *testing.T
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Create a node
 	node := &model.NetworkNode{ID: "node1"}
@@ -109,7 +109,7 @@ func TestCDPIServer_SendDeleteEntry_ReusesTokenAndIncrementsSeqno(t *testing.T) 
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Create a node
 	node := &model.NetworkNode{ID: "node1"}
@@ -172,7 +172,7 @@ func TestCDPIServer_SendFinalize_UsesTokenAndIncrementsSeqno(t *testing.T) {
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Create a node
 	node := &model.NetworkNode{ID: "node1"}
@@ -237,7 +237,7 @@ func TestCDPIServer_SendCreateEntry_UnknownAgentReturnsError(t *testing.T) {
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Create a simple action
 	action := &sbi.ScheduledAction{
@@ -268,7 +268,7 @@ func TestCDPIServer_SendCreateEntry_ChannelFullReturnsError(t *testing.T) {
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Create a node
 	node := &model.NetworkNode{ID: "node1"}
@@ -363,7 +363,7 @@ func TestCDPIServer_setAgentToken_SetsTokenAndResetsSeqno(t *testing.T) {
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Create a node
 	node := &model.NetworkNode{ID: "node1"}
@@ -411,7 +411,7 @@ func TestCDPIServer_setAgentToken_UnknownAgentReturnsError(t *testing.T) {
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
 	scheduler := sbi.NewFakeEventScheduler(time.Now())
-	server := NewCDPIServer(scenarioState, scheduler)
+	server := NewCDPIServer(scenarioState, scheduler, logging.Noop())
 
 	// Call setAgentToken with unknown agent
 	err := server.setAgentToken("missing-agent", "new-token")

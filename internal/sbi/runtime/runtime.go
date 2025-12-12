@@ -111,7 +111,7 @@ func NewSBIRuntimeWithServers(
 		agentID := sbi.AgentID(node.ID)
 
 		// Create agent without stream (will be set in StartAgents)
-		ag := agent.NewSimAgent(agentID, node.ID, state, clock, telemetryClient, nil)
+		ag := agent.NewSimAgent(agentID, node.ID, state, clock, telemetryClient, nil, log)
 		agents = append(agents, ag)
 	}
 
@@ -157,7 +157,7 @@ func NewSBIRuntime(state *sim.ScenarioState, clock sbi.EventScheduler, conn *grp
 	telemetryServer := controller.NewTelemetryServer(telemetryState, log)
 
 	// Create CDPI server
-	cdpiServer := controller.NewCDPIServer(state, clock)
+	cdpiServer := controller.NewCDPIServer(state, clock, log)
 
 	// Create scheduler
 	scheduler := controller.NewScheduler(state, clock, cdpiServer, log)
@@ -179,7 +179,7 @@ func NewSBIRuntime(state *sim.ScenarioState, clock sbi.EventScheduler, conn *grp
 		agentID := sbi.AgentID(node.ID)
 
 		// Create agent without stream (will be set in StartAgents)
-		ag := agent.NewSimAgent(agentID, node.ID, state, clock, telemetryClient, nil)
+		ag := agent.NewSimAgent(agentID, node.ID, state, clock, telemetryClient, nil, log)
 		agents = append(agents, ag)
 	}
 

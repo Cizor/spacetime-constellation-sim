@@ -31,6 +31,7 @@ func TestSimAgent_Start_TelemetryInterval_Zero(t *testing.T) {
 		telemetryCli,
 		stream,
 		TelemetryConfig{Enabled: false},
+		logging.Noop(),
 	)
 
 	ctx := context.Background()
@@ -78,6 +79,7 @@ func TestSimAgent_Start_TelemetryInterval_Positive(t *testing.T) {
 			Enabled:  true,
 			Interval: 2 * time.Second,
 		},
+		logging.Noop(),
 	)
 
 	ctx := context.Background()
@@ -106,7 +108,7 @@ func TestSimAgent_NewSimAgent_UsesDefaults(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Verify default interval is set
 	if agent.telemetryInterval != 1*time.Second {

@@ -21,7 +21,7 @@ func TestSimAgent_deriveInterfaceState_NoLinks(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	up, bandwidth := agent.deriveInterfaceState("node1", "if1")
 	if up {
@@ -70,7 +70,7 @@ func TestSimAgent_deriveInterfaceState_ActiveLink(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	up, bandwidth := agent.deriveInterfaceState("node1", "if1")
 	if !up {
@@ -119,7 +119,7 @@ func TestSimAgent_deriveInterfaceState_InactiveLink(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	up, bandwidth := agent.deriveInterfaceState("node1", "if1")
 	if up {
@@ -182,7 +182,7 @@ func TestSimAgent_deriveInterfaceState_MultipleLinks(t *testing.T) {
 	telemetryCli := &fakeTelemetryClient{}
 	stream := &fakeStream{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	up, bandwidth := agent.deriveInterfaceState("node1", "if1")
 	if !up {

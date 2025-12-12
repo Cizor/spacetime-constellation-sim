@@ -45,7 +45,7 @@ func TestSimAgent_FirstMessageSetsToken(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTokenTest{}
 	stream := &fakeStreamForTokenTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Verify token starts empty
 	if agent.GetToken() != "" {
@@ -97,7 +97,7 @@ func TestSimAgent_MismatchedTokenIsRejected(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTokenTest{}
 	stream := &fakeStreamForTokenTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Establish initial token
 	req1 := &schedulingpb.CreateEntryRequest{
@@ -169,7 +169,7 @@ func TestSimAgent_SeqnoStrictlyIncreasingIsAccepted(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTokenTest{}
 	stream := &fakeStreamForTokenTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -213,7 +213,7 @@ func TestSimAgent_OutOfOrderSeqnoOnlyLogs(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTokenTest{}
 	stream := &fakeStreamForTokenTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -290,7 +290,7 @@ func TestSimAgent_ResetClearsTokenAndSeqno(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTokenTest{}
 	stream := &fakeStreamForTokenTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx

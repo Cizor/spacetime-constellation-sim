@@ -73,7 +73,7 @@ func TestSimAgent_TelemetryLoop(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTesting{}
 	stream := &fakeStreamForTelemetry{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Start agent
 	ctx := context.Background()
@@ -137,7 +137,7 @@ func TestSimAgent_TelemetryLoop_Periodic(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTesting{}
 	stream := &fakeStreamForTelemetry{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	if err := agent.Start(ctx); err != nil {
@@ -193,7 +193,7 @@ func TestSimAgent_TelemetryLoop_NoInterfaces(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTesting{}
 	stream := &fakeStreamForTelemetry{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	if err := agent.Start(ctx); err != nil {

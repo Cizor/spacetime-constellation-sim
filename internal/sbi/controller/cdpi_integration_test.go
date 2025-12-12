@@ -31,7 +31,7 @@ type testCDPIServer struct {
 // newTestCDPIServer creates a CDPIServer that records all received responses.
 func newTestCDPIServer(state *state.ScenarioState, clock sbi.EventScheduler) *testCDPIServer {
 	return &testCDPIServer{
-		CDPIServer: NewCDPIServer(state, clock),
+		CDPIServer: NewCDPIServer(state, clock, logging.Noop()),
 		responses:  make([]*schedulingpb.ReceiveRequestsMessageToController, 0),
 	}
 }
@@ -282,6 +282,7 @@ func TestCDPIEndToEnd_UpdateBeam(t *testing.T) {
 		harness.EventScheduler,
 		nil, // no telemetry client for this test
 		stream,
+		logging.Noop(),
 	)
 
 	// Start agent (sends Hello)

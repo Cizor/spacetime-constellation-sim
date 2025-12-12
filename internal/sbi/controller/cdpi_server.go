@@ -9,6 +9,7 @@ import (
 	"time"
 
 	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -29,6 +30,7 @@ type CDPIServer struct {
 	Clock    sbi.EventScheduler
 	agentsMu sync.RWMutex
 	agents   map[string]*AgentHandle // tracked by AgentID
+	log      logging.Logger
 }
 
 // AgentHandle represents an active agent connection to the controller.
@@ -63,11 +65,15 @@ func (h *AgentHandle) NextSeqNo() uint64 {
 }
 
 // NewCDPIServer creates a new CDPI server with the given dependencies.
-func NewCDPIServer(state *state.ScenarioState, clock sbi.EventScheduler) *CDPIServer {
+func NewCDPIServer(state *state.ScenarioState, clock sbi.EventScheduler, log logging.Logger) *CDPIServer {
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &CDPIServer{
 		State:  state,
 		Clock:  clock,
 		agents: make(map[string]*AgentHandle),
+		log:    log,
 	}
 }
 
@@ -121,6 +127,12 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 	s.agents[agentID] = handle
 	s.agentsMu.Unlock()
 
+	// Log agent connection
+	s.log.Info(context.Background(), "cdpi: agent connected",
+		logging.String("agent_id", agentID),
+		logging.String("node_id", nodeID),
+	)
+
 	// Clean up on exit
 	cleanupDone := false
 	defer func() {
@@ -157,6 +169,11 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 			}
 			s.agentsMu.Unlock()
 			<-sendDone // Wait for send goroutine to finish
+			// Log stream closure
+			s.log.Info(context.Background(), "cdpi: agent stream closed",
+				logging.String("agent_id", agentID),
+				logging.String("error", err.Error()),
+			)
 			return err
 		}
 
@@ -165,15 +182,27 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 		case msg.GetHello() != nil:
 			// Hello should only come once at the start
 			// If we receive it again, it's an error
+			s.log.Warn(context.Background(), "cdpi: unexpected Hello after handshake",
+				logging.String("agent_id", agentID),
+			)
 			return status.Error(codes.InvalidArgument, "Hello message received after initial handshake")
 
 		case msg.GetResponse() != nil:
 			// Handle Response
 			response := msg.GetResponse()
-			// Log status for observability
-			// TODO: Add proper logging
-			_ = response.GetRequestId()
-			_ = response.GetStatus()
+			// Log response from agent
+			reqID := response.GetRequestId()
+			statusProto := response.GetStatus()
+			statusCode := "unknown"
+			if statusProto != nil {
+				// Extract status code from proto
+				statusCode = fmt.Sprintf("%d", statusProto.GetCode())
+			}
+			s.log.Debug(context.Background(), "cdpi: response from agent",
+				logging.String("agent_id", agentID),
+				logging.Any("request_id", reqID),
+				logging.String("status", statusCode),
+			)
 
 		default:
 			// Unknown message type - ignore for now
@@ -214,6 +243,12 @@ func (s *CDPIServer) Reset(ctx context.Context, req *schedulingpb.ResetRequest) 
 	if err := s.setAgentToken(agentID, newToken); err != nil {
 		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
+
+	// Log agent reset
+	s.log.Info(ctx, "cdpi: agent reset",
+		logging.String("agent_id", agentID),
+		logging.String("token", newToken),
+	)
 
 	return &emptypb.Empty{}, nil
 }
@@ -307,8 +342,16 @@ func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error {
 	// Send to agent's outgoing channel
 	select {
 	case handle.outgoing <- msg:
+		// Log DeleteEntry sent
+		s.log.Debug(context.Background(), "cdpi: send delete entry",
+			logging.String("agent_id", agentID),
+			logging.String("entry_id", entryID),
+		)
 		return nil
 	default:
+		s.log.Warn(context.Background(), "cdpi: outgoing channel full",
+			logging.String("agent_id", agentID),
+		)
 		return status.Errorf(codes.ResourceExhausted, "cdpi: outgoing channel full for agent %q", agentID)
 	}
 }
@@ -356,8 +399,16 @@ func (s *CDPIServer) SendFinalize(agentID string, cutoff time.Time) error {
 	// Send to agent's outgoing channel
 	select {
 	case handle.outgoing <- msg:
+		// Log Finalize sent
+		s.log.Debug(context.Background(), "cdpi: send finalize",
+			logging.String("agent_id", agentID),
+			logging.Any("cutoff", cutoff),
+		)
 		return nil
 	default:
+		s.log.Warn(context.Background(), "cdpi: outgoing channel full",
+			logging.String("agent_id", agentID),
+		)
 		return status.Errorf(codes.ResourceExhausted, "cdpi: outgoing channel full for agent %q", agentID)
 	}
 }

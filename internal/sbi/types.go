@@ -42,6 +42,28 @@ const (
 	ActionKindDeleteSrPolicy = ScheduledDeleteSrPolicy
 )
 
+// String returns a string representation of ScheduledActionType.
+func (t ScheduledActionType) String() string {
+	switch t {
+	case ScheduledUpdateBeam:
+		return "UpdateBeam"
+	case ScheduledDeleteBeam:
+		return "DeleteBeam"
+	case ScheduledSetRoute:
+		return "SetRoute"
+	case ScheduledDeleteRoute:
+		return "DeleteRoute"
+	case ScheduledSetSrPolicy:
+		return "SetSrPolicy"
+	case ScheduledDeleteSrPolicy:
+		return "DeleteSrPolicy"
+	case ScheduledActionUnknown:
+		return "Unknown"
+	default:
+		return "Invalid"
+	}
+}
+
 // BeamSpec describes a beam/pointing configuration for activating a link.
 // This is an internal type that carries the semantic information needed to
 // identify and activate a link between two interfaces.

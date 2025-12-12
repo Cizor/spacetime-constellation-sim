@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -50,6 +51,9 @@ type SimAgent struct {
 	bytesTx      map[string]uint64 // per-interface transmitted bytes (monotonic)
 	lastTick     time.Time         // last telemetry tick time
 
+	// Logging
+	log logging.Logger
+
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -57,13 +61,16 @@ type SimAgent struct {
 
 // NewSimAgent creates a new simulated agent with the given ID and dependencies.
 // It uses default telemetry configuration.
-func NewSimAgent(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]) *SimAgent {
-	return NewSimAgentWithConfig(agentID, nodeID, state, scheduler, telemetryCli, stream, DefaultTelemetryConfig())
+func NewSimAgent(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController], log logging.Logger) *SimAgent {
+	return NewSimAgentWithConfig(agentID, nodeID, state, scheduler, telemetryCli, stream, DefaultTelemetryConfig(), log)
 }
 
 // NewSimAgentWithConfig creates a new simulated agent with telemetry configuration.
-func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController], telemetryConfig TelemetryConfig) *SimAgent {
+func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController], telemetryConfig TelemetryConfig, log logging.Logger) *SimAgent {
 	cfg := telemetryConfig.ApplyDefaults()
+	if log == nil {
+		log = logging.Noop()
+	}
 	return &SimAgent{
 		AgentID:           agentID,
 		NodeID:            nodeID,
@@ -78,6 +85,7 @@ func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.Scen
 		telemetryInterval: cfg.Interval,
 		bytesTx:           make(map[string]uint64),
 		lastTick:          time.Time{},
+		log:               log,
 	}
 }
 
@@ -164,6 +172,14 @@ func (a *SimAgent) Stop() {
 
 	// Clear pending actions
 	a.pending = make(map[string]*sbi.ScheduledAction)
+
+	// Log agent stop
+	if a.ctx != nil {
+		a.log.Info(a.ctx, "agent: stop",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("node_id", a.NodeID),
+		)
+	}
 }
 
 // readLoop reads messages from the CDPI stream and processes them.
@@ -179,13 +195,19 @@ func (a *SimAgent) readLoop() {
 			if err != nil {
 				// Stream closed or error - agent should handle reconnection
 				// For now, just exit the loop
+				a.log.Error(a.ctx, "agent: stream recv error",
+					logging.String("agent_id", string(a.AgentID)),
+					logging.Any("error", err),
+				)
 				return
 			}
 
 			if err := a.handleMessage(msg); err != nil {
 				// Log error but continue processing
-				// TODO: Add proper logging
-				_ = err
+				a.log.Error(a.ctx, "agent: handle message error",
+					logging.String("agent_id", string(a.AgentID)),
+					logging.Any("error", err),
+				)
 			}
 		}
 	}
@@ -217,7 +239,10 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 	token := req.GetScheduleManipulationToken()
 	if token == "" {
 		// Missing token - log and ignore
-		// TODO: Add proper logging
+		a.log.Warn(a.ctx, "agent: create entry missing token",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
+		)
 		return nil
 	}
 
@@ -225,9 +250,18 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 	// First valid message establishes the token
 	if a.token == "" {
 		a.token = token
+		a.log.Info(a.ctx, "agent: token established",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("token", token),
+		)
 	} else if a.token != token {
 		// Token mismatch - log and ignore stale message
-		// TODO: Add proper logging with expected/got tokens
+		a.log.Warn(a.ctx, "agent: create entry token mismatch",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("expected_token", a.token),
+			logging.String("got_token", token),
+			logging.Any("request_id", requestID),
+		)
 		a.mu.Unlock()
 		return nil
 	}
@@ -236,10 +270,17 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 	seqNo := req.GetSeqno()
 	if seqNo <= 0 {
 		// Non-positive seqno - log but proceed
-		// TODO: Add debug logging
+		a.log.Debug(a.ctx, "agent: create entry non-positive seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("seqno", seqNo),
+		)
 	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
 		// Non-monotonic seqno - log warning but proceed
-		// TODO: Add warning log with last/current seqno
+		a.log.Warn(a.ctx, "agent: create entry non-monotonic seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("last_seqno", a.lastSeqNoSeen),
+			logging.Any("current_seqno", seqNo),
+		)
 	}
 	a.lastSeqNoSeen = seqNo
 	a.mu.Unlock()
@@ -247,6 +288,11 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 	// Convert proto to ScheduledAction
 	action, err := a.convertCreateEntryToAction(req, requestID)
 	if err != nil {
+		a.log.Error(a.ctx, "agent: failed to convert create entry",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
+			logging.Any("error", err),
+		)
 		return fmt.Errorf("failed to convert CreateEntryRequest: %w", err)
 	}
 
@@ -257,15 +303,25 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 		a.handleDeleteSrPolicy(action.SrPolicy.PolicyID)
 	}
 
-	// Handle SR policies immediately (stub behavior for Scope 4)
-	if action.Type == sbi.ScheduledSetSrPolicy && action.SrPolicy != nil {
-		a.handleSetSrPolicy(action.SrPolicy)
-	} else if action.Type == sbi.ScheduledDeleteSrPolicy && action.SrPolicy != nil {
-		a.handleDeleteSrPolicy(action.SrPolicy.PolicyID)
+	// Insert into pending and schedule
+	if err := a.HandleScheduledAction(a.ctx, action); err != nil {
+		a.log.Error(a.ctx, "agent: failed to handle scheduled action",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.String("action_type", action.Type.String()),
+			logging.Any("error", err),
+		)
+		return err
 	}
 
-	// Insert into pending and schedule
-	return a.HandleScheduledAction(a.ctx, action)
+	a.log.Info(a.ctx, "agent: create entry scheduled",
+		logging.String("agent_id", string(a.AgentID)),
+		logging.String("entry_id", action.EntryID),
+		logging.String("action_type", action.Type.String()),
+		logging.Any("seqno", seqNo),
+	)
+
+	return nil
 }
 
 // handleDeleteEntry processes a DeleteEntryRequest message.
@@ -275,7 +331,9 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 	token := req.GetScheduleManipulationToken()
 	if token == "" {
 		// Missing token - log and ignore
-		// TODO: Add proper logging
+		a.log.Warn(a.ctx, "agent: delete entry missing token",
+			logging.String("agent_id", string(a.AgentID)),
+		)
 		return nil
 	}
 
@@ -283,9 +341,17 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 	// First valid message establishes the token
 	if a.token == "" {
 		a.token = token
+		a.log.Info(a.ctx, "agent: token established via delete entry",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("token", token),
+		)
 	} else if a.token != token {
 		// Token mismatch - log and ignore
-		// TODO: Add proper logging
+		a.log.Warn(a.ctx, "agent: delete entry token mismatch",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("expected_token", a.token),
+			logging.String("got_token", token),
+		)
 		a.mu.Unlock()
 		return nil
 	}
@@ -294,16 +360,26 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 	seqNo := req.GetSeqno()
 	if seqNo <= 0 {
 		// Non-positive seqno - log but proceed
-		// TODO: Add debug logging
+		a.log.Debug(a.ctx, "agent: delete entry non-positive seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("seqno", seqNo),
+		)
 	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
 		// Non-monotonic seqno - log warning but proceed
-		// TODO: Add warning log
+		a.log.Warn(a.ctx, "agent: delete entry non-monotonic seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("last_seqno", a.lastSeqNoSeen),
+			logging.Any("current_seqno", seqNo),
+		)
 	}
 	a.lastSeqNoSeen = seqNo
 
 	entryID := req.GetId()
 	if entryID == "" {
 		a.mu.Unlock()
+		a.log.Error(a.ctx, "agent: delete entry empty entry_id",
+			logging.String("agent_id", string(a.AgentID)),
+		)
 		return fmt.Errorf("DeleteEntryRequest has empty entry ID")
 	}
 	defer a.mu.Unlock()
@@ -314,6 +390,17 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 		a.Scheduler.Cancel(entryID)
 		delete(a.pending, entryID)
 		_ = action // TODO: Send response if needed
+
+		a.log.Info(a.ctx, "agent: delete entry cancelled",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", entryID),
+			logging.String("action_type", action.Type.String()),
+		)
+	} else {
+		a.log.Debug(a.ctx, "agent: delete entry not found",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", entryID),
+		)
 	}
 
 	return nil
@@ -326,7 +413,9 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 	token := req.GetScheduleManipulationToken()
 	if token == "" {
 		// Missing token - log and ignore
-		// TODO: Add proper logging
+		a.log.Warn(a.ctx, "agent: finalize missing token",
+			logging.String("agent_id", string(a.AgentID)),
+		)
 		return nil
 	}
 
@@ -334,9 +423,17 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 	// First valid message establishes the token
 	if a.token == "" {
 		a.token = token
+		a.log.Info(a.ctx, "agent: token established via finalize",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("token", token),
+		)
 	} else if a.token != token {
 		// Token mismatch - log and ignore
-		// TODO: Add proper logging
+		a.log.Warn(a.ctx, "agent: finalize token mismatch",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("expected_token", a.token),
+			logging.String("got_token", token),
+		)
 		a.mu.Unlock()
 		return nil
 	}
@@ -345,10 +442,17 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 	seqNo := req.GetSeqno()
 	if seqNo <= 0 {
 		// Non-positive seqno - log but proceed
-		// TODO: Add debug logging
+		a.log.Debug(a.ctx, "agent: finalize non-positive seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("seqno", seqNo),
+		)
 	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
 		// Non-monotonic seqno - log warning but proceed
-		// TODO: Add warning log
+		a.log.Warn(a.ctx, "agent: finalize non-monotonic seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("last_seqno", a.lastSeqNoSeen),
+			logging.Any("current_seqno", seqNo),
+		)
 	}
 	a.lastSeqNoSeen = seqNo
 
@@ -356,18 +460,32 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 	cutoffTime, err := a.extractTimeFromFinalize(req)
 	if err != nil {
 		a.mu.Unlock()
+		a.log.Error(a.ctx, "agent: finalize failed to extract cutoff time",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("error", err),
+		)
 		return fmt.Errorf("failed to extract cutoff time: %w", err)
 	}
 
 	// Drop entries with When < cutoff
+	prunedCount := 0
 	for entryID, action := range a.pending {
 		if action.When.Before(cutoffTime) {
 			// Cancel and remove
 			a.Scheduler.Cancel(entryID)
 			delete(a.pending, entryID)
+			prunedCount++
 		}
 	}
 	a.mu.Unlock()
+
+	if prunedCount > 0 {
+		a.log.Info(a.ctx, "agent: finalize pruned entries",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Int("pruned_count", prunedCount),
+			logging.Any("cutoff_time", cutoffTime),
+		)
+	}
 
 	return nil
 }
@@ -632,8 +750,19 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 	// Build response status
 	if err != nil {
 		responseStatus = status.New(codes.Internal, err.Error())
+		a.log.Error(a.ctx, "agent: action execution failed",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.String("action_type", action.Type.String()),
+			logging.Any("error", err),
+		)
 	} else {
 		responseStatus = status.New(codes.OK, "OK")
+		a.log.Info(a.ctx, "agent: action executed",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.String("action_type", action.Type.String()),
+		)
 	}
 
 	// Parse request ID from action
@@ -658,7 +787,13 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 
 	// Send response (non-blocking, best-effort)
 	if a.Stream != nil {
-		_ = a.Stream.Send(response)
+		if sendErr := a.Stream.Send(response); sendErr != nil {
+			a.log.Error(a.ctx, "agent: failed to send response",
+				logging.String("agent_id", string(a.AgentID)),
+				logging.String("entry_id", action.EntryID),
+				logging.Any("error", sendErr),
+			)
+		}
 	}
 }
 
@@ -774,6 +909,12 @@ func (a *SimAgent) startTelemetryLoop() {
 	a.Scheduler.Schedule(nextTick, func() {
 		a.telemetryTick()
 	})
+
+	a.log.Info(a.ctx, "agent: telemetry loop started",
+		logging.String("agent_id", string(a.AgentID)),
+		logging.Any("interval", a.telemetryInterval),
+		logging.Any("next_tick", nextTick),
+	)
 }
 
 // telemetryTick collects interface metrics and sends them to the controller.
@@ -822,9 +963,16 @@ func (a *SimAgent) telemetryTick() {
 
 	_, err := a.TelemetryCli.ExportMetrics(ctx, req)
 	if err != nil {
-		// Log error but continue telemetry loop
-		// TODO: Add proper logging
-		_ = err
+		a.log.Error(a.ctx, "agent: telemetry export failed",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Int("metrics_count", len(metrics)),
+			logging.Any("error", err),
+		)
+	} else {
+		a.log.Debug(a.ctx, "agent: telemetry exported",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Int("metrics_count", len(metrics)),
+		)
 	}
 
 	// Reschedule next tick

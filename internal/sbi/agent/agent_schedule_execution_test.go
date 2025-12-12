@@ -80,7 +80,7 @@ func TestAgent_CreateEntry_SchedulesAndExecutes_SetRoute(t *testing.T) {
 	stream := newFakeCDPIStreamForExecution()
 	telemetryCli := &fakeTelemetryClientForExecution{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 	agent.ctx = context.Background()
 
 	// Create a CreateEntryRequest for SetRoute
@@ -191,7 +191,7 @@ func TestAgent_CreateEntry_SchedulesAndExecutes_DeleteRoute(t *testing.T) {
 	stream := newFakeCDPIStreamForExecution()
 	telemetryCli := &fakeTelemetryClientForExecution{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 	agent.ctx = context.Background()
 
 	// Create a DeleteRoute action
@@ -264,7 +264,7 @@ func TestAgent_DeleteEntry_CancelsScheduledAction(t *testing.T) {
 	stream := newFakeCDPIStreamForExecution()
 	telemetryCli := &fakeTelemetryClientForExecution{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 	agent.ctx = context.Background()
 
 	// Schedule an action via handleCreateEntry to properly set up token

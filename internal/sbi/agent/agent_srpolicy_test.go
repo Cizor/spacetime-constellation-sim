@@ -44,7 +44,7 @@ func TestSimAgent_SetSrPolicyStoresPolicy(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForSrPolicyTest{}
 	stream := &fakeStreamForSrPolicyTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -87,7 +87,7 @@ func TestSimAgent_DeleteSrPolicyRemovesPolicy(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForSrPolicyTest{}
 	stream := &fakeStreamForSrPolicyTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -149,7 +149,7 @@ func TestSimAgent_DeleteSrPolicySafeForUnknownPolicy(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForSrPolicyTest{}
 	stream := &fakeStreamForSrPolicyTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx
@@ -189,7 +189,7 @@ func TestSimAgent_HandleSetSrPolicyNilSafe(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForSrPolicyTest{}
 	stream := &fakeStreamForSrPolicyTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Should not panic
 	agent.handleSetSrPolicy(nil)
@@ -214,7 +214,7 @@ func TestSimAgent_HandleDeleteSrPolicyNilSafe(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForSrPolicyTest{}
 	stream := &fakeStreamForSrPolicyTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Should not panic
 	agent.handleDeleteSrPolicy("")
@@ -237,7 +237,7 @@ func TestSimAgent_ResetClearsSrPolicies(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForSrPolicyTest{}
 	stream := &fakeStreamForSrPolicyTest{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	agent.ctx = ctx

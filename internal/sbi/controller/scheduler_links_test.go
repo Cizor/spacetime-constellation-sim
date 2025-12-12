@@ -39,7 +39,7 @@ type sentAction struct {
 }
 
 func newFakeCDPIServerForScheduler(state *state.ScenarioState, clock sbi.EventScheduler) *fakeCDPIServerForScheduler {
-	realCDPI := NewCDPIServer(state, clock)
+	realCDPI := NewCDPIServer(state, clock, logging.Noop())
 	fake := &fakeCDPIServerForScheduler{
 		CDPIServer: realCDPI,
 		sentActions: make([]sentAction, 0),

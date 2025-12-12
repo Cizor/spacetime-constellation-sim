@@ -161,7 +161,7 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	// Create SBI servers (they will be registered on the gRPC server)
 	telemetryState := sim.NewTelemetryState()
 	telemetryServer := sbicontroller.NewTelemetryServer(telemetryState, log)
-	cdpiServer := sbicontroller.NewCDPIServer(state, eventScheduler)
+	cdpiServer := sbicontroller.NewCDPIServer(state, eventScheduler, log)
 
 	server, err := buildGRPCServer(cfg, state, motion, collector, log, telemetryState, telemetryServer, cdpiServer)
 	if err != nil {

@@ -55,7 +55,7 @@ func TestSimAgent_TelemetryBytes_IncreaseWhenUp(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTesting{}
 	stream := &fakeStreamForTelemetry{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	if err := agent.Start(ctx); err != nil {
@@ -162,7 +162,7 @@ func TestSimAgent_TelemetryBytes_NoIncreaseWhenDown(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTesting{}
 	stream := &fakeStreamForTelemetry{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	ctx := context.Background()
 	if err := agent.Start(ctx); err != nil {
@@ -227,7 +227,7 @@ func TestSimAgent_TelemetryDisabled(t *testing.T) {
 	telemetryCli := &fakeTelemetryClientForTesting{}
 	stream := &fakeStreamForTelemetry{}
 
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, telemetryCli, stream, logging.Noop())
 
 	// Disable telemetry by setting interval to 0
 	agent.telemetryInterval = 0
@@ -269,7 +269,7 @@ func TestSimAgent_TelemetryDisabled_NilClient(t *testing.T) {
 	stream := &fakeStreamForTelemetry{}
 
 	// Create agent with nil telemetry client
-	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, nil, stream)
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, nil, stream, logging.Noop())
 
 	ctx := context.Background()
 	// Start should not panic even with nil client
