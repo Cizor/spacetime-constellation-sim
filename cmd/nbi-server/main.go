@@ -202,7 +202,13 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	}
 
 	// Run initial schedule
-	sbiRuntime.Scheduler.RunInitialSchedule(ctx)
+	// Note: We log a warning but don't fail startup if initial scheduling fails,
+	// as the scheduler can be retried later and the simulation can continue.
+	if err := sbiRuntime.Scheduler.RunInitialSchedule(ctx); err != nil {
+		log.Warn(ctx, "Initial scheduling failed, simulation will continue but may have incomplete scheduling",
+			logging.String("error", err.Error()),
+		)
+	}
 
 	simCtx, simCancel := context.WithCancel(ctx)
 	defer simCancel()
