@@ -43,6 +43,25 @@ type AgentHandle struct {
 	seqNo    uint64     // monotonically increasing sequence number per agent
 }
 
+// CurrentToken returns the current schedule manipulation token for this agent.
+func (h *AgentHandle) CurrentToken() string {
+	return h.token
+}
+
+// SetToken sets the schedule manipulation token for this agent.
+func (h *AgentHandle) SetToken(token string) {
+	h.token = token
+}
+
+// NextSeqNo increments and returns the next sequence number for this agent.
+// It is thread-safe and ensures monotonically increasing sequence numbers.
+func (h *AgentHandle) NextSeqNo() uint64 {
+	h.seqNoMu.Lock()
+	defer h.seqNoMu.Unlock()
+	h.seqNo++
+	return h.seqNo
+}
+
 // NewCDPIServer creates a new CDPI server with the given dependencies.
 func NewCDPIServer(state *state.ScenarioState, clock sbi.EventScheduler) *CDPIServer {
 	return &CDPIServer{
@@ -154,6 +173,25 @@ func (s *CDPIServer) ReceiveRequests(stream grpc.BidiStreamingServer[schedulingp
 	}
 }
 
+// setAgentToken sets or rotates the schedule manipulation token for an agent.
+// It optionally resets the sequence number to 0.
+// This is used by Reset-handling code to rotate tokens.
+func (s *CDPIServer) setAgentToken(agentID, token string) error {
+	s.agentsMu.Lock()
+	defer s.agentsMu.Unlock()
+
+	handle, ok := s.agents[agentID]
+	if !ok {
+		return fmt.Errorf("cdpi: agent %q not connected", agentID)
+	}
+
+	handle.SetToken(token)
+	handle.seqNoMu.Lock()
+	handle.seqNo = 0 // reset seqno on token rotation
+	handle.seqNoMu.Unlock()
+	return nil
+}
+
 // Reset implements the Reset RPC for CDPI.
 // It clears any existing schedule entries for the agent and issues a fresh token.
 func (s *CDPIServer) Reset(ctx context.Context, req *schedulingpb.ResetRequest) (*emptypb.Empty, error) {
@@ -162,22 +200,31 @@ func (s *CDPIServer) Reset(ctx context.Context, req *schedulingpb.ResetRequest) 
 		return nil, status.Error(codes.InvalidArgument, "ResetRequest must contain agent_id")
 	}
 
-	s.agentsMu.Lock()
-	defer s.agentsMu.Unlock()
-
-	handle, exists := s.agents[agentID]
-	if !exists {
-		return nil, status.Errorf(codes.NotFound, "agent %q not found", agentID)
+	// Generate a fresh token and set it
+	newToken := generateToken()
+	if err := s.setAgentToken(agentID, newToken); err != nil {
+		return nil, status.Errorf(codes.NotFound, "%v", err)
 	}
 
-	// Clear any existing schedule entries (this will be handled by the agent)
-	// Issue a fresh token and reset sequence number
-	handle.token = generateToken()
-	handle.seqNoMu.Lock()
-	handle.seqNo = 0
-	handle.seqNoMu.Unlock()
-
 	return &emptypb.Empty{}, nil
+}
+
+// buildCreateEntryMessage builds a CreateEntryRequest message with token and seqno.
+func (s *CDPIServer) buildCreateEntryMessage(h *AgentHandle, action *sbi.ScheduledAction) (*schedulingpb.ReceiveRequestsMessageFromController, error) {
+	seqNo := h.NextSeqNo()
+	token := h.CurrentToken()
+
+	// Convert ScheduledAction to CreateEntryRequest
+	createEntry, err := convertActionToCreateEntry(action, token, seqNo)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert action to CreateEntryRequest: %w", err)
+	}
+
+	return &schedulingpb.ReceiveRequestsMessageFromController{
+		Request: &schedulingpb.ReceiveRequestsMessageFromController_CreateEntry{
+			CreateEntry: createEntry,
+		},
+	}, nil
 }
 
 // SendCreateEntry sends a CreateEntryRequest to the specified agent.
@@ -193,26 +240,12 @@ func (s *CDPIServer) SendCreateEntry(agentID string, action *sbi.ScheduledAction
 	s.agentsMu.RUnlock()
 
 	if !exists {
-		return status.Errorf(codes.NotFound, "agent %q not found", agentID)
+		return status.Errorf(codes.NotFound, "cdpi: agent %q not connected", agentID)
 	}
 
-	// Increment sequence number (thread-safe)
-	handle.seqNoMu.Lock()
-	handle.seqNo++
-	seqNo := handle.seqNo
-	handle.seqNoMu.Unlock()
-
-	// Convert ScheduledAction to CreateEntryRequest
-	createEntry, err := convertActionToCreateEntry(action, handle.token, seqNo)
+	msg, err := s.buildCreateEntryMessage(handle, action)
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to convert action to CreateEntryRequest: %v", err)
-	}
-
-	// Build the message
-	msg := &schedulingpb.ReceiveRequestsMessageFromController{
-		Request: &schedulingpb.ReceiveRequestsMessageFromController_CreateEntry{
-			CreateEntry: createEntry,
-		},
+		return status.Errorf(codes.Internal, "cdpi: failed to build create-entry message for agent %q: %v", agentID, err)
 	}
 
 	// Send to agent's outgoing channel
@@ -220,7 +253,26 @@ func (s *CDPIServer) SendCreateEntry(agentID string, action *sbi.ScheduledAction
 	case handle.outgoing <- msg:
 		return nil
 	default:
-		return status.Error(codes.ResourceExhausted, "agent outgoing channel full")
+		return status.Errorf(codes.ResourceExhausted, "cdpi: outgoing channel full for agent %q", agentID)
+	}
+}
+
+// buildDeleteEntryMessage builds a DeleteEntryRequest message with token and seqno.
+func (s *CDPIServer) buildDeleteEntryMessage(h *AgentHandle, entryID string) *schedulingpb.ReceiveRequestsMessageFromController {
+	seqNo := h.NextSeqNo()
+	token := h.CurrentToken()
+
+	// Build DeleteEntryRequest
+	deleteEntry := &schedulingpb.DeleteEntryRequest{
+		ScheduleManipulationToken: token,
+		Seqno:                     seqNo,
+		Id:                        entryID,
+	}
+
+	return &schedulingpb.ReceiveRequestsMessageFromController{
+		Request: &schedulingpb.ReceiveRequestsMessageFromController_DeleteEntry{
+			DeleteEntry: deleteEntry,
+		},
 	}
 }
 
@@ -235,27 +287,12 @@ func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error {
 	s.agentsMu.RUnlock()
 
 	if !exists {
-		return status.Errorf(codes.NotFound, "agent %q not found", agentID)
+		return status.Errorf(codes.NotFound, "cdpi: agent %q not connected", agentID)
 	}
 
-	// Increment sequence number (thread-safe)
-	handle.seqNoMu.Lock()
-	handle.seqNo++
-	seqNo := handle.seqNo
-	handle.seqNoMu.Unlock()
-
-	// Build DeleteEntryRequest
-	deleteEntry := &schedulingpb.DeleteEntryRequest{
-		ScheduleManipulationToken: handle.token,
-		Seqno:                     seqNo,
-		Id:                        entryID,
-	}
-
-	// Build the message
-	msg := &schedulingpb.ReceiveRequestsMessageFromController{
-		Request: &schedulingpb.ReceiveRequestsMessageFromController_DeleteEntry{
-			DeleteEntry: deleteEntry,
-		},
+	msg := s.buildDeleteEntryMessage(handle, entryID)
+	if msg == nil {
+		return status.Errorf(codes.Internal, "cdpi: failed to build delete-entry message for agent %q", agentID)
 	}
 
 	// Send to agent's outgoing channel
@@ -263,8 +300,33 @@ func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error {
 	case handle.outgoing <- msg:
 		return nil
 	default:
-		return status.Error(codes.ResourceExhausted, "agent outgoing channel full")
+		return status.Errorf(codes.ResourceExhausted, "cdpi: outgoing channel full for agent %q", agentID)
 	}
+}
+
+// buildFinalizeMessage builds a FinalizeRequest message with token and seqno.
+func (s *CDPIServer) buildFinalizeMessage(h *AgentHandle, cutoff time.Time) (*schedulingpb.ReceiveRequestsMessageFromController, error) {
+	seqNo := h.NextSeqNo()
+	token := h.CurrentToken()
+
+	// Convert time.Time to protobuf Timestamp
+	cutoffProto := timestamppb.New(cutoff)
+	if err := cutoffProto.CheckValid(); err != nil {
+		return nil, fmt.Errorf("invalid cutoff time: %w", err)
+	}
+
+	// Build FinalizeRequest
+	finalize := &schedulingpb.FinalizeRequest{
+		ScheduleManipulationToken: token,
+		Seqno:                     seqNo,
+		UpTo:                      cutoffProto,
+	}
+
+	return &schedulingpb.ReceiveRequestsMessageFromController{
+		Request: &schedulingpb.ReceiveRequestsMessageFromController_Finalize{
+			Finalize: finalize,
+		},
+	}, nil
 }
 
 // SendFinalize sends a FinalizeRequest to the specified agent.
@@ -274,33 +336,12 @@ func (s *CDPIServer) SendFinalize(agentID string, cutoff time.Time) error {
 	s.agentsMu.RUnlock()
 
 	if !exists {
-		return status.Errorf(codes.NotFound, "agent %q not found", agentID)
+		return status.Errorf(codes.NotFound, "cdpi: agent %q not connected", agentID)
 	}
 
-	// Increment sequence number (thread-safe)
-	handle.seqNoMu.Lock()
-	handle.seqNo++
-	seqNo := handle.seqNo
-	handle.seqNoMu.Unlock()
-
-	// Convert time.Time to protobuf Timestamp
-	cutoffProto := timestamppb.New(cutoff)
-	if err := cutoffProto.CheckValid(); err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid cutoff time: %v", err)
-	}
-
-	// Build FinalizeRequest
-	finalize := &schedulingpb.FinalizeRequest{
-		ScheduleManipulationToken: handle.token,
-		Seqno:                     seqNo,
-		UpTo:                      cutoffProto,
-	}
-
-	// Build the message
-	msg := &schedulingpb.ReceiveRequestsMessageFromController{
-		Request: &schedulingpb.ReceiveRequestsMessageFromController_Finalize{
-			Finalize: finalize,
-		},
+	msg, err := s.buildFinalizeMessage(handle, cutoff)
+	if err != nil {
+		return status.Errorf(codes.Internal, "cdpi: failed to build finalize message for agent %q: %v", agentID, err)
 	}
 
 	// Send to agent's outgoing channel
@@ -308,7 +349,7 @@ func (s *CDPIServer) SendFinalize(agentID string, cutoff time.Time) error {
 	case handle.outgoing <- msg:
 		return nil
 	default:
-		return status.Error(codes.ResourceExhausted, "agent outgoing channel full")
+		return status.Errorf(codes.ResourceExhausted, "cdpi: outgoing channel full for agent %q", agentID)
 	}
 }
 
@@ -469,3 +510,4 @@ func generateToken() string {
 	}
 	return hex.EncodeToString(b[:])
 }
+
