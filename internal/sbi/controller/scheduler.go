@@ -513,6 +513,13 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 				logging.String("src", sr.SrcNodeID),
 				logging.String("dst", sr.DstNodeID),
 			)
+			// Mark as not provisioned if no path found
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (no path)",
+					logging.String("sr_id", sr.ID),
+					logging.String("error", err.Error()),
+				)
+			}
 			continue
 		}
 
@@ -522,8 +529,31 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 				logging.String("sr_id", sr.ID),
 				logging.String("error", err.Error()),
 			)
+			// Mark as not provisioned if scheduling failed
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (scheduling failed)",
+					logging.String("sr_id", sr.ID),
+					logging.String("error", err.Error()),
+				)
+			}
 			// Continue with other service requests
 			continue
+		}
+
+		// Update service request status: mark as provisioned
+		// For now, we use a simple approach: provision from now until the planning horizon
+		// In future, we could compute actual link visibility windows
+		now := s.Clock.Now()
+		horizon := now.Add(1 * time.Hour) // Match the planning horizon used in ScheduleLinkBeams
+		interval := model.TimeInterval{
+			Start: now,
+			End:   horizon,
+		}
+		if err := s.updateServiceRequestStatus(ctx, sr.ID, true, &interval); err != nil {
+			s.log.Warn(ctx, "Failed to update service request status (provisioned)",
+				logging.String("sr_id", sr.ID),
+				logging.String("error", err.Error()),
+			)
 		}
 
 		s.log.Debug(ctx, "Scheduled actions for service request",
@@ -712,6 +742,42 @@ func (s *Scheduler) scheduleActionsForPath(ctx context.Context, path []string, s
 			s.scheduledEntryIDs[entryIDRoute] = true
 		}
 	}
+
+	return nil
+}
+
+// updateServiceRequestStatus updates the provisioned status of a ServiceRequest.
+// If provisioned is true and interval is provided, it adds the interval to ProvisionedIntervals
+// and sets IsProvisionedNow to true. If provisioned is false, it sets IsProvisionedNow to false.
+func (s *Scheduler) updateServiceRequestStatus(ctx context.Context, srID string, provisioned bool, interval *model.TimeInterval) error {
+	sr, err := s.State.GetServiceRequest(srID)
+	if err != nil {
+		return fmt.Errorf("failed to get service request %s: %w", srID, err)
+	}
+
+	// Create a copy to update
+	updated := *sr
+	updated.IsProvisionedNow = provisioned
+
+	if provisioned && interval != nil {
+		// Add the interval to the list (avoid duplicates by checking if it already exists)
+		// For simplicity, we'll just append - in a production system you might want to merge overlapping intervals
+		updated.ProvisionedIntervals = append(updated.ProvisionedIntervals, *interval)
+	} else if !provisioned {
+		// Clear provisioned intervals when not provisioned
+		// In a more sophisticated implementation, we might keep history
+		updated.ProvisionedIntervals = nil
+	}
+
+	// Update via ScenarioState
+	if err := s.State.UpdateServiceRequest(&updated); err != nil {
+		return fmt.Errorf("failed to update service request %s: %w", srID, err)
+	}
+
+	s.log.Debug(ctx, "Updated service request status",
+		logging.String("sr_id", srID),
+		logging.String("provisioned", fmt.Sprintf("%v", provisioned)),
+	)
 
 	return nil
 }
