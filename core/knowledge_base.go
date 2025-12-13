@@ -434,6 +434,9 @@ func (kb *KnowledgeBase) ClearDynamicWirelessLinks() {
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
+	// Collect link IDs to delete first, then delete them.
+	// Modifying a map during iteration is undefined behavior in Go.
+	var linkIDsToDelete []string
 	for id, link := range kb.links {
 		if link.Medium != MediumWireless {
 			continue
@@ -441,6 +444,10 @@ func (kb *KnowledgeBase) ClearDynamicWirelessLinks() {
 		if !strings.HasPrefix(id, "dyn-") {
 			continue
 		}
+		linkIDsToDelete = append(linkIDsToDelete, id)
+	}
+	for _, id := range linkIDsToDelete {
+		link := kb.links[id]
 		// Remove adjacency first.
 		kb.detachLinkFromInterface(id, link.InterfaceA)
 		kb.detachLinkFromInterface(id, link.InterfaceB)

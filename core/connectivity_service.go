@@ -1,7 +1,11 @@
 // core/connectivity_service.go
 package core
 
-import "math"
+import (
+	"log"
+	"math"
+	"strings"
+)
 
 // ConnectivityService evaluates which pairs of interfaces are
 // connected at a given instant, and annotates links with simple
@@ -60,8 +64,17 @@ func (cs *ConnectivityService) UpdateConnectivity() {
 
 // rebuildDynamicWirelessLinks clears previously discovered wireless
 // links and creates a new set based purely on interface metadata and
-// transceiver compatibility.
+// transceiver compatibility. It preserves explicit deactivation state
+// for links that are recreated.
 func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
+	// Before clearing, save which dynamic links were explicitly deactivated
+	deactivatedLinkIDs := make(map[string]bool)
+	for _, link := range cs.KB.GetAllNetworkLinks() {
+		if strings.HasPrefix(link.ID, "dyn-") && link.WasExplicitlyDeactivated {
+			deactivatedLinkIDs[link.ID] = true
+		}
+	}
+
 	// Remove any dynamic wireless links from the last tick.
 	cs.KB.ClearDynamicWirelessLinks()
 
@@ -87,21 +100,72 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 			}
 
 			// Create or fetch a dynamic link between them.
-			_ = cs.KB.UpsertDynamicWirelessLink(ia.ID, ib.ID)
+			link := cs.KB.UpsertDynamicWirelessLink(ia.ID, ib.ID)
+			if link != nil {
+				// Restore explicit deactivation state if this link was previously deactivated
+				// The link ID is deterministic based on interface IDs, so we can match it
+				if deactivatedLinkIDs[link.ID] {
+					// UpdateNetworkLink acquires its own lock, which is safe because
+					// UpsertDynamicWirelessLink has already released its lock by the time
+					// we call UpdateNetworkLink. We create a copy to avoid modifying the
+					// pointer directly, which could race with concurrent reads.
+					linkCopy := *link
+					linkCopy.WasExplicitlyDeactivated = true
+					linkCopy.Status = LinkStatusPotential
+					linkCopy.IsUp = false
+					if err := cs.KB.UpdateNetworkLink(&linkCopy); err != nil {
+						log.Printf("warning: failed to restore deactivation state for dynamic link %q: %v", link.ID, err)
+					}
+				}
+			}
 		}
 	}
 }
 
 // evaluateLink applies LoS, elevation, range and link-budget
 // checks, and fills in latency / capacity / SNR / quality fields.
+// It respects the link's Status field: only links with Status == LinkStatusActive
+// are considered "up" even if geometry/RF allows them.
 func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
-	// Hard administrative impairment.
+	// If the link is administratively impaired, it's always down.
+	// Check IsImpaired first to handle un-impairing correctly.
+	// Note: We preserve WasExplicitlyDeactivated flag across impairment cycles.
 	if link.IsImpaired {
+		// If we're transitioning to impaired state, save the current status
+		// (unless it's already impaired, in which case we've already saved it)
+		if link.Status != LinkStatusImpaired {
+			// Allocate on heap to avoid dangling pointer when function returns
+			statusCopy := new(LinkStatus)
+			*statusCopy = link.Status
+			link.StatusBeforeImpairment = statusCopy
+		}
 		link.IsUp = false
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		link.Status = LinkStatusImpaired
+		// Preserve WasExplicitlyDeactivated flag - don't clear it during impairment
 		return
+	}
+	// If Status is Impaired but IsImpaired is false, restore the original status
+	// (handles un-impairing case). This preserves the link's state before impairment.
+	if link.Status == LinkStatusImpaired {
+		// Restore the status from before impairment if we have it
+		// Use pointer check to distinguish between unset (nil) and explicitly set to Unknown.
+		if link.StatusBeforeImpairment != nil && *link.StatusBeforeImpairment != LinkStatusImpaired {
+			link.Status = *link.StatusBeforeImpairment
+			link.StatusBeforeImpairment = nil // Clear the saved status
+		} else if link.WasExplicitlyDeactivated {
+			// If we don't have a saved status but link was explicitly deactivated,
+			// preserve that state by setting Status to Potential
+			link.Status = LinkStatusPotential
+			link.StatusBeforeImpairment = nil // Clear the saved status
+		} else {
+			// No saved status and not explicitly deactivated: reset to Unknown
+			// to allow normal re-evaluation (backward compatibility)
+			link.Status = LinkStatusUnknown
+			link.StatusBeforeImpairment = nil // Clear the saved status
+		}
 	}
 
 	// Wired links are assumed always up (unless impaired) with a
@@ -113,7 +177,27 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		if link.MaxDataRateMbps == 0 {
 			link.MaxDataRateMbps = 1000 // 1 Gbit/s nominal
 		}
-		link.IsUp = true
+		// Auto-activate wired links for backward compatibility with Scope 2/3.
+		// Auto-activate Unknown links (default/unset status) that were not explicitly deactivated.
+		// Also auto-activate Potential links that were auto-downgraded
+		// (not explicitly deactivated). Links that were explicitly deactivated
+		// (WasExplicitlyDeactivated=true) do NOT auto-activate, ensuring explicit
+		// control plane actions are respected. This matches the recovery behavior
+		// of wireless links for consistency.
+		shouldAutoActivate := (link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated) ||
+			(link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated)
+		if shouldAutoActivate {
+			link.Status = LinkStatusActive
+			// Clear explicit deactivation flag only when we actually auto-activate
+			link.WasExplicitlyDeactivated = false
+		}
+		// Link is only "up" if Status is Active AND not explicitly deactivated
+		// This ensures IsUp accurately reflects the link's operational state
+		if link.Status == LinkStatusActive && !link.WasExplicitlyDeactivated {
+			link.IsUp = true
+		} else {
+			link.IsUp = false
+		}
 		link.Quality = LinkQualityExcellent
 		link.SNRdB = 0 // not meaningful for wired here
 		return
@@ -127,6 +211,11 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -137,6 +226,11 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -146,6 +240,11 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -155,6 +254,11 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
@@ -166,19 +270,46 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		link.Quality = LinkQualityDown
 		link.SNRdB = 0
 		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
+		}
 		return
 	}
 
 	distKm := posA.DistanceTo(posB)
-	if trxA.MaxRangeKm > 0 || trxB.MaxRangeKm > 0 {
-		maxRange := math.Max(trxA.MaxRangeKm, trxB.MaxRangeKm)
-		if distKm > maxRange {
-			link.IsUp = false
-			link.Quality = LinkQualityDown
-			link.SNRdB = 0
-			link.MaxDataRateMbps = 0
-			return
+	// Range check: use the minimum (most restrictive) range between the two transceivers.
+	// MaxRangeKm = 0 means unlimited (no limit). When both transceivers have limits,
+	// use the minimum. When only one has a limit, that limit applies.
+	// When neither has a limit (both are 0), skip the range check entirely.
+	var maxRange float64
+	hasLimitA := trxA.MaxRangeKm > 0
+	hasLimitB := trxB.MaxRangeKm > 0
+	if hasLimitA && hasLimitB {
+		// Both have limits: use the minimum (most restrictive)
+		maxRange = math.Min(trxA.MaxRangeKm, trxB.MaxRangeKm)
+	} else if hasLimitA {
+		// Only A has a limit: use A's limit
+		maxRange = trxA.MaxRangeKm
+	} else if hasLimitB {
+		// Only B has a limit: use B's limit
+		maxRange = trxB.MaxRangeKm
+	} else {
+		// Neither has a limit (both are 0/unlimited): skip range check
+		maxRange = 0
+	}
+	if maxRange > 0 && distKm > maxRange {
+		link.IsUp = false
+		link.Quality = LinkQualityDown
+		link.SNRdB = 0
+		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
 		}
+		return
 	}
 
 	// 4) SNR estimate and quality classification.
@@ -186,8 +317,45 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	link.SNRdB = snr
 	classifyLinkBySNR(link, snr)
 
-	// Link is considered up for any non-down quality bucket.
-	link.IsUp = link.Quality != LinkQualityDown
+	// If geometry and RF allow, the link is at least Potential.
+	// Its IsUp status then depends on whether the control plane has activated it.
+	if link.Quality != LinkQualityDown {
+		// Auto-activate for backward compatibility with Scope 2/3 when geometry allows.
+		// Auto-activate Unknown links (default/unset status) that were not explicitly deactivated.
+		// Also auto-activate Potential links that were auto-downgraded
+		// (not explicitly deactivated). Links that were explicitly deactivated
+		// (WasExplicitlyDeactivated=true) do NOT auto-activate, ensuring explicit
+		// control plane actions are respected for both static and dynamic links.
+		//
+		// Note: Links auto-downgraded to Potential by geometry/RF checks (lines 181-183,
+		// 195-198, etc.) do not set WasExplicitlyDeactivated, so they will auto-activate
+		// when geometry improves. This is the intended recovery behavior for temporary
+		// geometry failures. Only links explicitly deactivated via DeactivateLink should
+		// remain deactivated.
+		shouldAutoActivate := (link.Status == LinkStatusUnknown && !link.WasExplicitlyDeactivated) ||
+			(link.Status == LinkStatusPotential && !link.WasExplicitlyDeactivated)
+		if shouldAutoActivate {
+			// Auto-activate when geometry allows (maintains backward compatibility)
+			link.Status = LinkStatusActive
+			// Clear explicit deactivation flag only when we actually auto-activate
+			// This ensures the flag accurately reflects the link's state
+			link.WasExplicitlyDeactivated = false
+		}
+		// Link is only "up" if Status is Active AND not explicitly deactivated
+		// This ensures IsUp accurately reflects the link's operational state
+		if link.Status == LinkStatusActive && !link.WasExplicitlyDeactivated {
+			link.IsUp = true
+		} else {
+			link.IsUp = false
+		}
+	} else {
+		link.IsUp = false
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
+		}
+	}
 }
 
 // checkElevationConstraint applies the minimum elevation limit for

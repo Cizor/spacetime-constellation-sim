@@ -1,0 +1,1135 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
+	"github.com/signalsfoundry/constellation-simulator/core"
+	"github.com/signalsfoundry/constellation-simulator/internal/logging"
+	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
+	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
+	"github.com/signalsfoundry/constellation-simulator/model"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// SimAgent represents a simulated agent for a network node.
+// It owns a local schedule, executes actions at the right sim time,
+// updates the KB, and drives Telemetry + Responses.
+type SimAgent struct {
+	// Identity
+	AgentID sbi.AgentID // from Hello (maps to node/platform ID)
+	NodeID  string      // the node this agent represents
+
+	// Dependencies
+	State        *state.ScenarioState
+	Scheduler    sbi.EventScheduler
+	TelemetryCli telemetrypb.TelemetryClient
+	Stream       grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]
+
+	// Internal state
+	mu            sync.Mutex
+	pending       map[string]*sbi.ScheduledAction // keyed by EntryID
+	token         string                          // schedule_manipulation_token (empty until first message)
+	lastSeqNoSeen uint64                          // last seen sequence number for logging/debugging
+
+	// SR Policy tracking (stub for Scope 4)
+	srMu       sync.Mutex
+	srPolicies map[string]*sbi.SrPolicySpec // keyed by PolicyID
+
+	// Telemetry state
+	telemetryMu       sync.Mutex
+	telemetryInterval time.Duration
+	bytesTx           map[string]uint64 // per-interface transmitted bytes (monotonic)
+	lastTick          time.Time         // last telemetry tick time
+
+	// Logging
+	log logging.Logger
+
+	// Metrics (optional, shared pointer from controller or global)
+	Metrics *sbi.SBIMetrics
+
+	// Lifecycle
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// NewSimAgent creates a new simulated agent with the given ID and dependencies.
+// It uses default telemetry configuration.
+func NewSimAgent(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController], log logging.Logger) *SimAgent {
+	return NewSimAgentWithConfig(agentID, nodeID, state, scheduler, telemetryCli, stream, DefaultTelemetryConfig(), log)
+}
+
+// NewSimAgentWithConfig creates a new simulated agent with telemetry configuration.
+func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.ScenarioState, scheduler sbi.EventScheduler, telemetryCli telemetrypb.TelemetryClient, stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController], telemetryConfig TelemetryConfig, log logging.Logger) *SimAgent {
+	cfg := telemetryConfig.ApplyDefaults()
+	if log == nil {
+		log = logging.Noop()
+	}
+	return &SimAgent{
+		AgentID:           agentID,
+		NodeID:            nodeID,
+		State:             state,
+		Scheduler:         scheduler,
+		TelemetryCli:      telemetryCli,
+		Stream:            stream,
+		pending:           make(map[string]*sbi.ScheduledAction),
+		token:             "", // empty until first scheduling message establishes it
+		lastSeqNoSeen:     0,
+		srPolicies:        make(map[string]*sbi.SrPolicySpec),
+		telemetryInterval: cfg.Interval,
+		bytesTx:           make(map[string]uint64),
+		lastTick:          time.Time{},
+		log:               log,
+	}
+}
+
+// ID returns the agent's identifier.
+func (a *SimAgent) ID() sbi.AgentID {
+	return a.AgentID
+}
+
+// SetStream sets the CDPI stream for this agent.
+// This must be called before Start() if the stream was not provided in the constructor.
+func (a *SimAgent) SetStream(stream grpc.BidiStreamingClient[schedulingpb.ReceiveRequestsMessageToController, schedulingpb.ReceiveRequestsMessageFromController]) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Stream = stream
+}
+
+// HandleScheduledAction accepts a scheduled action from the controller.
+// This is the interface method used by the controller to send actions to agents.
+// The action is inserted into the agent's local schedule and executed at the correct time.
+func (a *SimAgent) HandleScheduledAction(ctx context.Context, action *sbi.ScheduledAction) error {
+	// Validate the action
+	if err := action.Validate(); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Insert into pending map
+	a.pending[action.EntryID] = action
+
+	// Schedule execution at the correct simulation time
+	eventID := a.Scheduler.Schedule(action.When, func() {
+		a.execute(action)
+	})
+
+	// Store event ID in action for cancellation (we can extend ScheduledAction if needed)
+	// For now, we'll use the EntryID as the event ID since they should match
+	_ = eventID
+
+	return nil
+}
+
+// Start connects to the CDPI stream, sends Hello, and starts the read loop.
+// It returns an error if the stream cannot be established or Hello fails.
+func (a *SimAgent) Start(ctx context.Context) error {
+	if a.Stream == nil {
+		return fmt.Errorf("agent %s: stream is nil", a.AgentID)
+	}
+
+	// Create context for agent lifecycle
+	a.ctx, a.cancel = context.WithCancel(ctx)
+
+	// Send Hello message
+	hello := &schedulingpb.ReceiveRequestsMessageToController{
+		Hello: &schedulingpb.ReceiveRequestsMessageToController_Hello{
+			AgentId: string(a.AgentID),
+		},
+	}
+
+	if err := a.Stream.Send(hello); err != nil {
+		return fmt.Errorf("agent %s: failed to send Hello: %w", a.AgentID, err)
+	}
+
+	// Start read loop in a goroutine
+	go a.readLoop()
+
+	// Start telemetry loop if TelemetryCli is available and interval is set
+	if a.TelemetryCli != nil && a.telemetryInterval > 0 {
+		a.startTelemetryLoop()
+	}
+
+	return nil
+}
+
+// Stop cancels the agent's context and drains queues.
+func (a *SimAgent) Stop() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.cancel != nil {
+		a.cancel()
+	}
+
+	// Clear pending actions
+	a.pending = make(map[string]*sbi.ScheduledAction)
+
+	// Log agent stop
+	if a.ctx != nil {
+		a.log.Info(a.ctx, "agent: stop",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("node_id", a.NodeID),
+		)
+	}
+}
+
+// readLoop reads messages from the CDPI stream and processes them.
+// It handles CreateEntryRequest, DeleteEntryRequest, FinalizeRequest,
+// and SetSrPolicy/DeleteSrPolicy messages.
+func (a *SimAgent) readLoop() {
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		default:
+			msg, err := a.Stream.Recv()
+			if err != nil {
+				// Stream closed or error - agent should handle reconnection
+				// For now, just exit the loop
+				a.log.Error(a.ctx, "agent: stream recv error",
+					logging.String("agent_id", string(a.AgentID)),
+					logging.Any("error", err),
+				)
+				return
+			}
+
+			if err := a.handleMessage(msg); err != nil {
+				// Log error but continue processing
+				a.log.Error(a.ctx, "agent: handle message error",
+					logging.String("agent_id", string(a.AgentID)),
+					logging.Any("error", err),
+				)
+			}
+		}
+	}
+}
+
+// handleMessage processes a single message from the controller.
+func (a *SimAgent) handleMessage(msg *schedulingpb.ReceiveRequestsMessageFromController) error {
+	// Extract request ID for response correlation
+	requestID := msg.GetRequestId()
+
+	// Handle different message types
+	switch {
+	case msg.GetCreateEntry() != nil:
+		return a.handleCreateEntry(requestID, msg.GetCreateEntry())
+	case msg.GetDeleteEntry() != nil:
+		return a.handleDeleteEntry(msg.GetDeleteEntry())
+	case msg.GetFinalize() != nil:
+		return a.handleFinalize(msg.GetFinalize())
+	default:
+		// Unknown message type - ignore for now
+		return nil
+	}
+}
+
+// handleCreateEntry processes a CreateEntryRequest message.
+// It validates the token, converts the proto to ScheduledAction, and schedules it.
+func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEntryRequest) error {
+	// Validate and establish token
+	token := req.GetScheduleManipulationToken()
+	if token == "" {
+		// Missing token - log and ignore
+		a.log.Warn(a.ctx, "agent: create entry missing token",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
+		)
+		return nil
+	}
+
+	a.mu.Lock()
+	// First valid message establishes the token
+	if a.token == "" {
+		a.token = token
+		a.log.Info(a.ctx, "agent: token established",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("token", token),
+		)
+	} else if a.token != token {
+		// Token mismatch - log and ignore stale message
+		a.log.Warn(a.ctx, "agent: create entry token mismatch",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("expected_token", a.token),
+			logging.String("got_token", token),
+			logging.Any("request_id", requestID),
+		)
+		a.mu.Unlock()
+		return nil
+	}
+
+	// Validate seqno
+	seqNo := req.GetSeqno()
+	if seqNo <= 0 {
+		// Non-positive seqno - log but proceed
+		a.log.Debug(a.ctx, "agent: create entry non-positive seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("seqno", seqNo),
+		)
+	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
+		// Non-monotonic seqno - log warning but proceed
+		a.log.Warn(a.ctx, "agent: create entry non-monotonic seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("last_seqno", a.lastSeqNoSeen),
+			logging.Any("current_seqno", seqNo),
+		)
+	}
+	a.lastSeqNoSeen = seqNo
+	a.mu.Unlock()
+
+	// Convert proto to ScheduledAction
+	action, err := a.convertCreateEntryToAction(req, requestID)
+	if err != nil {
+		a.log.Error(a.ctx, "agent: failed to convert create entry",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
+			logging.Any("error", err),
+		)
+		return fmt.Errorf("failed to convert CreateEntryRequest: %w", err)
+	}
+
+	// Handle SR policies immediately (stub behavior for Scope 4)
+	if action.Type == sbi.ScheduledSetSrPolicy && action.SrPolicy != nil {
+		a.handleSetSrPolicy(action.SrPolicy)
+	} else if action.Type == sbi.ScheduledDeleteSrPolicy && action.SrPolicy != nil {
+		a.handleDeleteSrPolicy(action.SrPolicy.PolicyID)
+	}
+
+	// Insert into pending and schedule
+	if err := a.HandleScheduledAction(a.ctx, action); err != nil {
+		a.log.Error(a.ctx, "agent: failed to handle scheduled action",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.String("action_type", action.Type.String()),
+			logging.Any("error", err),
+		)
+		return err
+	}
+
+	a.log.Info(a.ctx, "agent: create entry scheduled",
+		logging.String("agent_id", string(a.AgentID)),
+		logging.String("entry_id", action.EntryID),
+		logging.String("action_type", action.Type.String()),
+		logging.Any("seqno", seqNo),
+	)
+
+	return nil
+}
+
+// handleDeleteEntry processes a DeleteEntryRequest message.
+// It cancels the previously scheduled action by EntryID.
+func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error {
+	// Validate token
+	token := req.GetScheduleManipulationToken()
+	if token == "" {
+		// Missing token - log and ignore
+		a.log.Warn(a.ctx, "agent: delete entry missing token",
+			logging.String("agent_id", string(a.AgentID)),
+		)
+		return nil
+	}
+
+	a.mu.Lock()
+	// First valid message establishes the token
+	if a.token == "" {
+		a.token = token
+		a.log.Info(a.ctx, "agent: token established via delete entry",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("token", token),
+		)
+	} else if a.token != token {
+		// Token mismatch - log and ignore
+		a.log.Warn(a.ctx, "agent: delete entry token mismatch",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("expected_token", a.token),
+			logging.String("got_token", token),
+		)
+		a.mu.Unlock()
+		return nil
+	}
+
+	// Validate seqno
+	seqNo := req.GetSeqno()
+	if seqNo <= 0 {
+		// Non-positive seqno - log but proceed
+		a.log.Debug(a.ctx, "agent: delete entry non-positive seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("seqno", seqNo),
+		)
+	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
+		// Non-monotonic seqno - log warning but proceed
+		a.log.Warn(a.ctx, "agent: delete entry non-monotonic seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("last_seqno", a.lastSeqNoSeen),
+			logging.Any("current_seqno", seqNo),
+		)
+	}
+	a.lastSeqNoSeen = seqNo
+
+	entryID := req.GetId()
+	if entryID == "" {
+		a.mu.Unlock()
+		a.log.Error(a.ctx, "agent: delete entry empty entry_id",
+			logging.String("agent_id", string(a.AgentID)),
+		)
+		return fmt.Errorf("DeleteEntryRequest has empty entry ID")
+	}
+	defer a.mu.Unlock()
+
+	// Find and cancel the scheduled action
+	if action, exists := a.pending[entryID]; exists {
+		// Cancel the scheduled event (using EntryID as event ID)
+		a.Scheduler.Cancel(entryID)
+		delete(a.pending, entryID)
+		_ = action // TODO: Send response if needed
+
+		a.log.Info(a.ctx, "agent: delete entry cancelled",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", entryID),
+			logging.String("action_type", action.Type.String()),
+		)
+	} else {
+		a.log.Debug(a.ctx, "agent: delete entry not found",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", entryID),
+		)
+	}
+
+	return nil
+}
+
+// handleFinalize processes a FinalizeRequest message.
+// It drops any pending entries with When < cutoffTime.
+func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
+	// Validate token
+	token := req.GetScheduleManipulationToken()
+	if token == "" {
+		// Missing token - log and ignore
+		a.log.Warn(a.ctx, "agent: finalize missing token",
+			logging.String("agent_id", string(a.AgentID)),
+		)
+		return nil
+	}
+
+	a.mu.Lock()
+	// First valid message establishes the token
+	if a.token == "" {
+		a.token = token
+		a.log.Info(a.ctx, "agent: token established via finalize",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("token", token),
+		)
+	} else if a.token != token {
+		// Token mismatch - log and ignore
+		a.log.Warn(a.ctx, "agent: finalize token mismatch",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("expected_token", a.token),
+			logging.String("got_token", token),
+		)
+		a.mu.Unlock()
+		return nil
+	}
+
+	// Validate seqno
+	seqNo := req.GetSeqno()
+	if seqNo <= 0 {
+		// Non-positive seqno - log but proceed
+		a.log.Debug(a.ctx, "agent: finalize non-positive seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("seqno", seqNo),
+		)
+	} else if a.lastSeqNoSeen != 0 && seqNo <= a.lastSeqNoSeen {
+		// Non-monotonic seqno - log warning but proceed
+		a.log.Warn(a.ctx, "agent: finalize non-monotonic seqno",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("last_seqno", a.lastSeqNoSeen),
+			logging.Any("current_seqno", seqNo),
+		)
+	}
+	a.lastSeqNoSeen = seqNo
+
+	// Extract cutoff time
+	cutoffTime, err := a.extractTimeFromFinalize(req)
+	if err != nil {
+		a.mu.Unlock()
+		a.log.Error(a.ctx, "agent: finalize failed to extract cutoff time",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("error", err),
+		)
+		return fmt.Errorf("failed to extract cutoff time: %w", err)
+	}
+
+	// Drop entries with When < cutoff
+	prunedCount := 0
+	for entryID, action := range a.pending {
+		if action.When.Before(cutoffTime) {
+			// Cancel and remove
+			a.Scheduler.Cancel(entryID)
+			delete(a.pending, entryID)
+			prunedCount++
+		}
+	}
+	a.mu.Unlock()
+
+	if prunedCount > 0 {
+		a.log.Info(a.ctx, "agent: finalize pruned entries",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Int("pruned_count", prunedCount),
+			logging.Any("cutoff_time", cutoffTime),
+		)
+	}
+
+	return nil
+}
+
+// convertCreateEntryToAction converts a CreateEntryRequest proto to a ScheduledAction.
+func (a *SimAgent) convertCreateEntryToAction(req *schedulingpb.CreateEntryRequest, requestID int64) (*sbi.ScheduledAction, error) {
+	// Extract timing
+	when, err := a.extractTimeFromCreateEntry(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract time: %w", err)
+	}
+
+	// Extract metadata
+	meta := sbi.ActionMeta{
+		RequestID: fmt.Sprintf("%d", requestID),
+		SeqNo:     int64(req.GetSeqno()),
+		Token:     req.GetScheduleManipulationToken(),
+	}
+
+	// Determine action type and payload based on ConfigurationChange
+	var actionType sbi.ScheduledActionType
+	var beam *sbi.BeamSpec
+	var route *model.RouteEntry
+	var srPolicy *sbi.SrPolicySpec
+
+	switch {
+	case req.GetUpdateBeam() != nil:
+		actionType = sbi.ScheduledUpdateBeam
+		beam, err = a.convertUpdateBeamToBeamSpec(req.GetUpdateBeam())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert UpdateBeam: %w", err)
+		}
+	case req.GetDeleteBeam() != nil:
+		actionType = sbi.ScheduledDeleteBeam
+		beam, err = a.convertDeleteBeamToBeamSpec(req.GetDeleteBeam())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert DeleteBeam: %w", err)
+		}
+	case req.GetSetRoute() != nil:
+		actionType = sbi.ScheduledSetRoute
+		route, err = a.convertSetRouteToRouteEntry(req.GetSetRoute())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert SetRoute: %w", err)
+		}
+	case req.GetDeleteRoute() != nil:
+		actionType = sbi.ScheduledDeleteRoute
+		route, err = a.convertDeleteRouteToRouteEntry(req.GetDeleteRoute())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert DeleteRoute: %w", err)
+		}
+	case req.GetSetSrPolicy() != nil:
+		actionType = sbi.ScheduledSetSrPolicy
+		srPolicy = &sbi.SrPolicySpec{
+			PolicyID: req.GetSetSrPolicy().GetId(),
+		}
+	case req.GetDeleteSrPolicy() != nil:
+		actionType = sbi.ScheduledDeleteSrPolicy
+		srPolicy = &sbi.SrPolicySpec{
+			PolicyID: req.GetDeleteSrPolicy().GetId(),
+		}
+	default:
+		return nil, fmt.Errorf("CreateEntryRequest has no ConfigurationChange")
+	}
+
+	// Create ScheduledAction
+	action := &sbi.ScheduledAction{
+		EntryID:   req.GetId(),
+		AgentID:   a.AgentID,
+		Type:      actionType,
+		When:      when,
+		RequestID: meta.RequestID,
+		SeqNo:     meta.SeqNo,
+		Token:     meta.Token,
+		Beam:      beam,
+		Route:     route,
+		SrPolicy:  srPolicy,
+	}
+
+	return action, nil
+}
+
+// extractTimeFromCreateEntry extracts the execution time from a CreateEntryRequest.
+// It prefers Time (timestamp) over TimeGpst (duration from GPS epoch).
+func (a *SimAgent) extractTimeFromCreateEntry(req *schedulingpb.CreateEntryRequest) (time.Time, error) {
+	if req.GetTime() != nil {
+		return req.GetTime().AsTime(), nil
+	}
+	if req.GetTimeGpst() != nil {
+		// For Scope 4, we'll use a simple approach: treat GPST as relative to now
+		// In a real implementation, this would be relative to GPS epoch
+		// TODO: Implement proper GPST handling if needed
+		duration := req.GetTimeGpst().AsDuration()
+		return a.Scheduler.Now().Add(duration), nil
+	}
+	return time.Time{}, fmt.Errorf("CreateEntryRequest has no time field")
+}
+
+// extractTimeFromFinalize extracts the cutoff time from a FinalizeRequest.
+func (a *SimAgent) extractTimeFromFinalize(req *schedulingpb.FinalizeRequest) (time.Time, error) {
+	if req.GetUpTo() != nil {
+		return req.GetUpTo().AsTime(), nil
+	}
+	if req.GetUpToGpst() != nil {
+		// Similar to extractTimeFromCreateEntry
+		duration := req.GetUpToGpst().AsDuration()
+		return a.Scheduler.Now().Add(duration), nil
+	}
+	return time.Time{}, fmt.Errorf("FinalizeRequest has no time field")
+}
+
+// convertUpdateBeamToBeamSpec converts an UpdateBeam proto to a BeamSpec.
+// This is a simplified conversion that extracts basic beam information.
+func (a *SimAgent) convertUpdateBeamToBeamSpec(updateBeam *schedulingpb.UpdateBeam) (*sbi.BeamSpec, error) {
+	beam := updateBeam.GetBeam()
+	if beam == nil {
+		return nil, fmt.Errorf("UpdateBeam has no beam")
+	}
+
+	beamSpec := &sbi.BeamSpec{
+		NodeID:      a.NodeID, // Use agent's node ID
+		InterfaceID: beam.GetAntennaId(),
+	}
+
+	// Extract target information from beam endpoints
+	// For Scope 4, we'll use a simplified approach
+	// TODO: Extract proper target node/interface from beam.Endpoints or beam.Target
+	if len(beam.GetEndpoints()) > 0 {
+		// Use first endpoint as target (simplified)
+		for nodeID := range beam.GetEndpoints() {
+			beamSpec.TargetNodeID = nodeID
+			break
+		}
+	}
+
+	return beamSpec, nil
+}
+
+// convertDeleteBeamToBeamSpec converts a DeleteBeam proto to a BeamSpec.
+// DeleteBeam only has a beam ID, so we need to look up the beam to get interface info.
+// For Scope 4, we'll use a simplified approach.
+func (a *SimAgent) convertDeleteBeamToBeamSpec(deleteBeam *schedulingpb.DeleteBeam) (*sbi.BeamSpec, error) {
+	beamID := deleteBeam.GetId()
+	if beamID == "" {
+		return nil, fmt.Errorf("DeleteBeam has no beam ID")
+	}
+
+	// For Scope 4, we'll construct a minimal BeamSpec with just the beam ID
+	// The actual link lookup will happen in execute() via ApplyBeamDelete
+	// TODO: Look up beam from state to get interface info
+	beamSpec := &sbi.BeamSpec{
+		NodeID: a.NodeID,
+		// InterfaceID and TargetIfID will need to be determined from the beam ID
+		// For now, we'll leave them empty and let ApplyBeamDelete handle it
+	}
+
+	return beamSpec, nil
+}
+
+// convertSetRouteToRouteEntry converts a SetRoute proto to a RouteEntry.
+func (a *SimAgent) convertSetRouteToRouteEntry(setRoute *schedulingpb.SetRoute) (*model.RouteEntry, error) {
+	route := &model.RouteEntry{
+		DestinationCIDR: setRoute.GetTo(),
+		OutInterfaceID:  setRoute.GetDev(),
+	}
+
+	// Via is the next hop address, but we need NextHopNodeID
+	// For Scope 4, we'll leave it empty if Via is not a node ID
+	// TODO: Map Via address to node ID if needed
+	if setRoute.GetVia() != "" {
+		// Try to use Via as node ID (simplified)
+		route.NextHopNodeID = setRoute.GetVia()
+	}
+
+	return route, nil
+}
+
+// convertDeleteRouteToRouteEntry converts a DeleteRoute proto to a RouteEntry.
+// DeleteRoute only has From/To, so we construct a minimal RouteEntry for lookup.
+func (a *SimAgent) convertDeleteRouteToRouteEntry(deleteRoute *schedulingpb.DeleteRoute) (*model.RouteEntry, error) {
+	route := &model.RouteEntry{
+		DestinationCIDR: deleteRoute.GetTo(),
+		// NextHopNodeID and OutInterfaceID are not needed for deletion
+	}
+
+	return route, nil
+}
+
+// execute executes a scheduled action and sends a Response.
+// This is called by the EventScheduler when the action's time arrives.
+// It switches on action.Type and calls the appropriate ScenarioState method,
+// then sends a Response back to the controller.
+func (a *SimAgent) execute(action *sbi.ScheduledAction) {
+	var err error
+	var responseStatus *status.Status
+
+	// Execute the action based on type
+	switch action.Type {
+	case sbi.ScheduledUpdateBeam:
+		if action.Beam == nil {
+			err = fmt.Errorf("ScheduledUpdateBeam action has nil Beam")
+			break
+		}
+		// If TargetIfID is empty, try to look it up from the link
+		if action.Beam.TargetIfID == "" && action.Beam.TargetNodeID != "" {
+			// Look up the link to find the target interface
+			links := a.State.ListLinks()
+			for _, link := range links {
+				if link == nil {
+					continue
+				}
+				// Check if this link connects our interface to the target node
+				srcIfRef := fmt.Sprintf("%s/%s", action.Beam.NodeID, action.Beam.InterfaceID)
+				if (link.InterfaceA == srcIfRef && link.InterfaceB != "" && a.getNodeIDFromInterfaceRef(link.InterfaceB) == action.Beam.TargetNodeID) ||
+					(link.InterfaceB == srcIfRef && link.InterfaceA != "" && a.getNodeIDFromInterfaceRef(link.InterfaceA) == action.Beam.TargetNodeID) {
+					// Extract interface ID from the other end
+					if link.InterfaceA == srcIfRef {
+						action.Beam.TargetIfID = a.getInterfaceIDFromRef(link.InterfaceB)
+					} else {
+						action.Beam.TargetIfID = a.getInterfaceIDFromRef(link.InterfaceA)
+					}
+					break
+				}
+			}
+		}
+		err = a.State.ApplyBeamUpdate(a.NodeID, action.Beam)
+
+	case sbi.ScheduledDeleteBeam:
+		if action.Beam == nil {
+			err = fmt.Errorf("ScheduledDeleteBeam action has nil Beam")
+			break
+		}
+		err = a.State.ApplyBeamDelete(
+			action.Beam.NodeID,
+			action.Beam.InterfaceID,
+			action.Beam.TargetNodeID,
+			action.Beam.TargetIfID,
+		)
+
+	case sbi.ScheduledSetRoute:
+		if action.Route == nil {
+			err = fmt.Errorf("ScheduledSetRoute action has nil Route")
+			break
+		}
+		err = a.State.InstallRoute(a.NodeID, *action.Route)
+
+	case sbi.ScheduledDeleteRoute:
+		if action.Route == nil {
+			err = fmt.Errorf("ScheduledDeleteRoute action has nil Route")
+			break
+		}
+		err = a.State.RemoveRoute(a.NodeID, action.Route.DestinationCIDR)
+
+	case sbi.ScheduledSetSrPolicy, sbi.ScheduledDeleteSrPolicy:
+		// For Scope 4, SrPolicy is stubbed - already handled in handleCreateEntry
+		// No-op here since policies are stored immediately when CreateEntry is received
+		err = nil
+
+	default:
+		err = fmt.Errorf("unknown action type: %v", action.Type)
+	}
+
+	// Build response status
+	if err != nil {
+		responseStatus = status.New(codes.Internal, err.Error())
+		a.log.Error(a.ctx, "agent: action execution failed",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.String("action_type", action.Type.String()),
+			logging.Any("error", err),
+		)
+	} else {
+		responseStatus = status.New(codes.OK, "OK")
+		a.log.Info(a.ctx, "agent: action executed",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.String("action_type", action.Type.String()),
+		)
+		// Increment metrics on successful execution
+		if a.Metrics != nil {
+			a.Metrics.IncActionsExecuted()
+		}
+	}
+
+	// Parse request ID from action
+	var requestID int64
+	if action.RequestID != "" {
+		// Try to parse as int64
+		_, _ = fmt.Sscanf(action.RequestID, "%d", &requestID)
+	}
+
+	// Send Response
+	response := &schedulingpb.ReceiveRequestsMessageToController{
+		Response: &schedulingpb.ReceiveRequestsMessageToController_Response{
+			RequestId: requestID,
+			Status:    responseStatus.Proto(),
+		},
+	}
+
+	// Remove from pending map
+	a.mu.Lock()
+	delete(a.pending, action.EntryID)
+	a.mu.Unlock()
+
+	// Send response (non-blocking, best-effort)
+	if a.Stream != nil {
+		if sendErr := a.Stream.Send(response); sendErr != nil {
+			a.log.Error(a.ctx, "agent: failed to send response",
+				logging.String("agent_id", string(a.AgentID)),
+				logging.String("entry_id", action.EntryID),
+				logging.Any("error", sendErr),
+			)
+		}
+	}
+}
+
+// Reset clears the agent's pending schedule and resets token/seqno.
+// This should be called when the agent's schedule is reset (e.g., on startup
+// or after a schedule reset event). The agent will then send a Reset RPC
+// to the controller, which will issue a new token.
+func (a *SimAgent) Reset() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Clear all pending actions
+	for entryID := range a.pending {
+		a.Scheduler.Cancel(entryID)
+	}
+	a.pending = make(map[string]*sbi.ScheduledAction)
+
+	// Clear token and seqno - next scheduling message will establish new token
+	a.token = ""
+	a.lastSeqNoSeen = 0
+
+	// Clear SR policies
+	a.srMu.Lock()
+	a.srPolicies = make(map[string]*sbi.SrPolicySpec)
+	a.srMu.Unlock()
+}
+
+// handleSetSrPolicy stores an SR policy in the agent's SR policy registry.
+// This is a stub implementation for Scope 4 - it does not affect routing.
+func (a *SimAgent) handleSetSrPolicy(spec *sbi.SrPolicySpec) {
+	if spec == nil || spec.PolicyID == "" {
+		return
+	}
+
+	a.srMu.Lock()
+	defer a.srMu.Unlock()
+
+	if a.srPolicies == nil {
+		a.srPolicies = make(map[string]*sbi.SrPolicySpec)
+	}
+
+	// Store a copy to prevent external mutation
+	cp := *spec
+	a.srPolicies[spec.PolicyID] = &cp
+
+	// TODO: Add proper logging
+	_ = a.AgentID
+	_ = a.NodeID
+}
+
+// handleDeleteSrPolicy removes an SR policy from the agent's registry.
+// This is a stub implementation for Scope 4.
+func (a *SimAgent) handleDeleteSrPolicy(policyID string) {
+	if policyID == "" {
+		return
+	}
+
+	a.srMu.Lock()
+	defer a.srMu.Unlock()
+
+	delete(a.srPolicies, policyID)
+
+	// TODO: Add proper logging
+	_ = a.AgentID
+	_ = a.NodeID
+}
+
+// DumpSrPolicies returns all SR policies currently stored on the agent.
+// This is a debug helper for tests/CLI tools and is not exposed via NBI yet.
+func (a *SimAgent) DumpSrPolicies() []*sbi.SrPolicySpec {
+	a.srMu.Lock()
+	defer a.srMu.Unlock()
+
+	out := make([]*sbi.SrPolicySpec, 0, len(a.srPolicies))
+	for _, p := range a.srPolicies {
+		// Return shallow copies to prevent external mutation
+		cp := *p
+		out = append(out, &cp)
+	}
+	return out
+}
+
+// GetToken returns the current schedule manipulation token.
+// This is used by the controller to validate incoming requests.
+func (a *SimAgent) GetToken() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.token
+}
+
+// startTelemetryLoop starts the periodic telemetry emission loop.
+// It schedules the first telemetry tick and reschedules itself after each tick.
+func (a *SimAgent) startTelemetryLoop() {
+	if a.TelemetryCli == nil {
+		return
+	}
+
+	now := a.Scheduler.Now()
+	a.telemetryMu.Lock()
+	a.lastTick = now
+	a.telemetryMu.Unlock()
+
+	// Schedule first telemetry tick after the interval
+	nextTick := now.Add(a.telemetryInterval)
+	a.Scheduler.Schedule(nextTick, func() {
+		a.telemetryTick()
+	})
+
+	a.log.Info(a.ctx, "agent: telemetry loop started",
+		logging.String("agent_id", string(a.AgentID)),
+		logging.Any("interval", a.telemetryInterval),
+		logging.Any("next_tick", nextTick),
+	)
+}
+
+// telemetryTick collects interface metrics and sends them to the controller.
+// It reschedules itself for the next interval.
+func (a *SimAgent) telemetryTick() {
+	// Check if agent is still running
+	select {
+	case <-a.ctx.Done():
+		return
+	default:
+	}
+
+	now := a.Scheduler.Now()
+
+	// Calculate delta time since last tick
+	a.telemetryMu.Lock()
+	lastTick := a.lastTick
+	if lastTick.IsZero() {
+		lastTick = now
+	}
+	delta := now.Sub(lastTick)
+	a.lastTick = now
+	a.telemetryMu.Unlock()
+
+	// Build interface metrics
+	deltaSec := delta.Seconds()
+	metrics := a.buildInterfaceMetrics(deltaSec)
+
+	if len(metrics) == 0 {
+		// No interfaces to report - reschedule anyway
+		a.rescheduleTelemetry()
+		return
+	}
+
+	// Build ExportMetricsRequest
+	req := &telemetrypb.ExportMetricsRequest{
+		InterfaceMetrics: metrics,
+	}
+
+	// Send metrics to controller (with node_id in metadata)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("x-node-id", a.NodeID))
+
+	_, err := a.TelemetryCli.ExportMetrics(ctx, req)
+	if err != nil {
+		a.log.Error(a.ctx, "agent: telemetry export failed",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Int("metrics_count", len(metrics)),
+			logging.Any("error", err),
+		)
+	} else {
+		a.log.Debug(a.ctx, "agent: telemetry exported",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Int("metrics_count", len(metrics)),
+		)
+	}
+
+	// Reschedule next tick
+	a.rescheduleTelemetry()
+}
+
+// rescheduleTelemetry schedules the next telemetry tick.
+func (a *SimAgent) rescheduleTelemetry() {
+	now := a.Scheduler.Now()
+	nextTick := now.Add(a.telemetryInterval)
+	a.Scheduler.Schedule(nextTick, func() {
+		a.telemetryTick()
+	})
+}
+
+// buildInterfaceMetrics builds telemetry metrics for all interfaces on this agent's node.
+// It uses deriveInterfaceState to determine up/down status and bandwidth.
+func (a *SimAgent) buildInterfaceMetrics(deltaSec float64) []*telemetrypb.InterfaceMetrics {
+	if a.State == nil {
+		return nil
+	}
+
+	// Get all interfaces for this node
+	interfaces := a.State.ListInterfacesForNode(a.NodeID)
+	if len(interfaces) == 0 {
+		return nil
+	}
+
+	now := a.Scheduler.Now()
+	nowProto := timestamppb.New(now)
+
+	var result []*telemetrypb.InterfaceMetrics
+
+	for _, iface := range interfaces {
+		// Derive interface state (up/down, bandwidth)
+		up, bandwidthBps := a.deriveInterfaceState(a.NodeID, iface.ID)
+
+		// Update byte counters
+		a.telemetryMu.Lock()
+		bytesTx := a.bytesTx[iface.ID]
+		if up && bandwidthBps > 0 {
+			// Estimate bytes transmitted based on bandwidth and time delta
+			bytesDelta := uint64(bandwidthBps * deltaSec / 8)
+			bytesTx += bytesDelta
+			a.bytesTx[iface.ID] = bytesTx
+		}
+		a.telemetryMu.Unlock()
+
+		// Build operational state data point
+		var operStatus telemetrypb.IfOperStatus
+		if up {
+			operStatus = telemetrypb.IfOperStatus_IF_OPER_STATUS_UP
+		} else {
+			operStatus = telemetrypb.IfOperStatus_IF_OPER_STATUS_DOWN
+		}
+
+		// Build statistics data point
+		txBytes := int64(bytesTx)
+		rxBytes := int64(0) // Rx bytes not tracked yet
+
+		metrics := &telemetrypb.InterfaceMetrics{
+			InterfaceId: stringPtr(iface.ID),
+			OperationalStateDataPoints: []*telemetrypb.IfOperStatusDataPoint{
+				{
+					Time:  nowProto,
+					Value: &operStatus,
+				},
+			},
+			StandardInterfaceStatisticsDataPoints: []*telemetrypb.StandardInterfaceStatisticsDataPoint{
+				{
+					Time:    nowProto,
+					TxBytes: &txBytes,
+					RxBytes: &rxBytes,
+				},
+			},
+		}
+
+		result = append(result, metrics)
+	}
+
+	return result
+}
+
+// deriveInterfaceState determines the operational state and bandwidth for an interface.
+// It checks all links connected to this interface and determines:
+// - up: true if at least one link is Active (Status=LinkStatusActive) and IsUp=true
+// - bandwidthBps: the maximum MaxDataRateMbps across all active links, converted to bits per second
+// Returns (up bool, bandwidthBps float64).
+func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) {
+	if a.State == nil {
+		return false, 0
+	}
+
+	// Get all links - we'll filter by interface
+	allLinks := a.State.ListLinks()
+
+	// Build possible interface references (with and without nodeID prefix)
+	ifaceRef := nodeID + "/" + ifaceID
+
+	// Filter links that connect to this interface
+	var links []*core.NetworkLink
+	for _, link := range allLinks {
+		if link == nil {
+			continue
+		}
+		// Check if this link connects to our interface (either direction)
+		if link.InterfaceA == ifaceID || link.InterfaceA == ifaceRef ||
+			link.InterfaceB == ifaceID || link.InterfaceB == ifaceRef {
+			links = append(links, link)
+		}
+	}
+
+	if len(links) == 0 {
+		return false, 0
+	}
+
+	// Check if any link is active and up
+	var maxBandwidthMbps float64
+	hasActiveLink := false
+
+	for _, link := range links {
+		// Link is considered "up" if it's Active and IsUp
+		if link.Status == core.LinkStatusActive && link.IsUp {
+			hasActiveLink = true
+			// Track maximum bandwidth across all active links
+			if link.MaxDataRateMbps > maxBandwidthMbps {
+				maxBandwidthMbps = link.MaxDataRateMbps
+			}
+		}
+	}
+
+	// Convert Mbps to bps (bits per second)
+	bandwidthBps := maxBandwidthMbps * 1e6
+
+	return hasActiveLink, bandwidthBps
+}
+
+// stringPtr returns a pointer to the given string.
+func stringPtr(s string) *string {
+	return &s
+}
+
+// getNodeIDFromInterfaceRef extracts the node ID from an interface reference.
+// Interface references can be in "node-ID/interface-ID" format or just "interface-ID".
+func (a *SimAgent) getNodeIDFromInterfaceRef(ifRef string) string {
+	parts := strings.SplitN(ifRef, "/", 2)
+	if len(parts) == 2 {
+		return parts[0]
+	}
+	return ""
+}
+
+// getInterfaceIDFromRef extracts the interface ID from an interface reference.
+// Interface references can be in "node-ID/interface-ID" format or just "interface-ID".
+func (a *SimAgent) getInterfaceIDFromRef(ifRef string) string {
+	parts := strings.SplitN(ifRef, "/", 2)
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return ifRef
+}

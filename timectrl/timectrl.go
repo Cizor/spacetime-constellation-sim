@@ -4,6 +4,18 @@ import (
 	"time"
 )
 
+// SimClock is an interface for accessing simulation time. This allows
+// Scope 4 components (scheduler, agents) to depend on a clock abstraction
+// rather than a concrete time controller type, enabling testability.
+type SimClock interface {
+	// Now returns the current simulation time.
+	Now() time.Time
+	// After returns a channel that will receive the current simulation time
+	// after the duration d has elapsed in simulation time. This will be
+	// integrated with the event scheduler in later Scope 4 chunks.
+	After(d time.Duration) <-chan time.Time
+}
+
 // Mode describes how the TimeController advances simulation time.
 type Mode int
 
@@ -15,6 +27,7 @@ const (
 )
 
 // TimeController drives simulation time and notifies registered listeners.
+// It implements SimClock for use by Scope 4 components.
 type TimeController struct {
 	StartTime time.Time
 	Tick      time.Duration

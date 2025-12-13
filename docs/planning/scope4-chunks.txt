@@ -1,0 +1,935 @@
+Below is Scope 4 – Scheduling Engine & SBI Simulation: Chunks.
+
+Chunk 0 – Prep Scope 1–3 Base for SBI (small but important)
+
+Goal: Confirm the existing simulation core is ready to be driven by a control-plane (scheduler + agents) without nasty surprises.
+
+0.1 – Confirm data model can express “active vs potential” links
+
+Scope 2 currently evaluates which links could be up based on geometry and RF constraints. For Scope 4, the agent must be able to turn beams/links on and off; that means:
+
+In the network KB (core.KnowledgeBase / equivalent):
+
+Ensure each link has:
+
+A stable identifier (e.g. LinkID).
+
+A notion of potential vs active:
+
+Either a boolean Active or a small enum Status {Potential, Active, Impaired}.
+
+If “active” is currently implicit (e.g. “if in view then active”), introduce an explicit flag so SBI actions can override or gate that.
+
+Make sure there is a clean API like:
+
+ActivateLink(linkID string) / DeactivateLink(linkID string) or similar helpers on ScenarioState.
+
+0.2 – Confirm we can store per-node route tables
+
+Scope 4 needs each node to maintain a simple static routing table in the KB (dest → next hop / interface) for SetRoute/DeleteRoute.
+
+In the node model (model.NetworkNode or similar):
+
+Add a RoutingTable field if it doesn’t exist already, e.g.:
+
+type RouteEntry struct {
+    DestinationCIDR string
+    NextHopNodeID   string
+    OutInterfaceID  string
+}
+
+type NetworkNode struct {
+    // existing fields...
+    Routes []RouteEntry
+}
+
+
+Provide helper methods on ScenarioState or a routing helper package:
+
+InstallRoute(nodeID string, route RouteEntry) error
+
+RemoveRoute(nodeID, destCIDR string) error
+
+These should be concurrency-safe using the same locking pattern as existing state.
+
+0.3 – Confirm time controller is usable by agents
+
+Scope 1/2 already has a time controller (e.g. timectrl package) advancing simulation time for orbital dynamics. Scope 4 agents and scheduler depend on a consistent “simulation clock”.
+
+Verify there is a single component that:
+
+Exposes Now() in a stable time base (e.g. time.Time or float seconds).
+
+Can advance in discrete steps (for planning mode) and can be driven in tests.
+
+If needed, define an interface such as:
+
+type SimClock interface {
+    Now() time.Time
+    After(d time.Duration) <-chan time.Time
+}
+
+
+and make the existing controller implement it.
+
+Output:
+A checked and (lightly) extended Scope 1–3 base where links have an “active” state, nodes have route tables, and a sim clock API suitable for agents/scheduler.
+
+Chunk 1 – SBI Protos & Go Stubs (Scheduling + Telemetry)
+
+Goal: Bring in Aalyria’s SBI protos (scheduling + telemetry) and generate Go stubs, mirroring what you did for NBI in Scope 3.
+
+1.1 – Vendor / generate SBI protos
+
+From Requirements, the relevant protos are:
+
+Requirements for an Aalyria Spa…
+
+api/scheduling/v1alpha/scheduling.proto (defines ControlDataPlaneInterface, ReceiveRequests, scheduling messages).
+
+api/telemetry/v1alpha/telemetry.proto (defines TelemetryService, ExportMetrics).
+
+Plus any shared types they depend on (e.g. control_beam.proto, bent_pipe.proto).
+
+Tasks:
+
+Use your existing api-main.zip as the source of truth.
+
+Extend whatever script / make target you used for NBI in Scope 3 to also compile:
+
+scheduling.proto → internal/genproto/scheduling/v1alpha (or similar).
+
+telemetry.proto → internal/genproto/telemetry/v1alpha.
+
+1.2 – Decide package layout
+
+Match the existing NBI layout:
+
+Example structure:
+
+internal/genproto/scheduling/v1alpha – generated Go stubs for ControlDataPlaneInterface.
+
+internal/genproto/telemetry/v1alpha – generated Go stubs for TelemetryService.
+
+internal/sbi – new domain code for controller, agents, scheduling logic.
+
+internal/sbi/agent – simulated agent implementation.
+
+internal/sbi/controller – scheduler and SBI server integration.
+
+1.3 – Smoke test generated protos
+
+Write a tiny test or sample code that:
+
+Constructs a ReceiveRequestsMessageFromController with a CreateEntryRequest.
+
+Serializes/deserializes to ensure imports and registrations are correct.
+
+Output:
+Go stubs for ControlDataPlaneInterface and TelemetryService compiled and ready, plus a new internal/sbi package skeleton.
+
+Chunk 2 – Scheduling Domain Model & KB Extensions
+
+Goal: Define internal types representing schedule entries, beam actions, and static routes, wired into ScenarioState and the KBs so agents can manipulate them.
+
+2.1 – Internal schedule entry type
+
+Define an internal schedule representation that mirrors the scheduling proto but is tailored for the sim:
+
+type ScheduledActionType int
+
+const (
+    ScheduledUpdateBeam ScheduledActionType = iota
+    ScheduledDeleteBeam
+    ScheduledSetRoute
+    ScheduledDeleteRoute
+    ScheduledSetSrPolicy // stubbed initially
+    ScheduledDeleteSrPolicy
+)
+
+type ScheduledAction struct {
+    EntryID string
+    When    time.Time // sim time
+    Type    ScheduledActionType
+    // Controller-side metadata:
+    RequestID string
+    SeqNo     int64
+    Token     string // schedule_manipulation_token
+    // Payloads (only one is meaningful depending on Type)
+    Beam   *BeamSpec
+    Route  *RouteEntry
+    SrPolicy *SrPolicySpec // stub type
+}
+
+
+BeamSpec should be a clean internal type: interface ID, target (interface ID or coordinates), frequency, power, etc.
+
+2.2 – Extend ScenarioState with routing and beam helpers
+
+Add methods to ScenarioState (or a closely associated package) to update KB state:
+
+Beam operations:
+
+ApplyBeamUpdate(nodeID string, spec BeamSpec) error
+
+Validate interface exists on node.
+
+Mark the link between that interface and target as Active if in view; otherwise optionally fail (for now you can assume the controller won’t schedule impossible beams).
+
+ApplyBeamDelete(nodeID, interfaceID string, targetID string) error
+
+Mark corresponding link as inactive.
+
+Route operations:
+
+InstallRoute(nodeID string, route RouteEntry) error
+
+RemoveRoute(nodeID, destCIDR string) error
+
+These should be pure state changes; any “policy” (when to call them) will be in the scheduler.
+
+2.3 – Simple per-node route table in KB
+
+Implement RoutingTable storage in your KB so that:
+
+Given (nodeID, destCIDR), you can find a RouteEntry.
+
+This will be used in later scopes for actual packet/flow routing, but in Scope 4 we just need the ability to set/remove entries.
+
+Output:
+Internal scheduling/route data structures and ScenarioState helpers that can apply beam and route actions idempotently.
+
+Chunk 3 – Simulation Clock Integration & Event Scheduling
+
+Goal: Provide a small, deterministic event scheduler that runs on the sim clock, suitable for per-agent queues.
+
+3.1 – Define a simple event scheduler interface
+
+Introduce an interface in internal/sbi:
+
+type EventScheduler interface {
+    Schedule(at time.Time, f func()) (id string)
+    Cancel(id string)
+    Now() time.Time
+}
+
+
+Implement this on top of your existing time controller:
+
+In planning mode, you likely have a loop like “advance to next event time; recompute state”.
+
+Integrate your scheduler so it:
+
+Keeps a min-heap or sorted slice of future events.
+
+On each tick, runs all events with When <= Now().
+
+3.2 – Testable fake clock
+
+For unit tests (agents and scheduler), provide a fake implementation:
+
+FakeEventScheduler where:
+
+Now() is manually advanced by test code.
+
+Schedule() just records events in a slice.
+
+AdvanceTo(t time.Time) executes all events whose When <= t.
+
+This makes agent tests deterministic and fast.
+
+Output:
+A small, reusable event scheduler abstraction wired to sim time, plus a fake implementation for tests.
+
+Chunk 4 – Simulated Agent Model & Local Schedule Queue
+
+Goal: Implement the Simulated Agent per node: a long-lived component that owns a local schedule, executes actions at the right sim time, updates the KB, and drives Telemetry + Responses.
+
+4.1 – Agent struct and lifecycle
+
+In internal/sbi/agent:
+
+type Agent struct {
+    AgentID      string         // from Hello (maps to node/platform ID)
+    NodeID       string
+    State        *simstate.ScenarioState
+    Scheduler    EventScheduler
+    TelemetryCli telemetry.TelemetryServiceClient // generated stub
+    Stream       scheduling.ControlDataPlaneInterface_ReceiveRequestsClient
+    mu           sync.Mutex
+    pending      map[string]*ScheduledAction // keyed by EntryID
+    token        string                      // schedule_manipulation_token
+}
+
+
+Methods:
+
+Start(ctx context.Context) error – connects to CDPI stream, sends Hello, starts read loop.
+
+Stop() – cancels context, drains queues.
+
+4.2 – Receiving scheduled entries from controller
+
+Agent’s stream read loop:
+
+For each ReceiveRequestsMessageFromController:
+
+On CreateEntryRequest:
+
+Convert proto schedule entry → internal ScheduledAction.
+
+Insert into pending and call Scheduler.Schedule(When, func() { a.execute(action) }).
+
+On DeleteEntryRequest:
+
+Locate and cancel previously scheduled action by EntryID; remove from pending.
+
+On FinalizeRequest:
+
+Drop any pending entries with When < cutoffTime.
+
+On SetSrPolicy / DeleteSrPolicy:
+
+For Scope 4, store but do not act (log + keep in memory).
+
+4.3 – Executing actions and sending Responses
+
+Implement execute(action *ScheduledAction):
+
+Switch on action.Type:
+
+ScheduledUpdateBeam → ScenarioState.ApplyBeamUpdate(...).
+
+ScheduledDeleteBeam → ScenarioState.ApplyBeamDelete(...).
+
+ScheduledSetRoute → ScenarioState.InstallRoute(...).
+
+ScheduledDeleteRoute → ScenarioState.RemoveRoute(...).
+
+After state update:
+
+Build a ReceiveRequestsMessageFromAgent with a Response for the original RequestID, Status = OK (unless you later want to simulate failures).
+
+Send down the stream.
+
+4.4 – Handling Reset and schedule manipulation token
+
+On Reset from agent side (see next chunk) you’ll:
+
+Clear pending.
+
+Generate a new token.
+
+Future CreateEntryRequest must carry this token; if tokens mismatch, ignore/log.
+
+Requirements for an Aalyria Spa…
+
+Output:
+A per-node Agent implementation that can receive scheduled entries, maintain a local schedule, execute actions at the right time, and send Responses.
+
+Chunk 5 – ControlDataPlaneInterface Server (Controller Side of CDPI)
+
+Goal: Implement the CDPI gRPC service (ControlDataPlaneInterface) so controller and agents emulate the real Spacetime scheduling stream.
+
+5.1 – Server struct
+
+In internal/sbi/controller:
+
+type CDPIServer struct {
+    scheduling.UnimplementedControlDataPlaneInterfaceServer
+
+    State     *simstate.ScenarioState
+    Clock     EventScheduler
+    agentsMu  sync.RWMutex
+    agents    map[string]*AgentHandle // tracked by AgentID
+}
+
+type AgentHandle struct {
+    AgentID   string
+    NodeID    string
+    Stream    scheduling.ControlDataPlaneInterface_ReceiveRequestsServer
+    outgoing  chan *scheduling.ReceiveRequestsMessageFromController
+    token     string
+}
+
+5.2 – Implement ReceiveRequests RPC
+
+ReceiveRequests(stream ControlDataPlaneInterface_ReceiveRequestsServer) error:
+
+Wait for first message from agent:
+
+Expect a Hello message with agent_id.
+
+Map agent_id → NodeID using NBI model (e.g. embedding an AgentID field on node config).
+
+Create an AgentHandle with an outgoing channel.
+
+Start a goroutine that:
+
+For each message in outgoing, calls stream.Send(msg) (controller→agent).
+
+Loop reading agent→controller messages:
+
+On Reset:
+
+Clear any existing schedule entries for that agent; issue a fresh token.
+
+On Response:
+
+Log status; optionally mark actions as complete for observability.
+
+On agent stream close: clean up AgentHandle.
+
+This matches the Requirements/Architecture description of CDPI where controller writes scheduled actions and receives Hello/Reset/Response from agent.
+
+5.3 – Sending Create/DeleteEntryRequests
+
+Expose controller-side methods:
+
+func (s *CDPIServer) SendCreateEntry(agentID string, action *ScheduledAction) error
+func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error
+func (s *CDPIServer) SendFinalize(agentID string, cutoff time.Time) error
+
+
+These build the corresponding proto messages (with request_id, seqno, schedule_manipulation_token) and push them onto the agent’s outgoing channel.
+
+Output:
+A working CDPI server that accepts agent Hello/Reset/Response, tracks per-agent streams, and can send Create/Delete/Finalize scheduling commands.
+
+Chunk 6 – TelemetryService Implementation & Metrics Model
+
+Goal: Implement the SBI TelemetryService and the internal metrics storage, so agents can periodically send ExportMetrics and the controller can store them.
+
+6.1 – Metrics data model
+
+In sim/state or a small metrics package, define:
+
+type InterfaceMetrics struct {
+    NodeID      string
+    InterfaceID string
+    Up          bool
+    BytesTx     uint64
+    // optional:
+    SNRdB       float64
+    Modulation  string
+}
+
+type TelemetryState struct {
+    mu        sync.RWMutex
+    byIf      map[string]*InterfaceMetrics // key "nodeID/ifaceID"
+}
+
+
+Provide:
+
+UpdateMetrics(ifm *InterfaceMetrics)
+
+GetMetrics(nodeID, ifaceID string) *InterfaceMetrics
+
+6.2 – TelemetryService server
+
+Implement:
+
+type TelemetryServer struct {
+    telemetry.UnimplementedTelemetryServiceServer
+    Telemetry *TelemetryState
+}
+
+
+ExportMetrics(ctx context.Context, req *telemetry.ExportMetricsRequest) (*telemetry.ExportMetricsResponse, error):
+
+For each InterfaceMetrics in the request:
+
+Translate proto → internal struct.
+
+Call Telemetry.UpdateMetrics(...).
+
+Return OK.
+
+6.3 – Agent-side metrics generation
+
+Extend Agent:
+
+Maintain simple counters:
+
+At each executed beam/route action, record:
+
+When a link becomes active, note its bandwidth.
+
+At telemetry interval Δt, approximate bytes transmitted:
+
+bytes += bandwidth_bps * Δt / 8 for any interfaces that currently carry flows.
+
+Roadmap for Spacetime-Compatibl…
+
+Periodic telemetry loop:
+
+Every N seconds of sim time (via EventScheduler), do:
+
+Build ExportMetricsRequest with:
+
+InterfaceMetrics entries (up/down derived from link active flag; bytes counters).
+
+Optional ModemMetrics stubbed (e.g. static SNR / modulation from last link eval).
+
+Call TelemetryService.ExportMetrics via client stub.
+
+Output:
+Telemetry server + internal metrics store + agent logic to emit metrics periodically using sim time.
+
+Chunk 7 – SBI Protocol Completeness: Reset, Finalize, Tokens, SrPolicy
+
+Goal: Implement the remaining SBI protocol semantics so your CDPI behavior matches the expectations in Requirements/Roadmap (without adding Scope 5-level intelligence).
+
+7.1 – Reset RPC semantics
+
+Agents:
+
+On startup or explicit reset, call Reset RPC:
+
+Reset(ResetRequest{agent_id}) → controller.
+
+Clear local schedule and pending map; generate a new local token.
+
+Controller:
+
+Implement Reset handler in CDPI server:
+
+Clear any server-side knowledge of pending entries for that agent.
+
+Update AgentHandle.token to a new value.
+
+Optionally trigger your scheduler to resend the initial configuration for that agent.
+
+7.2 – schedule_manipulation_token & seqno
+
+Whenever controller sends CreateEntryRequest or DeleteEntryRequest:
+
+Set schedule_manipulation_token to the agent’s current token.
+
+Maintain seqno monotonically increasing per agent.
+
+Agents:
+
+On receiving a message:
+
+If token mismatch, log and ignore (for Scope 4, you can be “forgiving” but you should at least log).
+
+Use seqno only for debugging/logging.
+
+7.3 – FinalizeRequest
+
+Controller:
+
+Implement sending FinalizeRequest(cutoff_time) when scheduler decides it won’t change events before that time (this can be done at the end of scenario or periodically).
+
+Agent:
+
+On FinalizeRequest:
+
+Drop any scheduled events with When < cutoff.
+
+Keep future ones.
+
+7.4 – SetSrPolicy/DeleteSrPolicy stubs
+
+Requirements & Roadmap suggest we should accept these messages but can initially stub the behavior.
+
+Controller:
+
+When scheduling, you can optionally send SetSrPolicy/DeleteSrPolicy (not required in Scope 4).
+
+Agent:
+
+On receipt:
+
+Parse and store in a []SrPolicySpec on node or agent; no effect on forwarding yet.
+
+Log that it’s not yet used.
+
+Output:
+CDPI protocol semantics fully covered as per Requirements/Roadmap, with Reset, Finalize, tokens, and SrPolicy correctly modeled (SrPolicy effect stubbed).
+
+Chunk 8 – Basic Scheduling Engine (Controller Logic)
+
+Goal: Implement a naive scheduler that decides what to schedule (beam on/off, static routes), using existing connectivity and service requests. This is still “mechanism only”, not optimization.
+
+8.1 – Scheduler component
+
+Create internal/sbi/controller/scheduler.go:
+
+type Scheduler struct {
+    State    *simstate.ScenarioState
+    Clock    EventScheduler
+    CDPI     *CDPIServer
+}
+
+
+The scheduler is not a gRPC service; it’s a pure controller that:
+
+Periodically inspects ScenarioState.
+
+Emits ScheduledActions via CDPI.SendCreateEntry.
+
+8.2 – Link-driven beam scheduling
+
+Implement a simple strategy from Roadmap/Architecture:
+
+For each potential link (Scope 2 discovered it’s geometrically feasible):
+
+Determine when it’s “in view” over the simulation horizon.
+
+For each interval [T_on, T_off]:
+
+Schedule:
+
+UpdateBeam at T_on - leadTime (clamped to >= now).
+
+DeleteBeam at T_off.
+
+For now you can:
+
+Use existing “link in view” computation from Scope 2.
+
+Attach these scheduled actions to the appropriate agent (satellite-side node).
+
+8.3 – Static routes for single-hop paths
+
+For each link interval where both endpoints can forward traffic:
+
+On T_on, schedule a SetRoute on each node:
+
+E.g. for node A, add route dest=B via interface to B.
+
+On T_off, schedule DeleteRoute.
+
+This gives you basic single-hop reachability that will be useful in later scopes.
+
+8.4 – ServiceRequest-aware scheduling (minimal)
+
+From Roadmap, Scope 4 should begin using ServiceRequests in a very simple way:
+
+Roadmap for Spacetime-Compatibl…
+
+For each active ServiceRequest (Scope 3 model):
+
+If there is a path available “now” in the connectivity graph:
+
+Immediately schedule:
+
+UpdateBeam commands along first hop links.
+
+SetRoute entries along that path.
+
+You can implement this in a very primitive way:
+
+Compute any single connecting path between source/destination (e.g. BFS over currently potential links).
+
+Only schedule if such a path exists; otherwise, skip.
+
+Output:
+A naive but functional scheduler that issues CreateEntryRequests for UpdateBeam/DeleteBeam and SetRoute/DeleteRoute, driven by link availability and (optionally) ServiceRequests.
+
+Chunk 9 – Wiring Scheduler & Agents into Scenario Lifecycle
+
+Goal: Integrate all the above into the simulator’s startup/run lifecycle so SBI is actually used in normal runs.
+
+9.1 – Scenario startup flow
+
+In whatever module currently coordinates a run (e.g. cmd/simulator or sim/runner):
+
+When a scenario is loaded via NBI and time controller is initialized:
+
+Build ScenarioState.
+
+Instantiate:
+
+EventScheduler (real clock implementation).
+
+TelemetryState + TelemetryServer.
+
+CDPIServer.
+
+Scheduler (Chunk 8).
+
+For each NetworkNode:
+
+Create an Agent wired to:
+
+NodeID, ScenarioState, EventScheduler, Telemetry client, CDPI client stub.
+
+Call Agent.Start(ctx).
+
+Register CDPIServer and TelemetryServer on your gRPC server (same server as NBI or a separate one, but same process).
+
+9.2 – Run loop
+
+Ensure the main sim loop:
+
+Advances the time controller.
+
+Triggers EventScheduler to run events at each step.
+
+Let scheduler run either:
+
+On demand (at scenario start) to pre-populate schedule.
+
+Or periodically recompute as needed.
+
+9.3 – Configuration flags
+
+Add command-line flags or config:
+
+--enable-sbi (default true once stable).
+
+--telemetry-interval=1s (sim time).
+
+Output:
+A fully wired scenario lifecycle where agents and scheduler start with the scenario, and SBI runs automatically in normal simulations.
+
+Chunk 10 – Unit Tests for Agents, Scheduler, and KB Actions
+
+Goal: Provide focused unit tests that validate core logic without gRPC/network, using fake schedules and fake clocks.
+
+10.1 – Agent schedule execution tests
+
+In internal/sbi/agent/agent_test.go:
+
+Use:
+
+FakeEventScheduler.
+
+FakeScenarioState that records calls (ApplyBeamUpdate, InstallRoute, etc.).
+
+Fake CDPI stream that records Responses rather than sending over network.
+
+Test cases:
+
+CreateEntry → scheduled execution:
+
+Simulate receiving a CreateEntryRequest with time T.
+
+Advance clock to T.
+
+Assert beam/route helpers called.
+
+Assert a Response is sent with matching request_id.
+
+DeleteEntry cancels event:
+
+Create entry for T.
+
+Delete it before T.
+
+Advance to T and assert no helpers called.
+
+FinalizeRequest cleanup:
+
+Schedule two entries: one at T1, one at T2 > cutoff.
+
+Send FinalizeRequest(cutoff = between T1 and T2).
+
+Assert only the second remains.
+
+10.2 – Scheduler logic tests
+
+In internal/sbi/controller/scheduler_test.go:
+
+Use in-memory ScenarioState:
+
+Add nodes, interfaces, a single potential link with a known in-view interval [T_on, T_off].
+
+Run scheduler once:
+
+Assert it calls CDPIServer.SendCreateEntry for:
+
+UpdateBeam at T_on.
+
+DeleteBeam at T_off.
+
+Add a simple ServiceRequest and ensure it generates at least one SetRoute.
+
+10.3 – Telemetry tests
+
+In internal/sbi/telemetry_test.go:
+
+Given a link is active and bandwidth known:
+
+Simulate telemetry loop running twice.
+
+Assert bytes counters increase monotonically.
+
+Output:
+A solid set of unit tests ensuring agents, scheduler, and KB actions behave as expected.
+
+Chunk 11 – In-Process gRPC SBI & Telemetry Tests
+
+Goal: Validate the full SBI message pipeline (controller↔agent) in an in-process gRPC server, using real generated stubs.
+
+11.1 – CDPI end-to-end in one process
+
+Test file internal/sbi/controller/cdpi_integration_test.go:
+
+Spin up:
+
+In-process gRPC server.
+
+Register CDPIServer.
+
+Create a test agent:
+
+Use the generated CDPI client stub to call ReceiveRequests to the server.
+
+Implement agent side with your real Agent (or a stripped-down version).
+
+Test flow:
+
+Agent connects, sends Hello(agent_id).
+
+Server associates stream with NodeID.
+
+Test triggers CDPIServer.SendCreateEntry for an UpdateBeam at T.
+
+Advance fake clock to T.
+
+Assert:
+
+KB state marks relevant link as active.
+
+Server receives a Response for that request_id.
+
+11.2 – Telemetry gRPC test
+
+Register TelemetryServer on the same gRPC server.
+
+Use a test agent that:
+
+Maintains simple metrics.
+
+Calls ExportMetrics periodically.
+
+Assert TelemetryState is updated.
+
+Output:
+End-to-end SBI/Telemetry tests that prove the gRPC plumbing and scheduling pipeline work as expected.
+
+Chunk 12 – Observability, Logging & Developer Experience
+
+Goal: Add enough logging and introspection to debug scheduling behavior in Scope 4, while staying within Scope 4 (no extra NBI telemetry exposure yet).
+
+12.1 – Structured logging
+
+For CDPI server:
+
+Log:
+
+Agent connections (Hello).
+
+Reset events (agent ID, new token).
+
+Create/Delete/Finalize requests sent (agent ID, entryID, when, type).
+
+Responses received (agent ID, request_id, status).
+
+For agents:
+
+Log:
+
+Scheduling of actions (entryID, When, type).
+
+Executions and any failures.
+
+12.2 – Minimal metrics hooks
+
+Expose simple counters (even as in-memory stats or via logs):
+
+num_create_entry_sent, num_delete_entry_sent.
+
+num_actions_executed, num_responses_ok, num_responses_error.
+
+num_telemetry_reports.
+
+These stay internal for now; NBI querying of telemetry is explicitly pushed to later scopes in your docs.
+
+Scope 4 Implementation Plan_ Sc…
+
+12.3 – Developer helper: debug dump
+
+Provide a function like:
+
+func DumpAgentState(agentID string) string
+
+
+It should print:
+
+Pending scheduled actions.
+
+Last telemetry metrics for that node.
+
+Output:
+Good logging and lightweight metrics that make debugging SBI behavior in Scope 4 practical.
+
+Chunk 13 – Example Scenario & Documentation
+
+Goal: Provide a small, “golden” scenario and docs that demonstrate Scope 4 features and serve as a sanity test for regressions.
+
+13.1 – Example scenario
+
+Create a simple scenario (via NBI / config) with:
+
+1 LEO satellite with a downlink antenna.
+
+1 ground station with an uplink antenna.
+
+One ServiceRequest from ground → satellite or vice versa.
+
+Document:
+
+How to load this scenario (NBI calls or JSON).
+
+How to run the sim with SBI enabled.
+
+13.2 – Expected behavior
+
+Document, step-by-step:
+
+At time T1, satellite comes into view:
+
+Scheduler issues UpdateBeam and SetRoute.
+
+Agent activates link; telemetry shows interface “up”.
+
+At time T2, satellite goes out of view:
+
+Scheduler issues DeleteBeam and DeleteRoute.
+
+Agent deactivates link; telemetry shows interface “down”.
+
+Include sample logs illustrating CDPI requests/responses and telemetry.
+
+13.3 – Scope 4 completion checklist
+
+Tie back to Requirements/Roadmap/Scope 4 doc:
+
+CDPI ReceiveRequests stream implemented and exercised:
+
+Hello, CreateEntryRequest, DeleteEntryRequest, FinalizeRequest, Reset, (optional) SetSrPolicy/DeleteSrPolicy.
+
+Agent model:
+
+Local schedule queue + execution hooked to sim clock.
+
+Beam and routing actions:
+
+Update/DeleteBeam, Set/DeleteRoute affect KB and connectivity graph.
+
+Telemetry:
+
+ExportMetrics implemented and storing metrics.
+
+Basic scheduling logic:
+
+Link-driven beam schedule + minimal ServiceRequest-aware scheduling.
+
+Output:
+A worked example + checklist that makes it easy to verify “Scope 4 is done”.

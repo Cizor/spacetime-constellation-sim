@@ -1,0 +1,41 @@
+{
+  "interfaces": [
+    {
+      "id": "if-sat1-down",
+      "name": "SAT1 Downlink",
+      "medium": "wireless",
+      "transceiver_id": "trx-ku",
+      "parent_node_id": "sat1",
+      "is_operational": true
+    },
+    {
+      "id": "if-gs1-up",
+      "name": "GS1 Uplink",
+      "medium": "wireless",
+      "transceiver_id": "trx-ku",
+      "parent_node_id": "gs1",
+      "is_operational": true
+    }
+  ],
+  "links": [
+    {
+      "id": "link-sat1-gs1",
+      "interface_a": "if-sat1-down",
+      "interface_b": "if-gs1-up",
+      "medium": "wireless"
+    }
+  ],
+  "positions": {
+    "gs1": {
+      "x": 6371000.0,
+      "y": 0.0,
+      "z": 0.0
+    },
+    "sat1": {
+      "x": 6871000.0,
+      "y": 0.0,
+      "z": 0.0
+    }
+  }
+}
+
