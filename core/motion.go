@@ -114,22 +114,24 @@ func (m *MotionModel) UpdatePositions(simTime time.Time) error {
 		entries = append(entries, entry)
 	}
 	updater := m.posUpdater
-	// Hold the lock while modifying platform coordinates to prevent data races
-	// when UpdatePositions is called concurrently from multiple goroutines.
-	// The entries slice contains pointers to platform objects, and UpdatePosition
-	// modifies those objects' Coordinates fields.
-	defer m.mu.Unlock()
+	m.mu.Unlock() // Release lock before calling external callbacks to avoid deadlock
 
 	var errs []error
 	for _, entry := range entries {
 		if entry.propagator == nil || entry.platform == nil {
 			continue
 		}
+		// UpdatePosition modifies the cloned platform object's Coordinates field.
+		// Since each entry contains its own cloned copy, concurrent modifications
+		// to different entries are safe. The lock was only needed to protect
+		// access to m.entries map, which we've already copied.
 		entry.propagator.UpdatePosition(simTime, entry.platform)
 		// Update platform position via updater callback, which updates the KB's
 		// current platform reference. We don't update entry.original directly
 		// because the KB may have replaced the platform object with UpdatePlatform(),
 		// making entry.original a stale reference.
+		// Note: updater (typically KB) has its own locks, so we must not hold
+		// MotionModel's lock while calling it to avoid potential deadlocks.
 		if updater != nil {
 			if err := updater.UpdatePlatformPosition(entry.platform.ID, entry.platform.Coordinates); err != nil {
 				errs = append(errs, err)
