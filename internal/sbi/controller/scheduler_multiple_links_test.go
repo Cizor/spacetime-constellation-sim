@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 )
 
 // TestScheduler_MultipleLinks_BeamAndRouteScheduling verifies that
@@ -258,7 +258,7 @@ func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMes
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(1 * time.Hour) // horizon
+				expectedOff := T0.Add(defaultPotentialWindow) // horizon
 				if !whenTime.Equal(expectedOff) {
 					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, expectedOff)
 				}
@@ -305,7 +305,7 @@ func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveReq
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(1 * time.Hour) // horizon
+				expectedOff := T0.Add(defaultPotentialWindow) // horizon
 				if !whenTime.Equal(expectedOff) {
 					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, expectedOff)
 				}
@@ -320,4 +320,3 @@ func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveReq
 		t.Errorf("DeleteRoute action not found for expected destinations %v", expectedDestNodeIDs)
 	}
 }
-

@@ -1,164 +1,57 @@
 # Spacetime-Compatible Constellation Simulator (Go)
 
-An experimental backend for simulating satellite constellations and ground networks in Go, designed to be **API-compatible with Aalyria Spacetime’s concepts** (platforms, nodes, links, service requests, etc.).
+Spacetime-Compatible Constellation Simulator is a headless Go backend for modeling space-to-ground constellation topologies and exposing control-plane automation inspired by Aalyria Spacetime’s data model. It is designed for developers who want to experiment with satellite + terrestrial networks without depending on a closed service.
 
-The goal is to provide a **local, headless engine** you can run on your own infrastructure to:
+## What it does today
 
-- Model satellites, ground stations, and other platforms
-- Propagate their motion over time (e.g. using TLE + SGP4)
-- Attach network nodes and interfaces to those platforms
-- Evaluate when links are geometrically possible (line-of-sight, horizon limits, Earth occlusion)
-- Eventually expose all of this via a Spacetime-style gRPC Northbound Interface (NBI)
+- **Motion + Knowledge Bases**
+  - Define platforms (satellites, ground stations, etc.) with orbital or static motion.
+  - Attach network nodes and interfaces, backed by thread-safe knowledge bases.
+  - Propagate motion every tick using SGP4 (for orbital platforms) or static motion, updating node positions in the process.
 
-It is intended for:
+- **Connectivity evaluation**
+  - Evaluate wired links as always available and wireless pairs via geometry (line-of-sight, horizon, Earth occlusion).
+  - Track dynamic link statuses so downstream components know what’s “potentially up” at any instant.
 
-- Developers who want a **Spacetime-like sandbox** for testing higher-level logic
-- Researchers and engineers who need a **programmable constellation model** without relying on a closed service
-- People experimenting with satellite + terrestrial network design and automation
+- **Scope 4 SBI controller**
+  - Integrated SBI runtime wired into the main gRPC server.
+  - Event scheduler that keeps agents, beams, and routes in sync with the simulation clock.
+  - Beam + route scheduling that uses precomputed contact windows, interfaces with the SBI CDPI server, and tracks DTN storage reservations.
+  - Service request scheduler with priority ordering, DTN heuristics, and periodic re-planning within the simulation loop.
+  - Time controller that exposes `Now()`/`SetTime()` so the scheduler and agents stay in lock-step with each tick.
 
----
+- **Northbound interface (NBI)**
+  - `cmd/nbi-server` exposes the Aalyria-style gRPC services (`Scheduling`, `Telemetry`, etc.) on the same server as the simulator.
+  - Telemetry server collects interface-level metrics, beams, and has hooks for future enhancements (modem metrics, intents).
+  - SBIRuntime brings up agents, the CDPI server, and the scheduler with TLS-aware dialing and in-process gRPC connection for agents.
 
-## Current Capabilities
+## Highlights
 
-At the moment, the simulator focuses on **core constellation modelling and basic connectivity**.
+- **Periodic re-planning**: the sim loop now updates the SBI event scheduler every tick and, every few simulated minutes, recomputes contact windows and reschedules service requests to react to topology change.  
+- **DTN tracking**: storage reservations are enforced via the scenario state, with per-request accounting to prevent oversubscription.  
+- **Conflict detection & power heuristics**: the scheduler logs when interfaces exceed their `MaxBeams` or power budgets, reduces window lengths for time-slicing, and reports storage usage.  
+- **Extensive testing**: coverage includes contact-window computation, run loop event scheduling/re-planning, and TimeController behavior plus the existing scheduler/unit suites.
 
-### Constellation model
+## Repository layout
 
-- **Platforms**: physical objects like satellites, ground stations, airborne relays, etc.
-  - Unique IDs, names, type tags
-  - Motion data in Earth-centred, Earth-fixed (ECEF) coordinates
-  - Support for:
-    - Orbital platforms using **TLE + SGP4** propagation
-    - Static platforms (e.g. ground stations)
+- `cmd/nbi-server/`: gRPC server wiring the SBI runtime + ScenarioState alongside the traditional NBI services.  
+- `internal/sbi/`: controller runtime, scheduler, agent, and telemetry implementations for Scope 4.  
+- `internal/sim/state/`: ScenarioState that unifies Scope 1 (platforms) and Scope 2 (interfaces/links) knowledge bases plus service-request bookkeeping.  
+- `core/`, `kb/`, `model/`, `timectrl/`: the motion/connectivity engine, in-memory KBs, data definitions, and time controller pieces previously described.  
+- `docs/`, `docs/planning/`: architecture planning, requirements, and implementation plans for each scope.
 
-- **Network nodes**: logical endpoints hosted on platforms
-  - Nodes can be attached to platforms to **inherit their position**
-  - Node state is kept in sync as platforms move
+## Scope 5 / future work
 
-- **In-memory Knowledge Base**
-  - Thread-safe store for platforms and nodes
-  - Simple CRUD-style operations
-  - Designed to be accessed from both the simulation loop and future APIs
+- Conflict resolution & time-slicing for multi-request contention  
+- Time-aware multi-hop pathfinding (with DTN vs non-DTN awareness)  
+- Reactive re-planning exposed as APIs + failure handling  
+- Power-budget accounting + telemetry expansion (modem metrics, intents)  
+- Region-based service requests, federation support, stronger observability
 
-### Time-stepped simulation
+## Getting started
 
-- **Time Controller**
-  - Drives the simulation with a configurable tick interval
-  - Emits ticks to subscribers (motion models, connectivity evaluator, etc.)
-  - Can be run in “accelerated” mode for fast-forward scenarios
+1. `go mod tidy` to pull dependencies  
+2. `go build ./cmd/nbi-server` (or `./cmd/simulator` for the non-gRPC demo)  
+3. Start the binary, load a scenario (see `docs/planning` for current plans), and use gRPC tooling to exercise the NBI/SBI endpoints.
 
-- **Motion models**
-  - Static: fixed ECEF coordinates
-  - Orbital:
-    - Uses an SGP4 implementation to propagate satellites from TLE
-    - Updates platform positions every tick
-    - Positions are stored in a consistent coordinate frame for downstream use
-
-### Network interfaces & connectivity (early)
-
-- **Network interfaces per node**
-  - Multiple interfaces per node (wired and wireless)
-  - Fields for IDs, type, attachment to a node, and basic addressing / metadata
-
-- **Transceiver models (wireless)**
-  - Separate model for RF characteristics:
-    - Frequency band, antenna parameters (e.g. gain / pattern placeholders)
-    - Power, sensitivity, etc. (as required by the current connectivity logic)
-  - Wireless interfaces reference a transceiver model
-
-- **Links & connectivity evaluation**
-  - Support for:
-    - **Wired links** (e.g. terrestrial fiber/Ethernet) treated as always-available, with fixed characteristics
-    - **Wireless links** evaluated on each tick:
-      - Line-of-sight checks between platforms
-      - Horizon angle constraints for ground stations
-      - Earth occlusion checks for space-space links
-    - (Currently assumes simple omni-directional coverage by default)
-  - Produces a **time-varying connectivity map**:
-    - At any given tick, the engine knows which links are geometrically “up”
-    - This is the foundation for later routing/scheduling logic
-
----
-
-## Planned / In Progress
-
-The next major step is to add a **Spacetime-style Northbound Interface (NBI)** and richer scenario controls:
-
-- gRPC services for:
-  - Defining platforms, nodes, interfaces, links, service requests
-  - Bulk load / snapshot / clear of entire scenarios
-- Validation & referential integrity:
-  - Strong checks for IDs, references, and motion sources
-- Observability:
-  - Structured logging, metrics (Prometheus-friendly), and optional tracing
-- End-to-end tests and example clients:
-  - Spin up the engine + gRPC server and drive it via generated clients
-
-These are being tracked as “Scope 3” internally, but from the outside you can just think of it as “add NBI + scenario API on top of the current engine”.
-
----
-
-## Repository Layout
-
-> Names may evolve a bit as things grow, but this is the current structure.
-
-- `cmd/simulator/`  
-  CLI entrypoint that wires the core engine together and runs a demo scenario.
-
-- `model/`  
-  Core data structures:
-  - `PlatformDefinition`, `NetworkNode`, motion/orbit-related structs
-  - Pure data containers; no heavy logic
-
-- `kb/`  
-  Thread-safe in-memory state store:
-  - Platforms, nodes, and other entities the sim tracks
-  - Designed for concurrent reads/writes from sim loop and APIs
-
-- `timectrl/`  
-  Time Controller that:
-  - Emits ticks on a configured schedule
-  - Coordinates time advancement for motion and connectivity evaluation
-
-- `core/`  
-  Simulation engine layer:
-  - Motion models (SGP4, static)
-  - Connectivity / link evaluation
-  - Orchestration glue between TimeController, KnowledgeBase, and entity models
-
-- `testdata/`  
-  Sample TLEs and fixtures used by tests and demo runs.
-
-- `docs/adr/`  
-  Architecture Decision Records, capturing high-level design choices over time:
-  - `0001-aalyria-proto-integration.md` – how Aalyria Spacetime API protos will be integrated for future NBI work.
-
-As the NBI work lands, you will also see:
-
-- `third_party/aalyria/` – vendored Aalyria `.proto` files (NBI + common types)
-- `nbi/gen/` – generated Go code from those protos
-- `cmd/nbi-server/` – a standalone gRPC server that exposes the simulator via NBI
-
----
-
-## Scenario State
-
-ScenarioState is the central in-memory facade that keeps the Scope 1 physical KB, Scope 2 network KB, and in-memory service request store consistent for the simulator and future NBI handlers. It is the expected entry point for scenario CRUD, snapshots, and clears; see [docs/architecture/scenario-state.md](docs/architecture/scenario-state.md) for design and usage guidance.
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.21+ (or a reasonably recent Go toolchain)
-- Git
-- Internet access for `go mod tidy` (to pull dependencies like SGP4)
-
-### Clone and build
-
-```bash
-git clone https://github.com/<your-username>/spacetime-constellation-sim.git
-cd spacetime-constellation-sim
-
-go mod tidy          # fetch dependencies
-go build ./cmd/simulator
-
+Current tests cover the scheduler, event loop, contact windows, and time controller; run `go test ./...` to verify locally.

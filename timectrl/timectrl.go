@@ -1,6 +1,7 @@
 package timectrl
 
 import (
+	"sync"
 	"time"
 )
 
@@ -34,6 +35,8 @@ type TimeController struct {
 	Mode      Mode
 
 	listeners []func(time.Time)
+	mu        sync.RWMutex
+	now       time.Time
 }
 
 // NewTimeController constructs a controller.
@@ -42,12 +45,32 @@ func NewTimeController(start time.Time, tick time.Duration, mode Mode) *TimeCont
 		StartTime: start,
 		Tick:      tick,
 		Mode:      mode,
+		now:       start,
 	}
 }
 
 // AddListener registers a callback invoked on every tick.
 func (tc *TimeController) AddListener(fn func(time.Time)) {
 	tc.listeners = append(tc.listeners, fn)
+}
+
+// After implements timectrl.SimClock.
+func (tc *TimeController) After(d time.Duration) <-chan time.Time {
+	return time.After(d)
+}
+
+// Now returns the current simulation time.
+func (tc *TimeController) Now() time.Time {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.now
+}
+
+// SetTime updates the current simulation time.
+func (tc *TimeController) SetTime(now time.Time) {
+	tc.mu.Lock()
+	tc.now = now
+	tc.mu.Unlock()
 }
 
 // Start runs the controller for the specified duration in a separate goroutine.
@@ -59,6 +82,8 @@ func (tc *TimeController) Start(duration time.Duration) <-chan struct{} {
 
 		simTime := tc.StartTime
 		elapsed := time.Duration(0)
+
+		tc.SetTime(simTime)
 
 		// In both modes we use a ticker for simplicity and determinism.
 		ticker := time.NewTicker(tc.Tick)
@@ -76,6 +101,7 @@ func (tc *TimeController) Start(duration time.Duration) <-chan struct{} {
 			for _, fn := range tc.listeners {
 				fn(simTime)
 			}
+			tc.SetTime(simTime)
 		}
 	}()
 	return done

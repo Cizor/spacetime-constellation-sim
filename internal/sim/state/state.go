@@ -69,6 +69,7 @@ type ScenarioState struct {
 	// serviceRequests is an in-memory store of active ServiceRequests,
 	// keyed by their internal ID.
 	serviceRequests map[string]*model.ServiceRequest
+	dtnStorageUsage map[string]float64
 
 	// motion is an optional motion model used by the simulator; it is
 	// reset alongside scenario clears.
@@ -148,6 +149,7 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		physKB:          phys,
 		netKB:           net,
 		serviceRequests: make(map[string]*model.ServiceRequest),
+		dtnStorageUsage: make(map[string]float64),
 		log:             log,
 	}
 	for _, opt := range opts {
@@ -384,6 +386,8 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 		added = append(added, iface.ID)
 	}
 
+	s.dtnStorageUsage[node.ID] = 0
+
 	s.updateMetricsLocked()
 	return nil
 }
@@ -499,6 +503,8 @@ func (s *ScenarioState) DeleteNode(id string) error {
 	if err := s.netKB.ReplaceInterfacesForNode(id, nil); err != nil && !errors.Is(err, network.ErrInterfaceNotFound) {
 		return err
 	}
+
+	delete(s.dtnStorageUsage, id)
 
 	s.updateMetricsLocked()
 	return nil
@@ -1132,6 +1138,57 @@ func (s *ScenarioState) validateNodeInterfacesLocked(nodeID string, interfaces [
 	return nil
 }
 
+// ReserveStorage increments the DTN storage usage for a node, respecting capacity limits.
+func (s *ScenarioState) ReserveStorage(nodeID string, bytes float64) error {
+	if nodeID == "" {
+		return fmt.Errorf("node ID is empty")
+	}
+	if bytes <= 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return ErrNodeNotFound
+	}
+
+	usage := s.dtnStorageUsage[nodeID]
+	capacity := node.StorageCapacityBytes
+	if capacity > 0 && usage+bytes > capacity {
+		return fmt.Errorf("storage capacity exceeded for node %q: %.0f/%.0f", nodeID, usage+bytes, capacity)
+	}
+
+	s.dtnStorageUsage[nodeID] = usage + bytes
+	return nil
+}
+
+// ReleaseStorage decrements the DTN storage usage for a node, never dropping below zero.
+func (s *ScenarioState) ReleaseStorage(nodeID string, bytes float64) {
+	if nodeID == "" || bytes <= 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	usage := s.dtnStorageUsage[nodeID]
+	usage -= bytes
+	if usage < 0 {
+		usage = 0
+	}
+	s.dtnStorageUsage[nodeID] = usage
+}
+
+// StorageUsage reports the currently reserved DTN bytes for a node.
+func (s *ScenarioState) StorageUsage(nodeID string) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dtnStorageUsage[nodeID]
+}
+
 func splitInterfaceRef(ref string) (string, string) {
 	parts := strings.SplitN(ref, "/", 2)
 	if len(parts) == 2 {
@@ -1178,6 +1235,7 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 		s.netKB.Clear()
 	}
 	s.serviceRequests = make(map[string]*model.ServiceRequest)
+	s.dtnStorageUsage = make(map[string]float64)
 
 	if s.motion != nil {
 		s.motion.Reset()

@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 )
 
 // fakeStream is already defined in cdpi_server_test.go, so we can use it directly
@@ -123,7 +123,7 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 
 	// Create fake CDPI server with registered agents
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	
+
 	// Register fake agents (similar to cdpi_server_test.go)
 	// Register agent for node-A
 	handleA := &AgentHandle{
@@ -150,7 +150,7 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 	fakeCDPI.CDPIServer.agentsMu.Lock()
 	fakeCDPI.CDPIServer.agents["node-B"] = handleB
 	fakeCDPI.CDPIServer.agentsMu.Unlock()
-	
+
 	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
 
 	ctx := context.Background()
@@ -200,8 +200,9 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 	t.Logf("Potential links: %d", len(potentialLinks))
 	if len(potentialLinks) > 0 {
 		now := eventScheduler.Now()
-		horizon := now.Add(1 * time.Hour)
-		err := scheduler.scheduleBeamForLink(ctx, potentialLinks[0], now, horizon)
+		horizon := now.Add(ContactHorizon)
+		windows := scheduler.computeContactWindows(now, horizon)
+		err := scheduler.scheduleBeamForLink(ctx, potentialLinks[0], windows[potentialLinks[0].ID])
 		if err != nil {
 			t.Logf("scheduleBeamForLink error: %v", err)
 		} else {
@@ -260,7 +261,7 @@ doneBeams:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(1 * time.Hour) // horizon
+				expectedOff := T0.Add(defaultPotentialWindow) // horizon
 				if !whenTime.Equal(expectedOff) {
 					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, expectedOff)
 				}
@@ -336,7 +337,7 @@ doneRoutesB:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(1 * time.Hour) // horizon
+				expectedOff := T0.Add(defaultPotentialWindow) // horizon
 				if !whenTime.Equal(expectedOff) {
 					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, expectedOff)
 				}
@@ -350,6 +351,7 @@ doneRoutesB:
 		t.Errorf("expected at least 2 DeleteRoute actions, got %d", deleteRouteCount)
 	}
 }
+
 // TestScheduler_LinkIntervals_NoPotentialLinks verifies that
 // scheduling with no potential links produces no actions.
 func TestScheduler_LinkIntervals_NoPotentialLinks(t *testing.T) {
@@ -517,4 +519,3 @@ func TestScheduler_LinkIntervals_Idempotency(t *testing.T) {
 		t.Errorf("expected idempotency: first call sent %d actions, second sent %d", firstCallCount, secondCallCount)
 	}
 }
-

@@ -31,4 +31,7 @@ type NetworkNode struct {
 	// Routes contains the routing table entries for this node.
 	// This is used by Scope 4 control-plane components to manage routing.
 	Routes []RouteEntry
+
+	// StorageCapacityBytes declares the maximum DTN storage available on this node.
+	StorageCapacityBytes float64
 }

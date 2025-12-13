@@ -170,6 +170,10 @@ func NodeFromProto(n *NetworkNode) (*model.NetworkNode, error) {
 		PlatformID: "",
 	}
 
+	if storage := n.GetStorage(); storage != nil {
+		dom.StorageCapacityBytes = float64(storage.GetAvailableBytes())
+	}
+
 	return dom, nil
 }
 
@@ -214,11 +218,20 @@ func NodeToProto(dom *model.NetworkNode) *NetworkNode {
 	name := dom.Name
 	typ := dom.Type
 
-	return &NetworkNode{
+	p := &NetworkNode{
 		NodeId: &id,
 		Name:   &name,
 		Type:   &typ,
 	}
+
+	if dom.StorageCapacityBytes > 0 {
+		capacity := int64(dom.StorageCapacityBytes)
+		p.Storage = &resources.NetworkNode_Storage{
+			AvailableBytes: &capacity,
+		}
+	}
+
+	return p
 }
 
 // NodeToProtoWithInterfaces emits a NetworkNode proto and populates

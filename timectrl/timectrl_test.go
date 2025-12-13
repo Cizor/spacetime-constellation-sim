@@ -5,32 +5,27 @@ import (
 	"time"
 )
 
-func TestTimeControllerTicks(t *testing.T) {
-	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	tick := 10 * time.Millisecond
-	duration := 50 * time.Millisecond
+func TestTimeControllerSetTime(t *testing.T) {
+	start := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tc := NewTimeController(start, time.Second, RealTime)
 
-	tc := NewTimeController(start, tick, RealTime)
+	newNow := start.Add(42 * time.Second)
+	tc.SetTime(newNow)
 
-	var count int
-	var last time.Time
-	tc.AddListener(func(ts time.Time) {
-		count++
-		last = ts
-	})
+	if got := tc.Now(); !got.Equal(newNow) {
+		t.Fatalf("Now() = %v, want %v", got, newNow)
+	}
+}
 
-	done := tc.Start(duration)
+func TestTimeControllerStartUpdatesNow(t *testing.T) {
+	start := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	tc := NewTimeController(start, 5*time.Millisecond, Accelerated)
+
+	done := tc.Start(15 * time.Millisecond)
 	<-done
 
-	if count == 0 {
-		t.Fatalf("expected at least one tick, got 0")
-	}
-	// Rough check: we expect about duration/tick ticks.
-	expected := int(duration / tick)
-	if count < expected-1 || count > expected+1 {
-		t.Fatalf("unexpected tick count: got %d, want approx %d", count, expected)
-	}
-	if last.Before(start) {
-		t.Fatalf("last tick time %v before start %v", last, start)
+	expected := start.Add(15 * time.Millisecond)
+	if got := tc.Now(); !got.Equal(expected) {
+		t.Fatalf("Now() = %v, want %v", got, expected)
 	}
 }

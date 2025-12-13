@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/core"
@@ -24,6 +27,8 @@ type Scheduler struct {
 	// scheduledEntryIDs tracks entry IDs we've already scheduled to avoid duplicates.
 	// This provides idempotency for ScheduleLinkBeams.
 	scheduledEntryIDs map[string]bool
+	// storageReservations tracks DTN storage allocations per service request.
+	storageReservations map[string]float64
 }
 
 // NewScheduler creates a new Scheduler with the given dependencies.
@@ -32,13 +37,21 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi *CD
 		log = logging.Noop()
 	}
 	return &Scheduler{
-		State:             state,
-		Clock:             clock,
-		CDPI:              cdpi,
-		log:               log,
-		scheduledEntryIDs: make(map[string]bool),
+		State:               state,
+		Clock:               clock,
+		CDPI:                cdpi,
+		log:                 log,
+		scheduledEntryIDs:   make(map[string]bool),
+		storageReservations: make(map[string]float64),
 	}
 }
+
+const (
+	ContactHorizon         = 1 * time.Hour
+	defaultActiveWindow    = 45 * time.Minute
+	defaultPotentialWindow = 20 * time.Minute
+	defaultDtnHold         = 30 * time.Second
+)
 
 // RunInitialSchedule runs the initial scheduling pass, including link-driven
 // beam scheduling and route scheduling. This should be called once at scenario startup after
@@ -68,7 +81,7 @@ func (s *Scheduler) RunInitialSchedule(ctx context.Context) error {
 // - Send actions to the appropriate agent via CDPI
 func (s *Scheduler) ScheduleLinkBeams(ctx context.Context) error {
 	now := s.Clock.Now()
-	horizon := now.Add(1 * time.Hour) // Fixed 1-hour planning horizon for now
+	horizon := now.Add(ContactHorizon)
 
 	// Get all potential links
 	potentialLinks := s.getPotentialLinks()
@@ -82,9 +95,11 @@ func (s *Scheduler) ScheduleLinkBeams(ctx context.Context) error {
 		logging.String("horizon", horizon.Format(time.RFC3339)),
 	)
 
+	windows := s.PrecomputeContactWindows(ctx, now, horizon)
+
 	// For each potential link, determine visibility windows and schedule actions
 	for _, link := range potentialLinks {
-		if err := s.scheduleBeamForLink(ctx, link, now, horizon); err != nil {
+		if err := s.scheduleBeamForLink(ctx, link, windows[link.ID]); err != nil {
 			s.log.Warn(ctx, "Failed to schedule beam for link",
 				logging.String("link_id", link.ID),
 				logging.String("error", err.Error()),
@@ -110,91 +125,135 @@ func (s *Scheduler) getPotentialLinks() []*core.NetworkLink {
 	return potential
 }
 
-// scheduleBeamForLink schedules UpdateBeam and DeleteBeam actions for a single link.
-// For now, we use a simplified approach:
-// - Assume the link is available from now until horizon
-// - Schedule UpdateBeam at now (or T_on if we compute it)
-// - Schedule DeleteBeam at horizon (or T_off if we compute it)
-func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkLink, now, horizon time.Time) error {
-	// For now, use a simple approach: assume link is available from now to horizon
-	// TODO: In future, compute actual visibility windows by sampling connectivity
-	T_on := now
-	T_off := horizon
+func (s *Scheduler) computeContactWindows(now, horizon time.Time) map[string][]contactWindow {
+	windows := make(map[string][]contactWindow)
+	for _, link := range s.State.ListLinks() {
+		if link == nil {
+			continue
+		}
+		if link.Status != core.LinkStatusPotential && link.Status != core.LinkStatusActive {
+			continue
+		}
 
-	// Compute onTime with optional lead time (clamped to now)
-	const defaultBeamLeadTime = 0 // Start with zero lead time
-	onTime := T_on.Add(-defaultBeamLeadTime)
-	if onTime.Before(now) {
-		onTime = now
+		end := now.Add(s.linkWindowDuration(link))
+		if end.After(horizon) {
+			end = horizon
+		}
+		if !end.After(now) {
+			continue
+		}
+
+		windows[link.ID] = append(windows[link.ID], contactWindow{
+			start: now,
+			end:   end,
+		})
+	}
+	return windows
+}
+
+// PrecomputeContactWindows samples connectivity windows over the planning horizon.
+func (s *Scheduler) PrecomputeContactWindows(ctx context.Context, now, horizon time.Time) map[string][]contactWindow {
+	windows := s.computeContactWindows(now, horizon)
+	s.log.Debug(ctx, "Precomputed contact windows",
+		logging.Int("window_count", len(windows)),
+		logging.String("horizon", horizon.Format(time.RFC3339)),
+	)
+	return windows
+}
+
+// RecomputeContactWindows triggers the contact window precomputation without emitting the map.
+func (s *Scheduler) RecomputeContactWindows(ctx context.Context, now, horizon time.Time) {
+	s.PrecomputeContactWindows(ctx, now, horizon)
+}
+
+func (s *Scheduler) linkWindowDuration(link *core.NetworkLink) time.Duration {
+	if link != nil && link.Status == core.LinkStatusActive {
+		return defaultActiveWindow
+	}
+	return defaultPotentialWindow
+}
+
+// scheduleBeamForLink schedules UpdateBeam and DeleteBeam actions for a single link.
+func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkLink, windows []contactWindow) error {
+	if len(windows) == 0 {
+		return nil
 	}
 
-	// Construct BeamSpec from link
 	beamSpec, err := s.beamSpecFromLink(link)
 	if err != nil {
 		return fmt.Errorf("failed to construct BeamSpec: %w", err)
 	}
 
-	// Determine which agent owns this beam (which node controls it)
-	// For now, use the source node (InterfaceA's parent node)
 	agentID, err := s.agentIDForLink(link)
 	if err != nil {
 		return fmt.Errorf("failed to resolve agent for link: %w", err)
 	}
 
-	// Create UpdateBeam action
-	entryIDOn := fmt.Sprintf("link:%s:on:%d", link.ID, T_on.UnixNano())
-	if s.scheduledEntryIDs[entryIDOn] {
-		// Already scheduled, skip
-		return nil
+	const defaultBeamLeadTime = 0
+	for _, window := range windows {
+		if !window.end.After(window.start) {
+			continue
+		}
+
+		onTime := window.start.Add(-defaultBeamLeadTime)
+		if onTime.Before(s.Clock.Now()) {
+			onTime = s.Clock.Now()
+		}
+
+		entryIDOn := fmt.Sprintf("link:%s:on:%d", link.ID, window.start.UnixNano())
+		if err := s.sendBeamEntry(agentID, entryIDOn, sbi.ScheduledUpdateBeam, onTime, beamSpec); err != nil {
+			return err
+		}
+
+		entryIDOff := fmt.Sprintf("link:%s:off:%d", link.ID, window.end.UnixNano())
+		if err := s.sendBeamEntry(agentID, entryIDOff, sbi.ScheduledDeleteBeam, window.end, beamSpec); err != nil {
+			return err
+		}
 	}
 
-	actionOn := &sbi.ScheduledAction{
-		EntryID:   entryIDOn,
-		AgentID:   sbi.AgentID(agentID),
-		Type:      sbi.ScheduledUpdateBeam,
-		When:      onTime,
-		Beam:      beamSpec,
-		RequestID: "", // CDPI will fill this
-		SeqNo:     0,  // CDPI will fill this
-		Token:     "", // CDPI will fill this
-	}
-
-	if err := s.CDPI.SendCreateEntry(agentID, actionOn); err != nil {
-		return fmt.Errorf("failed to send UpdateBeam: %w", err)
-	}
-	s.scheduledEntryIDs[entryIDOn] = true
-
-	// Create DeleteBeam action
-	entryIDOff := fmt.Sprintf("link:%s:off:%d", link.ID, T_off.UnixNano())
-	if s.scheduledEntryIDs[entryIDOff] {
-		// Already scheduled, skip
-		return nil
-	}
-
-	actionOff := &sbi.ScheduledAction{
-		EntryID:   entryIDOff,
-		AgentID:   sbi.AgentID(agentID),
-		Type:      sbi.ScheduledDeleteBeam,
-		When:      T_off,
-		Beam:      beamSpec,
-		RequestID: "", // CDPI will fill this
-		SeqNo:     0,  // CDPI will fill this
-		Token:     "", // CDPI will fill this
-	}
-
-	if err := s.CDPI.SendCreateEntry(agentID, actionOff); err != nil {
-		return fmt.Errorf("failed to send DeleteBeam: %w", err)
-	}
-	s.scheduledEntryIDs[entryIDOff] = true
-
+	start := windows[0].start
+	end := windows[len(windows)-1].end
 	s.log.Debug(ctx, "Scheduled beam actions for link",
 		logging.String("link_id", link.ID),
 		logging.String("agent_id", agentID),
-		logging.String("on_time", onTime.Format(time.RFC3339)),
-		logging.String("off_time", T_off.Format(time.RFC3339)),
+		logging.String("window_start", start.Format(time.RFC3339)),
+		logging.String("window_end", end.Format(time.RFC3339)),
 	)
 
 	return nil
+}
+
+func (s *Scheduler) sendBeamEntry(agentID, entryID string, actionType sbi.ScheduledActionType, when time.Time, beam *sbi.BeamSpec) error {
+	if entryID == "" || agentID == "" || beam == nil {
+		return fmt.Errorf("invalid beam entry parameters")
+	}
+
+	if s.scheduledEntryIDs[entryID] {
+		return nil
+	}
+
+	action := &sbi.ScheduledAction{
+		EntryID:   entryID,
+		AgentID:   sbi.AgentID(agentID),
+		Type:      actionType,
+		When:      when,
+		Beam:      beam,
+		RequestID: "",
+		SeqNo:     0,
+		Token:     "",
+	}
+
+	if err := s.CDPI.SendCreateEntry(agentID, action); err != nil {
+		return fmt.Errorf("failed to send %s: %w", actionType.String(), err)
+	}
+
+	s.scheduledEntryIDs[entryID] = true
+	return nil
+}
+
+type contactWindow struct {
+	start time.Time
+	end   time.Time
 }
 
 // beamSpecFromLink constructs a BeamSpec from a NetworkLink.
@@ -223,9 +282,9 @@ func (s *Scheduler) beamSpecFromLink(link *core.NetworkLink) (*sbi.BeamSpec, err
 
 	beamSpec := &sbi.BeamSpec{
 		NodeID:       ifaceA.ParentNodeID,
-		InterfaceID:  link.InterfaceA,
+		InterfaceID:  localInterfaceID(link.InterfaceA),
 		TargetNodeID: ifaceB.ParentNodeID,
-		TargetIfID:   link.InterfaceB,
+		TargetIfID:   localInterfaceID(link.InterfaceB),
 		// RF parameters can be filled from transceiver models if needed
 		FrequencyHz: 0,
 		BandwidthHz: 0,
@@ -293,7 +352,7 @@ func (s *CDPIServer) hasAgent(agentID string) bool {
 // - Schedule ScheduledDeleteRoute actions at T_off for both endpoints
 func (s *Scheduler) ScheduleLinkRoutes(ctx context.Context) error {
 	now := s.Clock.Now()
-	horizon := now.Add(1 * time.Hour) // Fixed 1-hour planning horizon for now
+	horizon := now.Add(ContactHorizon)
 
 	// Get all potential links
 	potentialLinks := s.getPotentialLinks()
@@ -302,6 +361,8 @@ func (s *Scheduler) ScheduleLinkRoutes(ctx context.Context) error {
 		return nil
 	}
 
+	windows := s.PrecomputeContactWindows(ctx, now, horizon)
+
 	s.log.Debug(ctx, "Scheduling routes for potential links",
 		logging.Int("link_count", len(potentialLinks)),
 		logging.String("horizon", horizon.Format(time.RFC3339)),
@@ -309,7 +370,7 @@ func (s *Scheduler) ScheduleLinkRoutes(ctx context.Context) error {
 
 	// For each potential link, determine visibility windows and schedule route actions
 	for _, link := range potentialLinks {
-		if err := s.scheduleRoutesForLink(ctx, link, now, horizon); err != nil {
+		if err := s.scheduleRoutesForLink(ctx, link, windows[link.ID]); err != nil {
 			s.log.Warn(ctx, "Failed to schedule routes for link",
 				logging.String("link_id", link.ID),
 				logging.String("error", err.Error()),
@@ -326,13 +387,11 @@ func (s *Scheduler) ScheduleLinkRoutes(ctx context.Context) error {
 // For each visibility interval [T_on, T_off]:
 // - At T_on: schedule SetRoute on both endpoints (node A -> node B, node B -> node A)
 // - At T_off: schedule DeleteRoute on both endpoints
-func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.NetworkLink, now, horizon time.Time) error {
-	// For now, use a simple approach: assume link is available from now to horizon
-	// TODO: In future, compute actual visibility windows by sampling connectivity
-	T_on := now
-	T_off := horizon
+func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.NetworkLink, windows []contactWindow) error {
+	if len(windows) == 0 {
+		return nil
+	}
 
-	// Get interface details to determine node IDs
 	interfacesByNode := s.State.InterfacesByNode()
 	var ifaceA, ifaceB *core.NetworkInterface
 	for _, ifaces := range interfacesByNode {
@@ -352,7 +411,6 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 	nodeAID := ifaceA.ParentNodeID
 	nodeBID := ifaceB.ParentNodeID
 
-	// Determine agent IDs for both nodes
 	agentAID, err := s.agentIDForNode(nodeAID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve agent for node A: %w", err)
@@ -362,58 +420,60 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 		return fmt.Errorf("failed to resolve agent for node B: %w", err)
 	}
 
-	// Schedule SetRoute actions at T_on for both endpoints
-	// Node A -> Node B
-	entryIDAOn := fmt.Sprintf("route:%s:A->B:on:%d", link.ID, T_on.UnixNano())
-	if !s.scheduledEntryIDs[entryIDAOn] {
-		routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
-		actionAOn := s.newSetRouteAction(entryIDAOn, sbi.AgentID(agentAID), T_on, routeA)
-		if err := s.CDPI.SendCreateEntry(agentAID, actionAOn); err != nil {
-			return fmt.Errorf("failed to send SetRoute for node A: %w", err)
+	for _, window := range windows {
+		if !window.end.After(window.start) {
+			continue
 		}
-		s.scheduledEntryIDs[entryIDAOn] = true
+
+		entryIDAOn := fmt.Sprintf("route:%s:A->B:on:%d", link.ID, window.start.UnixNano())
+		if !s.scheduledEntryIDs[entryIDAOn] {
+			routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
+			actionAOn := s.newSetRouteAction(entryIDAOn, sbi.AgentID(agentAID), window.start, routeA)
+			if err := s.CDPI.SendCreateEntry(agentAID, actionAOn); err != nil {
+				return fmt.Errorf("failed to send SetRoute for node A: %w", err)
+			}
+			s.scheduledEntryIDs[entryIDAOn] = true
+		}
+
+		entryIDBOn := fmt.Sprintf("route:%s:B->A:on:%d", link.ID, window.start.UnixNano())
+		if !s.scheduledEntryIDs[entryIDBOn] {
+			routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
+			actionBOn := s.newSetRouteAction(entryIDBOn, sbi.AgentID(agentBID), window.start, routeB)
+			if err := s.CDPI.SendCreateEntry(agentBID, actionBOn); err != nil {
+				return fmt.Errorf("failed to send SetRoute for node B: %w", err)
+			}
+			s.scheduledEntryIDs[entryIDBOn] = true
+		}
+
+		entryIDAOff := fmt.Sprintf("route:%s:A->B:off:%d", link.ID, window.end.UnixNano())
+		if !s.scheduledEntryIDs[entryIDAOff] {
+			routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
+			actionAOff := s.newDeleteRouteAction(entryIDAOff, sbi.AgentID(agentAID), window.end, routeA)
+			if err := s.CDPI.SendCreateEntry(agentAID, actionAOff); err != nil {
+				return fmt.Errorf("failed to send DeleteRoute for node A: %w", err)
+			}
+			s.scheduledEntryIDs[entryIDAOff] = true
+		}
+
+		entryIDBOff := fmt.Sprintf("route:%s:B->A:off:%d", link.ID, window.end.UnixNano())
+		if !s.scheduledEntryIDs[entryIDBOff] {
+			routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
+			actionBOff := s.newDeleteRouteAction(entryIDBOff, sbi.AgentID(agentBID), window.end, routeB)
+			if err := s.CDPI.SendCreateEntry(agentBID, actionBOff); err != nil {
+				return fmt.Errorf("failed to send DeleteRoute for node B: %w", err)
+			}
+			s.scheduledEntryIDs[entryIDBOff] = true
+		}
 	}
 
-	// Node B -> Node A
-	entryIDBOn := fmt.Sprintf("route:%s:B->A:on:%d", link.ID, T_on.UnixNano())
-	if !s.scheduledEntryIDs[entryIDBOn] {
-		routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
-		actionBOn := s.newSetRouteAction(entryIDBOn, sbi.AgentID(agentBID), T_on, routeB)
-		if err := s.CDPI.SendCreateEntry(agentBID, actionBOn); err != nil {
-			return fmt.Errorf("failed to send SetRoute for node B: %w", err)
-		}
-		s.scheduledEntryIDs[entryIDBOn] = true
-	}
-
-	// Schedule DeleteRoute actions at T_off for both endpoints
-	// Node A -> Node B
-	entryIDAOff := fmt.Sprintf("route:%s:A->B:off:%d", link.ID, T_off.UnixNano())
-	if !s.scheduledEntryIDs[entryIDAOff] {
-		routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
-		actionAOff := s.newDeleteRouteAction(entryIDAOff, sbi.AgentID(agentAID), T_off, routeA)
-		if err := s.CDPI.SendCreateEntry(agentAID, actionAOff); err != nil {
-			return fmt.Errorf("failed to send DeleteRoute for node A: %w", err)
-		}
-		s.scheduledEntryIDs[entryIDAOff] = true
-	}
-
-	// Node B -> Node A
-	entryIDBOff := fmt.Sprintf("route:%s:B->A:off:%d", link.ID, T_off.UnixNano())
-	if !s.scheduledEntryIDs[entryIDBOff] {
-		routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
-		actionBOff := s.newDeleteRouteAction(entryIDBOff, sbi.AgentID(agentBID), T_off, routeB)
-		if err := s.CDPI.SendCreateEntry(agentBID, actionBOff); err != nil {
-			return fmt.Errorf("failed to send DeleteRoute for node B: %w", err)
-		}
-		s.scheduledEntryIDs[entryIDBOff] = true
-	}
-
+	start := windows[0].start
+	end := windows[len(windows)-1].end
 	s.log.Debug(ctx, "Scheduled route actions for link",
 		logging.String("link_id", link.ID),
 		logging.String("node_a", nodeAID),
 		logging.String("node_b", nodeBID),
-		logging.String("on_time", T_on.Format(time.RFC3339)),
-		logging.String("off_time", T_off.Format(time.RFC3339)),
+		logging.String("window_start", start.Format(time.RFC3339)),
+		logging.String("window_end", end.Format(time.RFC3339)),
 	)
 
 	return nil
@@ -485,6 +545,10 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		return nil
 	}
 
+	sort.Slice(serviceRequests, func(i, j int) bool {
+		return serviceRequests[i].Priority > serviceRequests[j].Priority
+	})
+
 	s.log.Debug(ctx, "Scheduling service requests",
 		logging.Int("sr_count", len(serviceRequests)),
 	)
@@ -520,6 +584,9 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 					logging.String("error", err.Error()),
 				)
 			}
+			if sr.IsDisruptionTolerant {
+				s.reserveStorageForSR(ctx, sr)
+			}
 			continue
 		}
 
@@ -536,6 +603,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 					logging.String("error", err.Error()),
 				)
 			}
+			s.releaseStorageForSR(ctx, sr)
 			// Continue with other service requests
 			continue
 		}
@@ -544,7 +612,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		// For now, we use a simple approach: provision from now until the planning horizon
 		// In future, we could compute actual link visibility windows
 		now := s.Clock.Now()
-		horizon := now.Add(1 * time.Hour) // Match the planning horizon used in ScheduleLinkBeams
+		horizon := now.Add(ContactHorizon) // Match the planning horizon used in ScheduleLinkBeams
 		interval := model.TimeInterval{
 			Start: now,
 			End:   horizon,
@@ -555,6 +623,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 				logging.String("error", err.Error()),
 			)
 		}
+		s.releaseStorageForSR(ctx, sr)
 
 		s.log.Debug(ctx, "Scheduled actions for service request",
 			logging.String("sr_id", sr.ID),
@@ -563,6 +632,75 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Scheduler) reserveStorageForSR(ctx context.Context, sr *model.ServiceRequest) {
+	if sr == nil || sr.SrcNodeID == "" {
+		return
+	}
+	if _, exists := s.storageReservations[sr.ID]; exists {
+		return
+	}
+
+	bytes := s.storageRequirementBytes(sr)
+	if bytes <= 0 {
+		return
+	}
+
+	if err := s.State.ReserveStorage(sr.SrcNodeID, bytes); err != nil {
+		s.log.Warn(ctx, "Failed to reserve DTN storage",
+			logging.String("sr_id", sr.ID),
+			logging.String("node_id", sr.SrcNodeID),
+			logging.String("error", err.Error()),
+		)
+		return
+	}
+
+	s.storageReservations[sr.ID] = bytes
+	s.log.Debug(ctx, "Reserved DTN storage for service request",
+		logging.String("sr_id", sr.ID),
+		logging.String("node_id", sr.SrcNodeID),
+		logging.String("bytes", fmt.Sprintf("%.0f", bytes)),
+	)
+}
+
+func (s *Scheduler) releaseStorageForSR(ctx context.Context, sr *model.ServiceRequest) {
+	if sr == nil {
+		return
+	}
+	bytes, ok := s.storageReservations[sr.ID]
+	if !ok {
+		return
+	}
+
+	s.State.ReleaseStorage(sr.SrcNodeID, bytes)
+	delete(s.storageReservations, sr.ID)
+	s.log.Debug(ctx, "Released DTN storage for service request",
+		logging.String("sr_id", sr.ID),
+		logging.String("node_id", sr.SrcNodeID),
+		logging.String("bytes", fmt.Sprintf("%.0f", bytes)),
+	)
+}
+
+func (s *Scheduler) storageRequirementBytes(sr *model.ServiceRequest) float64 {
+	if sr == nil {
+		return 0
+	}
+
+	var bw float64
+	for _, fr := range sr.FlowRequirements {
+		bw = math.Max(bw, fr.RequestedBandwidth)
+	}
+	if bw == 0 {
+		for _, fr := range sr.FlowRequirements {
+			bw = math.Max(bw, fr.MinBandwidth)
+		}
+	}
+	if bw == 0 {
+		bw = 1e6 // default 1 Mbps
+	}
+
+	return math.Max(0, bw*(defaultDtnHold.Seconds())/8.0)
 }
 
 // connectivityGraph represents a simple undirected graph of node connectivity.
@@ -822,4 +960,15 @@ func (s *Scheduler) findLinkBetweenNodes(nodeAID, nodeBID string) (*core.Network
 	}
 
 	return nil, nil, nil, fmt.Errorf("no link found between %s and %s", nodeAID, nodeBID)
+}
+
+func localInterfaceID(ifID string) string {
+	if ifID == "" {
+		return ""
+	}
+	parts := strings.SplitN(ifID, "/", 2)
+	if len(parts) == 2 && parts[1] != "" {
+		return parts[1]
+	}
+	return ifID
 }

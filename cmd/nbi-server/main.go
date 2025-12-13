@@ -15,10 +15,15 @@ import (
 	"time"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/observability"
+	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
+	sbicontroller "github.com/signalsfoundry/constellation-simulator/internal/sbi/controller"
+	sbiruntime "github.com/signalsfoundry/constellation-simulator/internal/sbi/runtime"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/timectrl"
@@ -26,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Config struct {
@@ -148,11 +154,13 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	)
 
 	tc := timectrl.NewTimeController(time.Now().UTC(), cfg.TickInterval, timeMode(cfg))
-	simCtx, simCancel := context.WithCancel(ctx)
-	defer simCancel()
-	go runSimLoop(simCtx, tc, state, motion, connectivity, log)
+	eventScheduler := sbi.NewEventScheduler(tc)
 
-	server, err := buildGRPCServer(cfg, state, motion, collector, log)
+	telemetryState := sim.NewTelemetryState()
+	telemetryServer := sbicontroller.NewTelemetryServer(telemetryState, log)
+	cdpiServer := sbicontroller.NewCDPIServer(state, eventScheduler, log)
+
+	server, err := buildGRPCServer(cfg, state, motion, collector, log, cdpiServer, telemetryServer)
 	if err != nil {
 		return err
 	}
@@ -169,6 +177,30 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	go func() {
 		serveErr <- server.Serve(lis)
 	}()
+
+	conn, err := dialLocalGRPC(ctx, lis.Addr().String(), cfg)
+	if err != nil {
+		return fmt.Errorf("dial local gRPC server: %w", err)
+	}
+	defer conn.Close()
+
+	sbiRuntime, err := sbiruntime.NewSBIRuntimeWithServers(state, eventScheduler, telemetryState, telemetryServer, cdpiServer, conn, log)
+	if err != nil {
+		return fmt.Errorf("initialise SBI runtime: %w", err)
+	}
+	defer sbiRuntime.Close()
+
+	if err := sbiRuntime.StartAgents(ctx); err != nil {
+		return fmt.Errorf("start SBI agents: %w", err)
+	}
+
+	if err := sbiRuntime.Scheduler.RunInitialSchedule(ctx); err != nil {
+		return fmt.Errorf("run initial SBI schedule: %w", err)
+	}
+
+	simCtx, simCancel := context.WithCancel(ctx)
+	defer simCancel()
+	go runSimLoop(simCtx, tc, state, motion, connectivity, eventScheduler, sbiRuntime.Scheduler, log)
 
 	var retErr error
 	var serveResult error
@@ -209,6 +241,8 @@ func buildGRPCServer(
 	motion *core.MotionModel,
 	collector *observability.NBICollector,
 	log logging.Logger,
+	cdpiServer *sbicontroller.CDPIServer,
+	telemetryServer *sbicontroller.TelemetryServer,
 ) (*grpc.Server, error) {
 	interceptors := []grpc.UnaryServerInterceptor{
 		nbi.RequestIDUnaryServerInterceptor(log),
@@ -242,7 +276,21 @@ func buildGRPCServer(
 	v1alpha.RegisterServiceRequestServiceServer(server, nbi.NewServiceRequestService(state, log))
 	v1alpha.RegisterScenarioServiceServer(server, nbi.NewScenarioService(state, log))
 
+	if cdpiServer != nil {
+		schedulingpb.RegisterSchedulingServer(server, cdpiServer)
+	}
+	if telemetryServer != nil {
+		telemetrypb.RegisterTelemetryServer(server, telemetryServer)
+	}
+
 	return server, nil
+}
+
+var replanInterval = 5 * time.Minute
+
+type runLoopScheduler interface {
+	RecomputeContactWindows(context.Context, time.Time, time.Time)
+	ScheduleServiceRequests(context.Context) error
 }
 
 func runSimLoop(
@@ -251,6 +299,8 @@ func runSimLoop(
 	state *sim.ScenarioState,
 	motion *core.MotionModel,
 	connectivity *core.ConnectivityService,
+	eventScheduler sbi.EventScheduler,
+	controllerScheduler runLoopScheduler,
 	log logging.Logger,
 ) {
 	if tc == nil || state == nil {
@@ -261,16 +311,48 @@ func runSimLoop(
 	defer ticker.Stop()
 
 	simTime := tc.StartTime
+	tc.SetTime(simTime)
+	if err := state.RunSimTick(simTime, motion, connectivity, func() {
+		syncNodePositions(state.PhysicalKB(), state.NetworkKB())
+	}); err != nil {
+		log.Warn(ctx, "initial simulation tick failed", logging.String("error", err.Error()))
+	}
+	if eventScheduler != nil {
+		eventScheduler.RunDue()
+	}
+
+	lastReplanTime := simTime
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			simTime = simTime.Add(tc.Tick)
+			tc.SetTime(simTime)
+
 			if err := state.RunSimTick(simTime, motion, connectivity, func() {
 				syncNodePositions(state.PhysicalKB(), state.NetworkKB())
 			}); err != nil {
 				log.Warn(ctx, "simulation tick failed", logging.String("error", err.Error()))
+			}
+
+			if eventScheduler != nil {
+				eventScheduler.RunDue()
+			}
+
+			if controllerScheduler != nil && simTime.Sub(lastReplanTime) >= replanInterval {
+				log.Debug(ctx, "Running periodic re-planning",
+					logging.String("sim_time", simTime.Format(time.RFC3339)),
+				)
+				horizon := simTime.Add(sbicontroller.ContactHorizon)
+				controllerScheduler.RecomputeContactWindows(ctx, simTime, horizon)
+				if err := controllerScheduler.ScheduleServiceRequests(ctx); err != nil {
+					log.Warn(ctx, "Periodic re-planning failed",
+						logging.String("error", err.Error()),
+					)
+				}
+				lastReplanTime = simTime
 			}
 		}
 	}
@@ -417,4 +499,25 @@ func timeMode(cfg Config) timectrl.Mode {
 		return timectrl.Accelerated
 	}
 	return timectrl.RealTime
+}
+
+func dialLocalGRPC(ctx context.Context, target string, cfg Config) (*grpc.ClientConn, error) {
+	var dialCred credentials.TransportCredentials
+	if cfg.EnableTLS {
+		cred, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
+		if err != nil {
+			return nil, fmt.Errorf("load TLS client credentials: %w", err)
+		}
+		dialCred = cred
+	} else {
+		dialCred = insecure.NewCredentials()
+	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	return grpc.DialContext(dialCtx, target,
+		grpc.WithTransportCredentials(dialCred),
+		grpc.WithBlock(),
+	)
 }
