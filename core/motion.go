@@ -218,4 +218,3 @@ func clonePlatform(pd *model.PlatformDefinition) *model.PlatformDefinition {
 	cp := *pd
 	return &cp
 }
-
