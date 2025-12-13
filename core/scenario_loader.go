@@ -105,7 +105,9 @@ func LoadNetworkScenario(kb *KnowledgeBase, r io.Reader) (*NetworkScenario, erro
 			// LinkIDs is managed by KB when links are added.
 		}
 
-		kb.AddInterface(intf)
+		if err := kb.AddInterface(intf); err != nil {
+			return nil, fmt.Errorf("LoadNetworkScenario: failed to add interface %q: %w", jsIF.ID, err)
+		}
 		result.InterfaceIDs = append(result.InterfaceIDs, jsIF.ID)
 	}
 
@@ -124,7 +126,9 @@ func LoadNetworkScenario(kb *KnowledgeBase, r io.Reader) (*NetworkScenario, erro
 			// Quality/SNR/Capacity are evaluated by ConnectivityService.
 		}
 
-		kb.AddNetworkLink(link)
+		if err := kb.AddNetworkLink(link); err != nil {
+			return nil, fmt.Errorf("LoadNetworkScenario: failed to add link %q: %w", jsL.ID, err)
+		}
 		result.LinkIDs = append(result.LinkIDs, jsL.ID)
 	}
 
