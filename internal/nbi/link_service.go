@@ -230,11 +230,7 @@ func (s *NetworkLinkService) validateLinks(links ...*core.NetworkLink) error {
 				link.IsUp = true
 			case wireless:
 				// Dynamic wireless link: leave IsUp/IsStatic for connectivity engine.
-				// Ensure Status is Unknown (default) so links can auto-activate when geometry allows.
 				link.Medium = core.MediumWireless
-				link.IsUp = false // Let connectivity engine determine based on geometry
-				link.IsStatic = true // Static links created via NBI API
-				// Status defaults to LinkStatusUnknown (0), which allows auto-activation
 			default:
 				return fmt.Errorf(
 					"%w: link endpoints must both be wired or both wireless: %q (%s) <-> %q (%s)",

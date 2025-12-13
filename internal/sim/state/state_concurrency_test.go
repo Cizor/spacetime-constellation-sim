@@ -185,7 +185,7 @@ func exercisePlatforms(state *ScenarioState, iter int) {
 
 var nodeSeq uint64
 
-func exerciseNodes(state *ScenarioState, platformID string, _ int) {
+func exerciseNodes(state *ScenarioState, platformID string, iter int) {
 	id := fmt.Sprintf("node-dyn-%d", atomic.AddUint64(&nodeSeq, 1))
 	ifaceID := id + "/if0"
 

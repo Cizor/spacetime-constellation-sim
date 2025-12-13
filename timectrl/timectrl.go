@@ -1,7 +1,6 @@
 package timectrl
 
 import (
-	"sync"
 	"time"
 )
 
@@ -30,14 +29,9 @@ const (
 // TimeController drives simulation time and notifies registered listeners.
 // It implements SimClock for use by Scope 4 components.
 type TimeController struct {
-	mu        sync.RWMutex
 	StartTime time.Time
 	Tick      time.Duration
 	Mode      Mode
-
-	// currentTime tracks the current simulation time. It is updated
-	// as the controller advances time.
-	currentTime time.Time
 
 	listeners []func(time.Time)
 }
@@ -45,43 +39,15 @@ type TimeController struct {
 // NewTimeController constructs a controller.
 func NewTimeController(start time.Time, tick time.Duration, mode Mode) *TimeController {
 	return &TimeController{
-		StartTime:   start,
-		Tick:        tick,
-		Mode:        mode,
-		currentTime: start,
+		StartTime: start,
+		Tick:      tick,
+		Mode:      mode,
 	}
-}
-
-// Now returns the current simulation time. Implements SimClock.
-func (tc *TimeController) Now() time.Time {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-	return tc.currentTime
-}
-
-// After returns a channel that will receive the current simulation time
-// after the duration d has elapsed in simulation time. Implements SimClock.
-//
-// TODO: This will be integrated with the event scheduler in later Scope 4 chunks
-// to fire timers when simulation time advances. For now, it returns a channel
-// that will not fire automatically.
-func (tc *TimeController) After(d time.Duration) <-chan time.Time {
-	ch := make(chan time.Time, 1)
-	// TODO: integrate with scheduler/timer registration so events fire when sim time advances.
-	return ch
 }
 
 // AddListener registers a callback invoked on every tick.
 func (tc *TimeController) AddListener(fn func(time.Time)) {
 	tc.listeners = append(tc.listeners, fn)
-}
-
-// SetTime updates the current simulation time. This is used by external
-// run loops that manually advance time (e.g., in cmd/nbi-server).
-func (tc *TimeController) SetTime(t time.Time) {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-	tc.currentTime = t
 }
 
 // Start runs the controller for the specified duration in a separate goroutine.
@@ -91,11 +57,7 @@ func (tc *TimeController) Start(duration time.Duration) <-chan struct{} {
 	go func() {
 		defer close(done)
 
-		tc.mu.Lock()
 		simTime := tc.StartTime
-		tc.currentTime = simTime
-		tc.mu.Unlock()
-
 		elapsed := time.Duration(0)
 
 		// In both modes we use a ticker for simplicity and determinism.
@@ -110,11 +72,6 @@ func (tc *TimeController) Start(duration time.Duration) <-chan struct{} {
 			<-ticker.C
 			simTime = simTime.Add(tc.Tick)
 			elapsed += tc.Tick
-
-			// Update currentTime under lock
-			tc.mu.Lock()
-			tc.currentTime = simTime
-			tc.mu.Unlock()
 
 			for _, fn := range tc.listeners {
 				fn(simTime)

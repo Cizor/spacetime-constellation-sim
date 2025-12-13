@@ -23,9 +23,7 @@ PROTO_SRC_DIRS := \
   $(PROTO_API_ROOT)/api/common \
   $(PROTO_API_ROOT)/api/nbi/v1alpha \
   $(PROTO_API_ROOT)/api/nbi/v1alpha/resources \
-  $(PROTO_API_ROOT)/api/types \
-  $(PROTO_API_ROOT)/api/scheduling/v1alpha \
-  $(PROTO_API_ROOT)/api/telemetry/v1alpha
+  $(PROTO_API_ROOT)/api/types
 
 # All .proto files in those directories
 PROTO_FILES := $(foreach dir,$(PROTO_SRC_DIRS),$(wildcard $(dir)/*.proto))
@@ -65,11 +63,11 @@ lint:
 
 ## Generate protobuf / gRPC code for Aalyria APIs (Scope 3)
 proto:
-	@mkdir -p "$(PROTO_OUT_DIR)"
+	@if not exist "$(PROTO_OUT_DIR)" mkdir "$(PROTO_OUT_DIR)"
 	protoc -I $(PROTO_API_ROOT) -I $(PROTO_GOOGLE_ROOT) \
 	  --go_out=$(PROTO_OUT_DIR) --go_opt=paths=source_relative \
 	  --go-grpc_out=$(PROTO_OUT_DIR) --go-grpc_opt=paths=source_relative \
-	  $(addprefix $(PROTO_API_ROOT)/,$(PROTO_FILES_REL))
+	  $(PROTO_FILES_REL)
 
 ## Backwards-compatible alias
 protos: proto

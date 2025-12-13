@@ -708,16 +708,14 @@ func newDirectionalLink(src, dst string) *core.NetworkLink {
 }
 
 // newBidirectionalLink constructs an undirected NetworkLink using a stable ID.
-// For wireless links, IsUp and IsStatic will be set by validateLinks based on medium type.
 func newBidirectionalLink(a, b string) *core.NetworkLink {
 	return &core.NetworkLink{
 		ID:         combineLinkID(a, b),
 		InterfaceA: a,
 		InterfaceB: b,
 		Medium:     core.MediumWireless,
-		IsUp:       false, // Will be set by validateLinks or connectivity engine
-		IsStatic:   false, // Will be set by validateLinks based on medium
-		// Status defaults to LinkStatusUnknown (0), which allows auto-activation
+		IsUp:       true,
+		IsStatic:   true,
 	}
 }
 
@@ -752,6 +750,13 @@ func (e bidirectionalEndpoint) txInterface() string {
 		return e.txID
 	}
 	return e.rxID
+}
+
+func (e bidirectionalEndpoint) rxInterface() string {
+	if e.rxID != "" {
+		return e.rxID
+	}
+	return e.txID
 }
 
 func stringPtr(s string) *string {

@@ -27,9 +27,4 @@ type NetworkNode struct {
 	// PlatformID links this node to a PlatformDefinition.
 	// Consumers can obtain the node's position by looking up the platform.
 	PlatformID string
-
-	// Routes is the per-node static routing table. Managed by Scope 4
-	// control-plane components via ScenarioState.InstallRoute/RemoveRoute.
-	// Empty/nil by default.
-	Routes []RouteEntry
 }

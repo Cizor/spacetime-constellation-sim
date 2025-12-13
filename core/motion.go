@@ -108,45 +108,31 @@ func (m *MotionModel) Reset() {
 
 // UpdatePositions advances all registered platforms to simTime.
 func (m *MotionModel) UpdatePositions(simTime time.Time) error {
-	m.mu.Lock()
+	m.mu.RLock()
 	entries := make([]motionEntry, 0, len(m.entries))
 	for _, entry := range m.entries {
 		entries = append(entries, entry)
 	}
 	updater := m.posUpdater
-	m.mu.Unlock() // Release lock before calling external callbacks to avoid deadlock
+	m.mu.RUnlock()
 
-	var errs []error
+	var lastErr error
 	for _, entry := range entries {
 		if entry.propagator == nil || entry.platform == nil {
 			continue
 		}
-		// UpdatePosition modifies the cloned platform object's Coordinates field.
-		// Since each entry contains its own cloned copy, concurrent modifications
-		// to different entries are safe. The lock was only needed to protect
-		// access to m.entries map, which we've already copied.
 		entry.propagator.UpdatePosition(simTime, entry.platform)
-		// Update platform position via updater callback, which updates the KB's
-		// current platform reference. We don't update entry.original directly
-		// because the KB may have replaced the platform object with UpdatePlatform(),
-		// making entry.original a stale reference.
-		// Note: updater (typically KB) has its own locks, so we must not hold
-		// MotionModel's lock while calling it to avoid potential deadlocks.
 		if updater != nil {
 			if err := updater.UpdatePlatformPosition(entry.platform.ID, entry.platform.Coordinates); err != nil {
-				errs = append(errs, err)
+				lastErr = err
 			}
 		}
 	}
-	// Return the first error encountered, or nil if no errors
-	if len(errs) > 0 {
-		return errs[0]
-	}
-	return nil
+	return lastErr
 }
 
 type motionEntry struct {
-	platform   *model.PlatformDefinition // Cloned copy for internal use
+	platform   *model.PlatformDefinition
 	propagator platformPropagator
 }
 
@@ -219,8 +205,6 @@ func clonePlatform(pd *model.PlatformDefinition) *model.PlatformDefinition {
 	if pd == nil {
 		return nil
 	}
-	// Allocate on the heap to avoid returning a pointer to a stack-allocated variable
-	cp := new(model.PlatformDefinition)
-	*cp = *pd
-	return cp
+	cp := *pd
+	return &cp
 }

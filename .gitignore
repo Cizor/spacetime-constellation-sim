@@ -1,6 +1,2 @@
 nbi_descriptor.pb
 third_party/googleapis/
-docs/planning/*.pdf
-docs/planning/*.zip
-docs/planning/*_extracted.txt
-*.exe

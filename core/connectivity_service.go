@@ -428,9 +428,9 @@ func estimateLinkSNRdB(tx, rx *TransceiverModel, distanceKm float64) float64 {
 	// Received power in dBW.
 	pr := pt + gt + gr - fspl
 
-	// Simple, fixed noise floor assumption adjusted by noise figure.
-	// Noise figure increases the effective noise floor (makes it less negative),
-	// which reduces SNR. Higher noise figures should decrease SNR and link quality.
+	// Simple, fixed noise floor assumption extended by noise figure.
+	// This keeps the estimator conservative while respecting TLE catalog
+	// metadata that was previously dropped.
 	noiseFloor := -120.0 + averageNoiseFigure(tx, rx)
 
 	return pr - noiseFloor
@@ -473,10 +473,8 @@ func averageNoiseFigure(tx, rx *TransceiverModel) float64 {
 		if model == nil {
 			continue
 		}
-		// Use pointer check to distinguish between unset (nil) and explicitly set to zero.
-		// A noise figure of 0 dB is valid (perfect receiver with no added noise).
-		if model.SystemNoiseFigureDB != nil {
-			sum += *model.SystemNoiseFigureDB
+		if nf := model.SystemNoiseFigureDB; nf != 0 {
+			sum += nf
 			count++
 		}
 	}

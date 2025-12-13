@@ -134,16 +134,10 @@ func (kb *KnowledgeBase) ReplaceInterfacesForNode(nodeID string, interfaces []*N
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
-	// Collect interface IDs to delete first, then delete them.
-	// Modifying a map during iteration is undefined behavior in Go.
-	var idsToDelete []string
 	for id, iface := range kb.interfaces {
 		if iface != nil && iface.ParentNodeID == nodeID {
-			idsToDelete = append(idsToDelete, id)
+			kb.deleteInterfaceLocked(id)
 		}
-	}
-	for _, id := range idsToDelete {
-		kb.deleteInterfaceLocked(id)
 	}
 
 	for _, iface := range interfaces {
@@ -216,10 +210,8 @@ func (kb *KnowledgeBase) AddNetworkLink(link *NetworkLink) error {
 	}
 
 	// Store our own copy so callers cannot mutate KB-owned state without locks.
-	// Allocate on the heap to avoid dangling pointer when function returns.
-	stored := new(NetworkLink)
-	*stored = *link
-	kb.links[link.ID] = stored
+	stored := *link
+	kb.links[link.ID] = &stored
 
 	// Adjacency: linksByInterface and interface.LinkIDs.
 	kb.attachLinkToInterface(link.ID, link.InterfaceA)
@@ -419,19 +411,12 @@ func (kb *KnowledgeBase) detachLinkFromInterface(linkID, ifID string) {
 // deleteInterfaceLocked removes the interface with the provided ID and cleans
 // up any adjacency state. Caller must hold kb.mu (write lock).
 func (kb *KnowledgeBase) deleteInterfaceLocked(id string) {
-	// Collect link IDs to delete first, then delete them.
-	// Modifying a map during iteration is undefined behavior in Go.
-	var linkIDsToDelete []string
 	for linkID, link := range kb.links {
 		if link.InterfaceA == id || link.InterfaceB == id {
-			linkIDsToDelete = append(linkIDsToDelete, linkID)
+			kb.detachLinkFromInterface(linkID, link.InterfaceA)
+			kb.detachLinkFromInterface(linkID, link.InterfaceB)
+			delete(kb.links, linkID)
 		}
-	}
-	for _, linkID := range linkIDsToDelete {
-		link := kb.links[linkID]
-		kb.detachLinkFromInterface(linkID, link.InterfaceA)
-		kb.detachLinkFromInterface(linkID, link.InterfaceB)
-		delete(kb.links, linkID)
 	}
 
 	delete(kb.linksByInterface, id)

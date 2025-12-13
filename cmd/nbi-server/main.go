@@ -15,15 +15,10 @@ import (
 	"time"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
-	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/observability"
-	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
-	sbicontroller "github.com/signalsfoundry/constellation-simulator/internal/sbi/controller"
-	sbiruntime "github.com/signalsfoundry/constellation-simulator/internal/sbi/runtime"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/timectrl"
@@ -31,7 +26,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Config struct {
@@ -154,16 +148,11 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	)
 
 	tc := timectrl.NewTimeController(time.Now().UTC(), cfg.TickInterval, timeMode(cfg))
+	simCtx, simCancel := context.WithCancel(ctx)
+	defer simCancel()
+	go runSimLoop(simCtx, tc, state, motion, connectivity, log)
 
-	// Create EventScheduler for SBI components
-	eventScheduler := sbi.NewEventScheduler(tc)
-
-	// Create SBI servers (they will be registered on the gRPC server)
-	telemetryState := sim.NewTelemetryState()
-	telemetryServer := sbicontroller.NewTelemetryServer(telemetryState, log)
-	cdpiServer := sbicontroller.NewCDPIServer(state, eventScheduler, log)
-
-	server, err := buildGRPCServer(cfg, state, motion, collector, log, telemetryState, telemetryServer, cdpiServer)
+	server, err := buildGRPCServer(cfg, state, motion, collector, log)
 	if err != nil {
 		return err
 	}
@@ -178,79 +167,8 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	log.Info(ctx, "starting NBI gRPC server", logging.String("addr", lis.Addr().String()))
 	serveErr := make(chan error, 1)
 	go func() {
-		// Serve() will block until the server stops
 		serveErr <- server.Serve(lis)
 	}()
-
-	// Give the server a brief moment to start listening
-	// This is necessary because Serve() may take a moment to bind to the port
-	// Use a shorter delay and check for context cancellation
-	timer := time.NewTimer(10 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		// Continue after brief delay to allow server to start listening
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for server to listen: %w", ctx.Err())
-	}
-
-	// Check if server failed to start before attempting connection
-	// Use a non-blocking select to check for immediate errors
-	select {
-	case err := <-serveErr:
-		if err != nil {
-			return fmt.Errorf("server failed to start: %w", err)
-		}
-		// If we get here, server exited immediately (shouldn't happen)
-		return fmt.Errorf("server exited unexpectedly")
-	default:
-		// Server is still running (or hasn't reported an error yet), proceed with connection
-	}
-
-	// Create in-process gRPC client connection for agents
-	// Agents will connect to the same server we just started
-	// Use grpc.WithBlock() to ensure the server is ready before proceeding
-	clientConn, err := grpc.DialContext(ctx, lis.Addr().String(),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock())
-	if err != nil {
-		return fmt.Errorf("failed to create client connection for agents: %w", err)
-	}
-	defer clientConn.Close()
-
-	// Set initial simulation time before starting agents and running initial schedule.
-	// This ensures EventScheduler.Now() returns the correct time when agents query time
-	// during initialization (e.g., in startTelemetryLoop) and when scheduling events.
-	// The sim loop will start at StartTime and advance by Tick on the first iteration,
-	// so we set the time to StartTime here to match the initial state.
-	tc.SetTime(tc.StartTime)
-
-	// Create and start SBI runtime with pre-created servers
-	sbiRuntime, err := sbiruntime.NewSBIRuntimeWithServers(state, eventScheduler, telemetryState, telemetryServer, cdpiServer, clientConn, log)
-	if err != nil {
-		return fmt.Errorf("failed to create SBI runtime: %w", err)
-	}
-	defer sbiRuntime.Close()
-
-	// Start agents (they will connect to CDPI and Telemetry servers)
-	// Agents may query simulation time during initialization (e.g., in startTelemetryLoop),
-	// so tc.SetTime() must be called before this point.
-	if err := sbiRuntime.StartAgents(ctx); err != nil {
-		return fmt.Errorf("failed to start agents: %w", err)
-	}
-
-	// Run initial schedule
-	// Note: We log a warning but don't fail startup if initial scheduling fails,
-	// as the scheduler can be retried later and the simulation can continue.
-	if err := sbiRuntime.Scheduler.RunInitialSchedule(ctx); err != nil {
-		log.Warn(ctx, "Initial scheduling failed, simulation will continue but may have incomplete scheduling",
-			logging.String("error", err.Error()),
-		)
-	}
-
-	simCtx, simCancel := context.WithCancel(ctx)
-	defer simCancel()
-	go runSimLoop(simCtx, tc, state, motion, connectivity, log, eventScheduler)
 
 	var retErr error
 	var serveResult error
@@ -291,9 +209,6 @@ func buildGRPCServer(
 	motion *core.MotionModel,
 	collector *observability.NBICollector,
 	log logging.Logger,
-	telemetryState *sim.TelemetryState,
-	telemetryServer *sbicontroller.TelemetryServer,
-	cdpiServer *sbicontroller.CDPIServer,
 ) (*grpc.Server, error) {
 	interceptors := []grpc.UnaryServerInterceptor{
 		nbi.RequestIDUnaryServerInterceptor(log),
@@ -327,13 +242,6 @@ func buildGRPCServer(
 	v1alpha.RegisterServiceRequestServiceServer(server, nbi.NewServiceRequestService(state, log))
 	v1alpha.RegisterScenarioServiceServer(server, nbi.NewScenarioService(state, log))
 
-	// Register SBI services (CDPI and Telemetry)
-	telemetrypb.RegisterTelemetryServer(server, telemetryServer)
-	schedulingpb.RegisterSchedulingServer(server, cdpiServer)
-
-	// Register NBI telemetry service (for reading telemetry state)
-	v1alpha.RegisterTelemetryServiceServer(server, nbi.NewTelemetryService(telemetryState, log))
-
 	return server, nil
 }
 
@@ -344,7 +252,6 @@ func runSimLoop(
 	motion *core.MotionModel,
 	connectivity *core.ConnectivityService,
 	log logging.Logger,
-	eventScheduler sbi.EventScheduler,
 ) {
 	if tc == nil || state == nil {
 		return
@@ -354,36 +261,16 @@ func runSimLoop(
 	defer ticker.Stop()
 
 	simTime := tc.StartTime
-	firstTick := true
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// On the first tick, process at StartTime without incrementing.
-			// This ensures events scheduled at StartTime (e.g., by RunInitialSchedule)
-			// are processed on the first tick, aligning with the comment that says
-			// "The sim loop will start at StartTime".
-			if firstTick {
-				firstTick = false
-				// simTime remains at StartTime for the first tick
-			} else {
-				simTime = simTime.Add(tc.Tick)
-			}
-
-			// Update TimeController's internal time so EventScheduler.Now() returns correct time
-			// This is critical for EventScheduler integration (Issue #168)
-			tc.SetTime(simTime)
-
+			simTime = simTime.Add(tc.Tick)
 			if err := state.RunSimTick(simTime, motion, connectivity, func() {
 				syncNodePositions(state.PhysicalKB(), state.NetworkKB())
 			}); err != nil {
 				log.Warn(ctx, "simulation tick failed", logging.String("error", err.Error()))
-			}
-			// Run due events from the event scheduler (for SBI actions)
-			// This ensures scheduled actions execute at the correct simulation time (Issue #168)
-			if eventScheduler != nil {
-				eventScheduler.RunDue()
 			}
 		}
 	}
