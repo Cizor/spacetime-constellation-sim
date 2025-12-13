@@ -42,7 +42,9 @@ func TestNBIServerStartupSmoke(t *testing.T) {
 		errCh <- run(ctx, cfg, log, lis)
 	}()
 
-	conn, err := grpc.DialContext(ctx, cfg.ListenAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.DialContext(ctx, cfg.ListenAddress,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock())
 	if err != nil {
 		t.Fatalf("grpc.DialContext: %v", err)
 	}
