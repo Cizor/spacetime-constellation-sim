@@ -1,57 +1,45 @@
 # Spacetime-Compatible Constellation Simulator (Go)
 
-Spacetime-Compatible Constellation Simulator is a headless Go backend for modeling space-to-ground constellation topologies and exposing control-plane automation inspired by Aalyria Spacetime’s data model. It is designed for developers who want to experiment with satellite + terrestrial networks without depending on a closed service.
+Spacetime-Compatible Constellation Simulator is a headless Go service that models satellite constellations, ground infrastructure, and their control-plane automation through Aalyria Spacetime-inspired concepts. Run it locally to experiment with platforms, nodes, links, telemetry, and SBI/NBI scheduling without relying on the production service.
 
-## What it does today
+## What the project does today
 
-- **Motion + Knowledge Bases**
-  - Define platforms (satellites, ground stations, etc.) with orbital or static motion.
-  - Attach network nodes and interfaces, backed by thread-safe knowledge bases.
-  - Propagate motion every tick using SGP4 (for orbital platforms) or static motion, updating node positions in the process.
+- **Entity modeling**
+  - Platforms (orbital or static) with motion propagation via SGP4 or a fixed position.
+  - Network nodes attached to platforms, each with multiple wired or wireless interfaces.
+  - Knowledge bases (`kb.Platform`, `kb.NetworkNode`, `core.NetworkLink`) kept in memory, thread-safe, and shared between the simulation loop and APIs.
 
-- **Connectivity evaluation**
-  - Evaluate wired links as always available and wireless pairs via geometry (line-of-sight, horizon, Earth occlusion).
-  - Track dynamic link statuses so downstream components know what’s “potentially up” at any instant.
+- **Simulation engine**
+  - Time controller (`timectrl`) that advances the clock on a configurable tick interval and exposes `Now()`/`SetTime()`.
+  - Motion models that update platform positions every tick and write them back to the knowledge base.
+  - Connectivity evaluator that marks wired links as available and evaluates wireless links based on geometry (line-of-sight, horizon, occlusion), creating a time-varying view of potential and active links.
 
-- **Scope 4 SBI controller**
-  - Integrated SBI runtime wired into the main gRPC server.
-  - Event scheduler that keeps agents, beams, and routes in sync with the simulation clock.
-  - Beam + route scheduling that uses precomputed contact windows, interfaces with the SBI CDPI server, and tracks DTN storage reservations.
-  - Service request scheduler with priority ordering, DTN heuristics, and periodic re-planning within the simulation loop.
-  - Time controller that exposes `Now()`/`SetTime()` so the scheduler and agents stay in lock-step with each tick.
+- **Scope 4 SBI controller**
+  - SBI runtime integrated into `cmd/nbi-server` with TCP/TLS server, CDPI + telemetry gRPC services, and in-process agent connections.
+  - Scheduler that precomputes contact windows, normalizes beam interface IDs, orders service requests by priority, logs conflicts/power issues, and tracks DTN storage reservations via the scenario state.
+  - Simulation loop that advances the clock, runs `EventScheduler.RunDue()` each tick, and periodically recomputes windows and re-runs service requests to react to topology changes.
+  - Telemetry/agent stack that builds interface metrics and has hooks for future modem metrics, intents, and expanded observability.
 
-- **Northbound interface (NBI)**
-  - `cmd/nbi-server` exposes the Aalyria-style gRPC services (`Scheduling`, `Telemetry`, etc.) on the same server as the simulator.
-  - Telemetry server collects interface-level metrics, beams, and has hooks for future enhancements (modem metrics, intents).
-  - SBIRuntime brings up agents, the CDPI server, and the scheduler with TLS-aware dialing and in-process gRPC connection for agents.
+- **Northbound interface**
+  - `cmd/nbi-server` hosts Aalyria-style gRPC services (`Scheduling`, `Telemetry`, etc.) alongside NBI services (platform, node, link, service request, scenario), so clients can manage the scenario and read telemetry from a single endpoint.
 
-## Highlights
+- **Testing**
+  - Tests cover the scheduler, run loop, contact-window logic, and time controller (`go test ./...`) to keep the newer reactive behavior validated.
 
-- **Periodic re-planning**: the sim loop now updates the SBI event scheduler every tick and, every few simulated minutes, recomputes contact windows and reschedules service requests to react to topology change.  
-- **DTN tracking**: storage reservations are enforced via the scenario state, with per-request accounting to prevent oversubscription.  
-- **Conflict detection & power heuristics**: the scheduler logs when interfaces exceed their `MaxBeams` or power budgets, reduces window lengths for time-slicing, and reports storage usage.  
-- **Extensive testing**: coverage includes contact-window computation, run loop event scheduling/re-planning, and TimeController behavior plus the existing scheduler/unit suites.
+## Repository layout (highlighted)
 
-## Repository layout
-
-- `cmd/nbi-server/`: gRPC server wiring the SBI runtime + ScenarioState alongside the traditional NBI services.  
-- `internal/sbi/`: controller runtime, scheduler, agent, and telemetry implementations for Scope 4.  
-- `internal/sim/state/`: ScenarioState that unifies Scope 1 (platforms) and Scope 2 (interfaces/links) knowledge bases plus service-request bookkeeping.  
-- `core/`, `kb/`, `model/`, `timectrl/`: the motion/connectivity engine, in-memory KBs, data definitions, and time controller pieces previously described.  
-- `docs/`, `docs/planning/`: architecture planning, requirements, and implementation plans for each scope.
-
-## Scope 5 / future work
-
-- Conflict resolution & time-slicing for multi-request contention  
-- Time-aware multi-hop pathfinding (with DTN vs non-DTN awareness)  
-- Reactive re-planning exposed as APIs + failure handling  
-- Power-budget accounting + telemetry expansion (modem metrics, intents)  
-- Region-based service requests, federation support, stronger observability
+- `cmd/nbi-server/`: gRPC server wiring ScenarioState, SBI runtime, telemetry, and NBI services.
+- `internal/sbi/`: SBI controller, scheduler, runtime, agent, and telemetry implementations.
+- `internal/sim/state/`: ScenarioState unifying Scope 1 and Scope 2 knowledge bases plus service request bookkeeping and DTN storage tracking.
+- `core/`, `kb/`, `model/`, `timectrl/`: motion/connectivity engine, in-memory KBs, data definitions, and the time controller.
+- `docs/` & `docs/planning/`: design records, requirements, roadmaps, and planning artifacts that document ongoing work.
 
 ## Getting started
 
-1. `go mod tidy` to pull dependencies  
-2. `go build ./cmd/nbi-server` (or `./cmd/simulator` for the non-gRPC demo)  
-3. Start the binary, load a scenario (see `docs/planning` for current plans), and use gRPC tooling to exercise the NBI/SBI endpoints.
+1. Install Go 1.21+ and ensure the Go tooling is on your PATH.
+2. `go mod tidy` to download dependencies.
+3. `go build ./cmd/nbi-server` (or `./cmd/simulator` for the demo CLI).
+4. Run the binary, load a scenario via the gRPC NBI (or REST shim), and watch the SBI scheduler manage beams/routes.
+5. `go test ./...` verifies the scheduler, run loop, and time controller logic.
 
-Current tests cover the scheduler, event loop, contact windows, and time controller; run `go test ./...` to verify locally.
+Run `git status` to see the files touched during development and consult `docs/planning/` for the broader roadmap if you want to contribute new features.
