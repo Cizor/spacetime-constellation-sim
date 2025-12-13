@@ -11,6 +11,7 @@ import (
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
+	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
@@ -38,6 +39,8 @@ var (
 	ErrNodeInvalid = errors.New("invalid node")
 	// ErrLinkNotFound indicates a requested link was not found.
 	ErrLinkNotFound = network.ErrLinkNotFound
+	// ErrLinkNotFoundForBeam indicates a link was not found when applying a beam operation.
+	ErrLinkNotFoundForBeam = errors.New("link not found for beam")
 	// ErrServiceRequestExists indicates a service request already exists.
 	ErrServiceRequestExists = errors.New("service request already exists")
 	// ErrServiceRequestNotFound indicates a service request was not found.
@@ -659,6 +662,278 @@ func (s *ScenarioState) UpdateLink(link *network.NetworkLink) error {
 
 	s.updateMetricsLocked()
 	return nil
+}
+
+// ApplyBeamUpdate activates a link by updating its status to Active and setting IsUp to true.
+// It finds the link between the specified interfaces and updates it.
+func (s *ScenarioState) ApplyBeamUpdate(nodeID string, beam *sbi.BeamSpec) error {
+	if beam == nil {
+		return errors.New("beam is nil")
+	}
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Verify node exists
+	if s.physKB.GetNetworkNode(nodeID) == nil {
+		return ErrNodeNotFound
+	}
+
+	// Construct interface references
+	srcIfRef := fmt.Sprintf("%s/%s", nodeID, beam.InterfaceID)
+	targetIfRef := fmt.Sprintf("%s/%s", beam.TargetNodeID, beam.TargetIfID)
+
+	// Find the link between these interfaces
+	link := s.findLinkByInterfacesLocked(srcIfRef, targetIfRef)
+	if link == nil {
+		return ErrLinkNotFoundForBeam
+	}
+
+	// Update link status to Active
+	link.Status = network.LinkStatusActive
+	link.IsUp = true
+
+	if err := s.netKB.UpdateNetworkLink(link); err != nil {
+		return fmt.Errorf("failed to update link: %w", err)
+	}
+
+	s.updateMetricsLocked()
+	return nil
+}
+
+// ApplyBeamDelete deactivates a link by updating its status to Potential and setting IsUp to false.
+func (s *ScenarioState) ApplyBeamDelete(nodeID, interfaceID, targetNodeID, targetIfID string) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Verify node exists
+	if s.physKB.GetNetworkNode(nodeID) == nil {
+		return ErrNodeNotFound
+	}
+
+	// Construct interface references
+	srcIfRef := fmt.Sprintf("%s/%s", nodeID, interfaceID)
+	targetIfRef := fmt.Sprintf("%s/%s", targetNodeID, targetIfID)
+
+	// Find the link between these interfaces
+	link := s.findLinkByInterfacesLocked(srcIfRef, targetIfRef)
+	if link == nil {
+		return ErrLinkNotFoundForBeam
+	}
+
+	// Update link status to Potential
+	link.Status = network.LinkStatusPotential
+	link.IsUp = false
+
+	if err := s.netKB.UpdateNetworkLink(link); err != nil {
+		return fmt.Errorf("failed to update link: %w", err)
+	}
+
+	s.updateMetricsLocked()
+	return nil
+}
+
+// findLinkByInterfacesLocked finds a link that connects the two specified interfaces.
+// Caller must hold s.mu lock.
+func (s *ScenarioState) findLinkByInterfacesLocked(ifA, ifB string) *network.NetworkLink {
+	allLinks := s.netKB.GetAllNetworkLinks()
+	for _, link := range allLinks {
+		if link == nil {
+			continue
+		}
+		// Check both directions (A->B and B->A)
+		if (link.InterfaceA == ifA && link.InterfaceB == ifB) ||
+			(link.InterfaceA == ifB && link.InterfaceB == ifA) {
+			return link
+		}
+	}
+	return nil
+}
+
+// ApplySetRoute installs or replaces a route for the specified node.
+// If a route with the same DestinationCIDR exists, it is replaced.
+func (s *ScenarioState) ApplySetRoute(nodeID string, route model.RouteEntry) error {
+	if nodeID == "" {
+		return errors.New("nodeID must not be empty")
+	}
+	if route.DestinationCIDR == "" {
+		return errors.New("DestinationCIDR must not be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return ErrNodeNotFound
+	}
+
+	// Find and replace existing route with same DestinationCIDR, or append
+	found := false
+	for i, r := range node.Routes {
+		if r.DestinationCIDR == route.DestinationCIDR {
+			node.Routes[i] = route
+			found = true
+			break
+		}
+	}
+	if !found {
+		node.Routes = append(node.Routes, route)
+	}
+
+	// Update the node in the KB
+	if err := s.physKB.UpdateNetworkNode(node); err != nil {
+		return fmt.Errorf("failed to update node: %w", err)
+	}
+
+	s.updateMetricsLocked()
+	return nil
+}
+
+// ApplyDeleteRoute removes a route from the specified node by destination CIDR.
+func (s *ScenarioState) ApplyDeleteRoute(nodeID string, destinationCIDR string) error {
+	if nodeID == "" {
+		return errors.New("nodeID must not be empty")
+	}
+	if destinationCIDR == "" {
+		return errors.New("destinationCIDR must not be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return ErrNodeNotFound
+	}
+
+	// Remove route with matching DestinationCIDR
+	newRoutes := make([]model.RouteEntry, 0, len(node.Routes))
+	found := false
+	for _, r := range node.Routes {
+		if r.DestinationCIDR != destinationCIDR {
+			newRoutes = append(newRoutes, r)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("route not found for destination %q", destinationCIDR)
+	}
+
+	node.Routes = newRoutes
+
+	// Update the node in the KB
+	if err := s.physKB.UpdateNetworkNode(node); err != nil {
+		return fmt.Errorf("failed to update node: %w", err)
+	}
+
+	s.updateMetricsLocked()
+	return nil
+}
+
+// InstallRoute installs a route for the specified node (idempotent).
+// If a route with the same DestinationCIDR exists, it is replaced.
+func (s *ScenarioState) InstallRoute(nodeID string, route model.RouteEntry) error {
+	return s.ApplySetRoute(nodeID, route)
+}
+
+// RemoveRoute removes a route from the specified node by destination CIDR.
+func (s *ScenarioState) RemoveRoute(nodeID string, destinationCIDR string) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	if destinationCIDR == "" {
+		return errors.New("destination CIDR is empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return ErrNodeNotFound
+	}
+
+	// Remove route with matching DestinationCIDR
+	newRoutes := make([]model.RouteEntry, 0, len(node.Routes))
+	found := false
+	for _, r := range node.Routes {
+		if r.DestinationCIDR != destinationCIDR {
+			newRoutes = append(newRoutes, r)
+		} else {
+			found = true
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("route not found for destination %q", destinationCIDR)
+	}
+
+	node.Routes = newRoutes
+
+	// Update the node in the KB
+	if err := s.physKB.UpdateNetworkNode(node); err != nil {
+		return fmt.Errorf("failed to update node: %w", err)
+	}
+
+	s.updateMetricsLocked()
+	return nil
+}
+
+// GetRoutes returns all routes for the specified node.
+func (s *ScenarioState) GetRoutes(nodeID string) ([]model.RouteEntry, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return nil, ErrNodeNotFound
+	}
+
+	// Return a copy of the routes
+	routes := make([]model.RouteEntry, len(node.Routes))
+	copy(routes, node.Routes)
+	return routes, nil
+}
+
+// GetRoute returns a specific route for the specified node by destination CIDR.
+// Returns (route, true) if found, (nil, false) if not found.
+func (s *ScenarioState) GetRoute(nodeID string, destinationCIDR string) (*model.RouteEntry, bool) {
+	if nodeID == "" {
+		return nil, false
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return nil, false
+	}
+
+	// Find route with matching DestinationCIDR
+	for _, r := range node.Routes {
+		if r.DestinationCIDR == destinationCIDR {
+			// Return a copy
+			route := r
+			return &route, true
+		}
+	}
+
+	return nil, false
 }
 
 // ServiceRequests returns a snapshot of all stored ServiceRequests.

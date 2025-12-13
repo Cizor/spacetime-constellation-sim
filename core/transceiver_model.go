@@ -30,7 +30,8 @@ type TransceiverModel struct {
 	// transceiver. This field was already supplied in configs but not
 	// represented here; it adjusts the noise-floor used by the SNR
 	// estimator so that gaps in requirements coverage can be tracked.
-	SystemNoiseFigureDB float64 `json:"SystemNoiseFigureDB,omitempty"`
+	// A pointer is used to distinguish between unset (nil) and explicitly set to 0.
+	SystemNoiseFigureDB *float64 `json:"SystemNoiseFigureDB,omitempty"`
 
 	// MaxBeams is metadata describing how many concurrent beams this
 	// transceiver can theoretically support.

@@ -15,6 +15,12 @@ type FlowRequirement struct {
 	ValidTo time.Time
 }
 
+// TimeInterval represents a time interval with start and end times.
+type TimeInterval struct {
+	Start time.Time
+	End   time.Time
+}
+
 type ServiceRequest struct {
 	// ID is the simulator's stable identifier for this request.
 	// It is intended to be unique within a Scenario and is what
@@ -28,7 +34,11 @@ type ServiceRequest struct {
 	IsDisruptionTolerant  bool
 	AllowPartnerResources bool
 
-	// status fields for future scopes, e.g.:
-	// IsProvisionedNow bool
-	// ProvisionedIntervals []TimeInterval
+	// Status fields updated by the scheduler when paths are provisioned.
+	// IsProvisionedNow indicates if the service request is currently provisioned
+	// (i.e., a path has been scheduled and actions are in place).
+	IsProvisionedNow bool
+	// ProvisionedIntervals tracks the time intervals when this service request
+	// was/is provisioned. This allows tracking provisioning history.
+	ProvisionedIntervals []TimeInterval
 }

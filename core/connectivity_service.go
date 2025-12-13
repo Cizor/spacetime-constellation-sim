@@ -473,8 +473,8 @@ func averageNoiseFigure(tx, rx *TransceiverModel) float64 {
 		if model == nil {
 			continue
 		}
-		if nf := model.SystemNoiseFigureDB; nf != 0 {
-			sum += nf
+		if nf := model.SystemNoiseFigureDB; nf != nil {
+			sum += *nf
 			count++
 		}
 	}

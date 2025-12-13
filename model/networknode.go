@@ -27,4 +27,8 @@ type NetworkNode struct {
 	// PlatformID links this node to a PlatformDefinition.
 	// Consumers can obtain the node's position by looking up the platform.
 	PlatformID string
+
+	// Routes contains the routing table entries for this node.
+	// This is used by Scope 4 control-plane components to manage routing.
+	Routes []RouteEntry
 }
