@@ -108,13 +108,17 @@ func (m *MotionModel) Reset() {
 
 // UpdatePositions advances all registered platforms to simTime.
 func (m *MotionModel) UpdatePositions(simTime time.Time) error {
-	m.mu.RLock()
+	m.mu.Lock()
 	entries := make([]motionEntry, 0, len(m.entries))
 	for _, entry := range m.entries {
 		entries = append(entries, entry)
 	}
 	updater := m.posUpdater
-	m.mu.RUnlock()
+	// Hold the lock while modifying platform coordinates to prevent data races
+	// when UpdatePositions is called concurrently from multiple goroutines.
+	// The entries slice contains pointers to platform objects, and UpdatePosition
+	// modifies those objects' Coordinates fields.
+	defer m.mu.Unlock()
 
 	var errs []error
 	for _, entry := range entries {
