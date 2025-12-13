@@ -178,8 +178,34 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	log.Info(ctx, "starting NBI gRPC server", logging.String("addr", lis.Addr().String()))
 	serveErr := make(chan error, 1)
 	go func() {
+		// Serve() will block until the server stops
 		serveErr <- server.Serve(lis)
 	}()
+
+	// Give the server a brief moment to start listening
+	// This is necessary because Serve() may take a moment to bind to the port
+	// Use a shorter delay and check for context cancellation
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		// Continue after brief delay to allow server to start listening
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for server to listen: %w", ctx.Err())
+	}
+
+	// Check if server failed to start before attempting connection
+	// Use a non-blocking select to check for immediate errors
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			return fmt.Errorf("server failed to start: %w", err)
+		}
+		// If we get here, server exited immediately (shouldn't happen)
+		return fmt.Errorf("server exited unexpectedly")
+	default:
+		// Server is still running (or hasn't reported an error yet), proceed with connection
+	}
 
 	// Create in-process gRPC client connection for agents
 	// Agents will connect to the same server we just started

@@ -7,13 +7,13 @@ import (
 	"sync"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
-	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -38,18 +38,18 @@ type SimAgent struct {
 	// Internal state
 	mu            sync.Mutex
 	pending       map[string]*sbi.ScheduledAction // keyed by EntryID
-	token         string                           // schedule_manipulation_token (empty until first message)
-	lastSeqNoSeen uint64                           // last seen sequence number for logging/debugging
+	token         string                          // schedule_manipulation_token (empty until first message)
+	lastSeqNoSeen uint64                          // last seen sequence number for logging/debugging
 
 	// SR Policy tracking (stub for Scope 4)
 	srMu       sync.Mutex
 	srPolicies map[string]*sbi.SrPolicySpec // keyed by PolicyID
 
 	// Telemetry state
-	telemetryMu  sync.Mutex
+	telemetryMu       sync.Mutex
 	telemetryInterval time.Duration
-	bytesTx      map[string]uint64 // per-interface transmitted bytes (monotonic)
-	lastTick     time.Time         // last telemetry tick time
+	bytesTx           map[string]uint64 // per-interface transmitted bytes (monotonic)
+	lastTick          time.Time         // last telemetry tick time
 
 	// Logging
 	log logging.Logger
@@ -1067,10 +1067,10 @@ func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) 
 
 	// Get all links - we'll filter by interface
 	allLinks := a.State.ListLinks()
-	
+
 	// Build possible interface references (with and without nodeID prefix)
 	ifaceRef := nodeID + "/" + ifaceID
-	
+
 	// Filter links that connect to this interface
 	var links []*core.NetworkLink
 	for _, link := range allLinks {
@@ -1109,7 +1109,6 @@ func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) 
 	return hasActiveLink, bandwidthBps
 }
 
-
 // stringPtr returns a pointer to the given string.
 func stringPtr(s string) *string {
 	return &s
@@ -1134,5 +1133,3 @@ func (a *SimAgent) getInterfaceIDFromRef(ifRef string) string {
 	}
 	return ifRef
 }
-
-

@@ -105,15 +105,14 @@ func (cs *ConnectivityService) rebuildDynamicWirelessLinks() {
 				// Restore explicit deactivation state if this link was previously deactivated
 				// The link ID is deterministic based on interface IDs, so we can match it
 				if deactivatedLinkIDs[link.ID] {
-					// Create a copy of the link to modify, then update via KB with proper locking.
-					// We cannot modify the pointer directly because UpsertDynamicWirelessLink
-					// releases its lock when it returns, and concurrent reads from NBI handlers
-					// or other threads can race with unsynchronized writes.
+					// UpdateNetworkLink acquires its own lock, which is safe because
+					// UpsertDynamicWirelessLink has already released its lock by the time
+					// we call UpdateNetworkLink. We create a copy to avoid modifying the
+					// pointer directly, which could race with concurrent reads.
 					linkCopy := *link
 					linkCopy.WasExplicitlyDeactivated = true
 					linkCopy.Status = LinkStatusPotential
 					linkCopy.IsUp = false
-					// UpdateNetworkLink properly locks the KB before modifying the stored link.
 					if err := cs.KB.UpdateNetworkLink(&linkCopy); err != nil {
 						log.Printf("warning: failed to restore deactivation state for dynamic link %q: %v", link.ID, err)
 					}
