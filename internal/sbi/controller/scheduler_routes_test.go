@@ -44,7 +44,7 @@ func TestScheduler_ScheduleLinkRoutes_NoPotentialLinks(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	ctx := context.Background()
 	err := scheduler.ScheduleLinkRoutes(ctx)
@@ -153,7 +153,7 @@ func TestScheduler_agentIDForNode(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	// Test with non-existent agent
 	_, err := scheduler.agentIDForNode("unknown-node")
@@ -161,4 +161,3 @@ func TestScheduler_agentIDForNode(t *testing.T) {
 		t.Fatalf("expected error for unknown node, got nil")
 	}
 }
-

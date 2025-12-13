@@ -134,9 +134,9 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 		token:    "tok-123",
 		seqNo:    0,
 	}
-	fakeCDPI.CDPIServer.agentsMu.Lock()
-	fakeCDPI.CDPIServer.agents["node-A"] = handleA
-	fakeCDPI.CDPIServer.agentsMu.Unlock()
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["node-A"] = handleA
+	fakeCDPI.agentsMu.Unlock()
 
 	// Register agent for node-B
 	handleB := &AgentHandle{
@@ -147,11 +147,11 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 		token:    "tok-123",
 		seqNo:    0,
 	}
-	fakeCDPI.CDPIServer.agentsMu.Lock()
-	fakeCDPI.CDPIServer.agents["node-B"] = handleB
-	fakeCDPI.CDPIServer.agentsMu.Unlock()
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["node-B"] = handleB
+	fakeCDPI.agentsMu.Unlock()
 
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	ctx := context.Background()
 
@@ -165,21 +165,21 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 	}
 
 	// Verify agents are registered
-	fakeCDPI.CDPIServer.agentsMu.RLock()
-	agentCount := len(fakeCDPI.CDPIServer.agents)
+	fakeCDPI.agentsMu.RLock()
+	agentCount := len(fakeCDPI.agents)
 	agentIDs := make([]string, 0, agentCount)
-	for id := range fakeCDPI.CDPIServer.agents {
+	for id := range fakeCDPI.agents {
 		agentIDs = append(agentIDs, id)
 	}
-	fakeCDPI.CDPIServer.agentsMu.RUnlock()
+	fakeCDPI.agentsMu.RUnlock()
 	t.Logf("Registered agents: %d, IDs: %v", agentCount, agentIDs)
 	if agentCount == 0 {
 		t.Fatalf("No agents registered - test setup failed")
 	}
 
 	// Verify hasAgent works
-	hasNodeA := fakeCDPI.CDPIServer.hasAgent("node-A")
-	hasNodeB := fakeCDPI.CDPIServer.hasAgent("node-B")
+	hasNodeA := fakeCDPI.hasAgent("node-A")
+	hasNodeB := fakeCDPI.hasAgent("node-B")
 	t.Logf("hasAgent(node-A)=%v, hasAgent(node-B)=%v", hasNodeA, hasNodeB)
 	if !hasNodeA || !hasNodeB {
 		t.Fatalf("hasAgent check failed - agents not properly registered")
@@ -216,6 +216,17 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 		t.Fatalf("ScheduleLinkBeams failed: %v", err)
 	}
 
+	linkID := ""
+	if len(potentialLinks) > 0 {
+		linkID = potentialLinks[0].ID
+	}
+
+	linkWindows := scheduler.contactWindowsForLink(linkID)
+	if len(linkWindows) == 0 {
+		t.Fatalf("expected contact windows for link %s", linkID)
+	}
+	linkWindow := linkWindows[0]
+
 	// Verify actions were sent by checking the agents' outgoing channels
 	// Since the scheduler uses the real CDPIServer, we need to check the channels directly
 	var beamMessages []*schedulingpb.ReceiveRequestsMessageFromController
@@ -251,8 +262,8 @@ doneBeams:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(T0) && !whenTime.After(T0) {
-					t.Errorf("UpdateBeam When = %v, expected >= %v", whenTime, T0)
+				if !whenTime.Equal(linkWindow.start) {
+					t.Errorf("UpdateBeam When = %v, expected %v", whenTime, linkWindow.start)
 				}
 			}
 		}
@@ -261,9 +272,11 @@ doneBeams:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(defaultPotentialWindow) // horizon
-				if !whenTime.Equal(expectedOff) {
-					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, expectedOff)
+				if !whenTime.Equal(linkWindow.end) {
+					fallbackEnd := linkWindow.start.Add(defaultPotentialWindow)
+					if !whenTime.Equal(fallbackEnd) {
+						t.Errorf("DeleteBeam When = %v, expected %v or %v", whenTime, linkWindow.end, fallbackEnd)
+					}
 				}
 			}
 		}
@@ -327,8 +340,8 @@ doneRoutesB:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(T0) && !whenTime.After(T0) {
-					t.Errorf("SetRoute When = %v, expected >= %v", whenTime, T0)
+				if !whenTime.Equal(linkWindow.start) {
+					t.Errorf("SetRoute When = %v, expected %v", whenTime, linkWindow.start)
 				}
 			}
 		}
@@ -337,9 +350,11 @@ doneRoutesB:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(defaultPotentialWindow) // horizon
-				if !whenTime.Equal(expectedOff) {
-					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, expectedOff)
+				if !whenTime.Equal(linkWindow.end) {
+					fallbackEnd := linkWindow.start.Add(defaultPotentialWindow)
+					if !whenTime.Equal(fallbackEnd) {
+						t.Errorf("DeleteRoute When = %v, expected %v or %v", whenTime, linkWindow.end, fallbackEnd)
+					}
 				}
 			}
 		}
@@ -364,7 +379,7 @@ func TestScheduler_LinkIntervals_NoPotentialLinks(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	ctx := context.Background()
 
@@ -456,7 +471,7 @@ func TestScheduler_LinkIntervals_MalformedLink(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	ctx := context.Background()
 
@@ -469,9 +484,9 @@ func TestScheduler_LinkIntervals_MalformedLink(t *testing.T) {
 		token:    "tok-123",
 		seqNo:    0,
 	}
-	fakeCDPI.CDPIServer.agentsMu.Lock()
-	fakeCDPI.CDPIServer.agents["node-A"] = handleA
-	fakeCDPI.CDPIServer.agentsMu.Unlock()
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["node-A"] = handleA
+	fakeCDPI.agentsMu.Unlock()
 
 	// Schedule should handle the link (even if it's unusual with same interface on both ends)
 	err := scheduler.ScheduleLinkBeams(ctx)

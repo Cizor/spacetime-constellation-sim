@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
@@ -84,7 +85,7 @@ func TestScheduler_ScheduleServiceRequests_MultiHop(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	// Create platforms
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{ID: "platform-A", Name: "Platform A"}); err != nil {
@@ -203,6 +204,74 @@ func TestScheduler_buildConnectivityGraph(t *testing.T) {
 	}
 }
 
+// TestScheduler_ServiceRequestReplanCleansEntries ensures that rescheduling the same
+// ServiceRequest tears down prior actions before installing new ones.
+func TestScheduler_ServiceRequestReplanCleansEntries(t *testing.T) {
+	scheduler, fakeCDPI, _ := setupSchedulerTest(t)
+
+	agentHandle := &AgentHandle{
+		AgentID:  "node-A",
+		NodeID:   "node-A",
+		Stream:   &fakeStream{},
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 10),
+		token:    "tok-123",
+		seqNo:    0,
+	}
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["node-A"] = agentHandle
+	fakeCDPI.agentsMu.Unlock()
+
+	sr := &model.ServiceRequest{
+		ID:        "sr-1",
+		SrcNodeID: "node-A",
+		DstNodeID: "node-B",
+		Priority:  1,
+	}
+	if err := scheduler.State.CreateServiceRequest(sr); err != nil {
+		t.Fatalf("CreateServiceRequest failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := scheduler.ScheduleServiceRequests(ctx); err != nil {
+		t.Fatalf("ScheduleServiceRequests failed: %v", err)
+	}
+
+	firstSent := len(fakeCDPI.sentActions)
+	if firstSent == 0 {
+		t.Fatalf("expected at least one entry sent for service request")
+	}
+
+	hasDeleteBeam := false
+	hasDeleteRoute := false
+	for _, entry := range fakeCDPI.sentActions {
+		if entry.action == nil {
+			continue
+		}
+		switch entry.action.Type {
+		case sbi.ScheduledDeleteBeam:
+			hasDeleteBeam = true
+		case sbi.ScheduledDeleteRoute:
+			hasDeleteRoute = true
+		}
+	}
+	if !hasDeleteBeam {
+		t.Fatalf("expected ScheduledDeleteBeam entry")
+	}
+	if !hasDeleteRoute {
+		t.Fatalf("expected ScheduledDeleteRoute entry")
+	}
+
+	fakeCDPI.sentActions = nil
+
+	if err := scheduler.ScheduleServiceRequests(ctx); err != nil {
+		t.Fatalf("ScheduleServiceRequests failed: %v", err)
+	}
+
+	if len(fakeCDPI.deletedEntries) != firstSent {
+		t.Fatalf("expected %d delete requests, got %d", firstSent, len(fakeCDPI.deletedEntries))
+	}
+}
+
 // TestScheduler_findAnyPath verifies BFS pathfinding.
 func TestScheduler_findAnyPath(t *testing.T) {
 	scheduler, _, _ := setupSchedulerTest(t)
@@ -249,7 +318,7 @@ func TestScheduler_ScheduleServiceRequests_NoPath(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	// Create a ServiceRequest between nodes that don't exist
 	sr := &model.ServiceRequest{
@@ -273,4 +342,3 @@ func TestScheduler_ScheduleServiceRequests_NoPath(t *testing.T) {
 		t.Fatalf("expected 0 actions for no-path scenario, got %d", len(fakeCDPI.sentActions))
 	}
 }
-

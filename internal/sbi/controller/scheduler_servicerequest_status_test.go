@@ -105,7 +105,7 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	fakeClock := &fakeClockForTest{now: T0}
 	clock := sbi.NewEventScheduler(fakeClock)
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, clock)
-	scheduler := NewScheduler(scenarioState, clock, fakeCDPI.CDPIServer, log)
+	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log)
 
 	// Register agents in CDPI server (required for SendCreateEntry to work)
 	// Create minimal agent handles with fake streams
@@ -125,10 +125,10 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 		token:    "test-token",
 		seqNo:    0,
 	}
-	fakeCDPI.CDPIServer.agentsMu.Lock()
-	fakeCDPI.CDPIServer.agents["nodeA"] = agentHandleA
-	fakeCDPI.CDPIServer.agents["nodeB"] = agentHandleB
-	fakeCDPI.CDPIServer.agentsMu.Unlock()
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["nodeA"] = agentHandleA
+	fakeCDPI.agents["nodeB"] = agentHandleB
+	fakeCDPI.agentsMu.Unlock()
 
 	// Run scheduler
 	ctx := context.Background()
@@ -191,7 +191,7 @@ func TestScheduler_ServiceRequestStatusNoPath(t *testing.T) {
 	T0 := time.Unix(1000, 0)
 	clock := sbi.NewFakeEventScheduler(T0)
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, clock)
-	scheduler := NewScheduler(scenarioState, clock, fakeCDPI.CDPIServer, log)
+	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log)
 
 	// Run scheduler (no path should be found)
 	ctx := context.Background()

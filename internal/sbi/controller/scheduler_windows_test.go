@@ -14,7 +14,7 @@ func TestScheduler_PrecomputeContactWindowsPotentialLink(t *testing.T) {
 	now := scheduler.Clock.Now()
 	horizon := now.Add(ContactHorizon)
 
-	windows := scheduler.PrecomputeContactWindows(ctx, now, horizon)
+	windows, _ := scheduler.PrecomputeContactWindows(ctx, now, horizon)
 	linkWindows, ok := windows["link-ab"]
 	if !ok {
 		t.Fatalf("expected windows for link-ab")
@@ -22,9 +22,11 @@ func TestScheduler_PrecomputeContactWindowsPotentialLink(t *testing.T) {
 	if len(linkWindows) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(linkWindows))
 	}
-	duration := linkWindows[0].end.Sub(linkWindows[0].start)
-	if duration != defaultPotentialWindow {
-		t.Fatalf("expected potential window %v, got %v", defaultPotentialWindow, duration)
+	if !linkWindows[0].start.Equal(now) {
+		t.Fatalf("expected window start %v, got %v", now, linkWindows[0].start)
+	}
+	if !linkWindows[0].end.Equal(horizon) {
+		t.Fatalf("expected window end %v, got %v", horizon, linkWindows[0].end)
 	}
 }
 
@@ -42,7 +44,7 @@ func TestScheduler_PrecomputeContactWindowsActiveLink(t *testing.T) {
 
 	now := scheduler.Clock.Now()
 	horizon := now.Add(ContactHorizon)
-	windows := scheduler.PrecomputeContactWindows(ctx, now, horizon)
+	windows, _ := scheduler.PrecomputeContactWindows(ctx, now, horizon)
 	linkWindows, ok := windows["link-ab"]
 	if !ok {
 		t.Fatalf("expected windows for link-ab")
@@ -50,9 +52,11 @@ func TestScheduler_PrecomputeContactWindowsActiveLink(t *testing.T) {
 	if len(linkWindows) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(linkWindows))
 	}
-	duration := linkWindows[0].end.Sub(linkWindows[0].start)
-	if duration != defaultActiveWindow {
-		t.Fatalf("expected active window %v, got %v", defaultActiveWindow, duration)
+	if !linkWindows[0].start.Equal(now) {
+		t.Fatalf("expected window start %v, got %v", now, linkWindows[0].start)
+	}
+	if !linkWindows[0].end.Equal(horizon) {
+		t.Fatalf("expected window end %v, got %v", horizon, linkWindows[0].end)
 	}
 }
 
@@ -62,7 +66,7 @@ func TestScheduler_PrecomputeContactWindowsClipsAtHorizon(t *testing.T) {
 	now := scheduler.Clock.Now()
 	horizon := now.Add(10 * time.Minute)
 
-	windows := scheduler.PrecomputeContactWindows(ctx, now, horizon)
+	windows, _ := scheduler.PrecomputeContactWindows(ctx, now, horizon)
 	linkWindows, ok := windows["link-ab"]
 	if !ok {
 		t.Fatalf("expected windows for link-ab")

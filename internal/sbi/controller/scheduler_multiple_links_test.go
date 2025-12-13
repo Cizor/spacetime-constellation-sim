@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,13 +125,13 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 			token:    "tok-123",
 			seqNo:    0,
 		}
-		fakeCDPI.CDPIServer.agentsMu.Lock()
-		fakeCDPI.CDPIServer.agents[nodeID] = handle
-		fakeCDPI.CDPIServer.agentsMu.Unlock()
+		fakeCDPI.agentsMu.Lock()
+		fakeCDPI.agents[nodeID] = handle
+		fakeCDPI.agentsMu.Unlock()
 		agentHandles[nodeID] = handle
 	}
 
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 	ctx := context.Background()
 
 	// Test ScheduleLinkBeams for multiple links
@@ -170,9 +171,22 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 		t.Errorf("expected at least 2 beam actions for node-B (link B-C), got %d", len(allBeamMessages["node-B"]))
 	}
 
+	// Determine contact windows for each link
+	windowABs := scheduler.contactWindowsForLink("link-ab")
+	if len(windowABs) == 0 {
+		t.Fatalf("expected contact windows for link-ab")
+	}
+	windowAB := windowABs[0]
+
+	windowBCs := scheduler.contactWindowsForLink("link-bc")
+	if len(windowBCs) == 0 {
+		t.Fatalf("expected contact windows for link-bc")
+	}
+	windowBC := windowBCs[0]
+
 	// Verify UpdateBeam and DeleteBeam for each link
-	verifyBeamActions(t, allBeamMessages["node-A"], "link-ab", T0)
-	verifyBeamActions(t, allBeamMessages["node-B"], "link-bc", T0)
+	verifyBeamActions(t, allBeamMessages["node-A"], windowAB, T0)
+	verifyBeamActions(t, allBeamMessages["node-B"], windowBC, T0)
 
 	// Test ScheduleLinkRoutes for multiple links
 	err = scheduler.ScheduleLinkRoutes(ctx)
@@ -215,27 +229,26 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 	}
 
 	// Verify SetRoute and DeleteRoute actions
-	// Link A-B: node-A should have route to node-B, node-B should have route to node-A
-	// Link B-C: node-B should have route to node-C, node-C should have route to node-B
-	verifyRouteActionsForNode(t, allRouteMessages["node-A"], []string{"node-B"}, T0)
-	verifyRouteActionsForNode(t, allRouteMessages["node-B"], []string{"node-A", "node-C"}, T0)
-	verifyRouteActionsForNode(t, allRouteMessages["node-C"], []string{"node-B"}, T0)
+	routeWindowsAB := map[string]contactWindow{"node-B": windowAB}
+	routeWindowsBA := map[string]contactWindow{
+		"node-A": windowAB,
+		"node-C": windowBC,
+	}
+	routeWindowsCB := map[string]contactWindow{"node-B": windowBC}
+
+	verifyRouteActionsForNode(t, allRouteMessages["node-A"], []string{"node-B"}, routeWindowsAB, T0)
+	verifyRouteActionsForNode(t, allRouteMessages["node-B"], []string{"node-A", "node-C"}, routeWindowsBA, T0)
+	verifyRouteActionsForNode(t, allRouteMessages["node-C"], []string{"node-B"}, routeWindowsCB, T0)
 }
 
 // verifyBeamActions verifies that beam messages contain UpdateBeam and DeleteBeam actions.
-func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, expectedLinkID string, T0 time.Time) {
+func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, window contactWindow, T0 time.Time) {
 	updateBeamFound := false
 	deleteBeamFound := false
 
 	for _, msg := range messages {
 		createEntry := msg.GetCreateEntry()
 		if createEntry == nil {
-			continue
-		}
-
-		// Check if this entry is for the expected link
-		entryID := createEntry.GetId()
-		if entryID == "" {
 			continue
 		}
 
@@ -247,8 +260,8 @@ func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMes
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(T0) && !whenTime.After(T0) {
-					t.Errorf("UpdateBeam When = %v, expected >= %v", whenTime, T0)
+				if !whenTime.Equal(window.start) {
+					t.Errorf("UpdateBeam When = %v, expected %v", whenTime, window.start)
 				}
 			}
 		}
@@ -258,27 +271,32 @@ func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMes
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(defaultPotentialWindow) // horizon
-				if !whenTime.Equal(expectedOff) {
-					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, expectedOff)
+				if !whenTime.Equal(window.end) {
+					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, window.end)
 				}
 			}
 		}
 	}
 
 	if !updateBeamFound {
-		t.Errorf("UpdateBeam action not found for link %s", expectedLinkID)
+		t.Errorf("UpdateBeam action not found")
 	}
 	if !deleteBeamFound {
-		t.Errorf("DeleteBeam action not found for link %s", expectedLinkID)
+		t.Errorf("DeleteBeam action not found")
 	}
 }
 
 // verifyRouteActionsForNode verifies that route messages contain SetRoute and DeleteRoute actions
 // for at least one of the expected destination nodes.
-func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, expectedDestNodeIDs []string, T0 time.Time) {
+func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, expectedDestNodeIDs []string, windows map[string]contactWindow, T0 time.Time) {
 	setRouteFound := false
 	deleteRouteFound := false
+
+	for _, destID := range expectedDestNodeIDs {
+		if _, ok := windows[destID]; !ok {
+			t.Fatalf("missing contact window for expected destination %s", destID)
+		}
+	}
 
 	for _, msg := range messages {
 		createEntry := msg.GetCreateEntry()
@@ -291,23 +309,34 @@ func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveReq
 
 		if setRoute != nil {
 			setRouteFound = true
+			dest := destNodeIDFromCIDR(setRoute.GetTo())
+			window, ok := windows[dest]
+			if !ok {
+				t.Errorf("unexpected SetRoute destination %s", dest)
+				continue
+			}
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(T0) && !whenTime.After(T0) {
-					t.Errorf("SetRoute When = %v, expected >= %v", whenTime, T0)
+				if !whenTime.Equal(window.start) {
+					t.Errorf("SetRoute When = %v, expected %v", whenTime, window.start)
 				}
 			}
 		}
 
 		if deleteRoute != nil {
 			deleteRouteFound = true
+			dest := destNodeIDFromCIDR(deleteRoute.GetTo())
+			window, ok := windows[dest]
+			if !ok {
+				t.Errorf("unexpected DeleteRoute destination %s", dest)
+				continue
+			}
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				expectedOff := T0.Add(defaultPotentialWindow) // horizon
-				if !whenTime.Equal(expectedOff) {
-					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, expectedOff)
+				if !whenTime.Equal(window.end) {
+					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, window.end)
 				}
 			}
 		}
@@ -319,4 +348,16 @@ func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveReq
 	if !deleteRouteFound {
 		t.Errorf("DeleteRoute action not found for expected destinations %v", expectedDestNodeIDs)
 	}
+}
+
+func destNodeIDFromCIDR(cidr string) string {
+	const prefix = "node:"
+	if !strings.HasPrefix(cidr, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(cidr, prefix)
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		return rest[:idx]
+	}
+	return rest
 }

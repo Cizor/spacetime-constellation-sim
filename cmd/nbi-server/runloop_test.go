@@ -25,11 +25,23 @@ func (c *countingEventScheduler) RunDue() {
 
 type fakeReplanScheduler struct {
 	recomputeCount int
+	beamCount      int
+	routeCount     int
 	scheduleCount  int
 }
 
 func (f *fakeReplanScheduler) RecomputeContactWindows(context.Context, time.Time, time.Time) {
 	f.recomputeCount++
+}
+
+func (f *fakeReplanScheduler) ScheduleLinkBeams(context.Context) error {
+	f.beamCount++
+	return nil
+}
+
+func (f *fakeReplanScheduler) ScheduleLinkRoutes(context.Context) error {
+	f.routeCount++
+	return nil
 }
 
 func (f *fakeReplanScheduler) ScheduleServiceRequests(context.Context) error {

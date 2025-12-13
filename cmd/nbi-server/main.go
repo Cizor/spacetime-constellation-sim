@@ -290,6 +290,8 @@ var replanInterval = 5 * time.Minute
 
 type runLoopScheduler interface {
 	RecomputeContactWindows(context.Context, time.Time, time.Time)
+	ScheduleLinkBeams(context.Context) error
+	ScheduleLinkRoutes(context.Context) error
 	ScheduleServiceRequests(context.Context) error
 }
 
@@ -347,11 +349,23 @@ func runSimLoop(
 				)
 				horizon := simTime.Add(sbicontroller.ContactHorizon)
 				controllerScheduler.RecomputeContactWindows(ctx, simTime, horizon)
-				if err := controllerScheduler.ScheduleServiceRequests(ctx); err != nil {
-					log.Warn(ctx, "Periodic re-planning failed",
+
+				if err := controllerScheduler.ScheduleLinkBeams(ctx); err != nil {
+					log.Warn(ctx, "Periodic replan failed to schedule beams",
 						logging.String("error", err.Error()),
 					)
 				}
+				if err := controllerScheduler.ScheduleLinkRoutes(ctx); err != nil {
+					log.Warn(ctx, "Periodic replan failed to schedule routes",
+						logging.String("error", err.Error()),
+					)
+				}
+				if err := controllerScheduler.ScheduleServiceRequests(ctx); err != nil {
+					log.Warn(ctx, "Periodic replan failed to schedule service requests",
+						logging.String("error", err.Error()),
+					)
+				}
+
 				lastReplanTime = simTime
 			}
 		}

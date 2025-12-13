@@ -30,7 +30,8 @@ func (f *fakeClockForTest) After(d time.Duration) <-chan time.Time {
 // fakeCDPIServerForScheduler is a test helper that records SendCreateEntry calls.
 type fakeCDPIServerForScheduler struct {
 	*CDPIServer
-	sentActions []sentAction
+	sentActions    []sentAction
+	deletedEntries []deletedEntry
 }
 
 type sentAction struct {
@@ -38,11 +39,17 @@ type sentAction struct {
 	action  *sbi.ScheduledAction
 }
 
+type deletedEntry struct {
+	agentID string
+	entryID string
+}
+
 func newFakeCDPIServerForScheduler(state *state.ScenarioState, clock sbi.EventScheduler) *fakeCDPIServerForScheduler {
 	realCDPI := NewCDPIServer(state, clock, logging.Noop())
 	fake := &fakeCDPIServerForScheduler{
-		CDPIServer: realCDPI,
-		sentActions: make([]sentAction, 0),
+		CDPIServer:     realCDPI,
+		sentActions:    make([]sentAction, 0),
+		deletedEntries: make([]deletedEntry, 0),
 	}
 	return fake
 }
@@ -53,6 +60,14 @@ func (f *fakeCDPIServerForScheduler) SendCreateEntry(agentID string, action *sbi
 		action:  action,
 	})
 	return f.CDPIServer.SendCreateEntry(agentID, action)
+}
+
+func (f *fakeCDPIServerForScheduler) SendDeleteEntry(agentID, entryID string) error {
+	f.deletedEntries = append(f.deletedEntries, deletedEntry{
+		agentID: agentID,
+		entryID: entryID,
+	})
+	return f.CDPIServer.SendDeleteEntry(agentID, entryID)
 }
 
 // setupSchedulerTest creates a minimal test scenario with:
@@ -66,7 +81,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *fakeCDPIServerForScheduler, 
 	// Create knowledge bases
 	physKB := kb.NewKnowledgeBase()
 	netKB := core.NewKnowledgeBase()
-	
+
 	// Create transceiver models FIRST (before ScenarioState creation)
 	// because CreateNode validates transceiver existence
 	if err := netKB.AddTransceiverModel(&core.TransceiverModel{
@@ -89,7 +104,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *fakeCDPIServerForScheduler, 
 	}); err != nil {
 		t.Fatalf("AddTransceiverModel(trx-B) failed: %v", err)
 	}
-	
+
 	scenarioState := state.NewScenarioState(physKB, netKB, logging.Noop())
 
 	// Create a fake clock
@@ -101,7 +116,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *fakeCDPIServerForScheduler, 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
 
 	// Create scheduler
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	// Create platform and nodes
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{
@@ -213,7 +228,7 @@ func TestScheduler_ScheduleLinkBeams_NoPotentialLinks(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI.CDPIServer, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
 
 	ctx := context.Background()
 	err := scheduler.ScheduleLinkBeams(ctx)
@@ -287,4 +302,3 @@ func TestScheduler_getPotentialLinks(t *testing.T) {
 		t.Fatalf("expected link-ab, got %q", potential[0].ID)
 	}
 }
-

@@ -65,6 +65,18 @@ func (kb *KnowledgeBase) AddTransceiverModel(trx *TransceiverModel) error {
 	return nil
 }
 
+// ListTransceiverModels returns a snapshot of all transceiver models in the KB.
+func (kb *KnowledgeBase) ListTransceiverModels() []*TransceiverModel {
+	kb.mu.RLock()
+	defer kb.mu.RUnlock()
+
+	out := make([]*TransceiverModel, 0, len(kb.transceivers))
+	for _, trx := range kb.transceivers {
+		out = append(out, trx)
+	}
+	return out
+}
+
 func (kb *KnowledgeBase) GetTransceiverModel(id string) *TransceiverModel {
 	kb.mu.RLock()
 	defer kb.mu.RUnlock()
