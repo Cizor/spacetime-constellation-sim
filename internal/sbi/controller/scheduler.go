@@ -39,6 +39,8 @@ type Scheduler struct {
 	contactWindows map[string][]contactWindow
 	// srEntries tracks the entries created for each ServiceRequest to support cleanup.
 	srEntries map[string][]scheduledEntryRef
+	// linkEntries tracks entries created per link for cleanup.
+	linkEntries map[string][]scheduledEntryRef
 }
 
 // scheduledEntryRef captures a CDPI entry that we may need to clean up later.
@@ -61,6 +63,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		storageReservations: make(map[string]float64),
 		contactWindows:      make(map[string][]contactWindow),
 		srEntries:           make(map[string][]scheduledEntryRef),
+		linkEntries:         make(map[string][]scheduledEntryRef),
 	}
 }
 
@@ -213,6 +216,8 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 		return nil
 	}
 
+	s.cleanupLinkEntries(ctx, link.ID)
+
 	beamSpec, err := s.beamSpecFromLink(link)
 	if err != nil {
 		return fmt.Errorf("failed to construct BeamSpec: %w", err)
@@ -235,12 +240,12 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 		}
 
 		entryIDOn := fmt.Sprintf("link:%s:on:%d", link.ID, window.start.UnixNano())
-		if err := s.sendBeamEntry(agentID, entryIDOn, sbi.ScheduledUpdateBeam, onTime, beamSpec); err != nil {
+		if err := s.sendBeamEntry(link.ID, agentID, entryIDOn, sbi.ScheduledUpdateBeam, onTime, beamSpec); err != nil {
 			return err
 		}
 
 		entryIDOff := fmt.Sprintf("link:%s:off:%d", link.ID, window.end.UnixNano())
-		if err := s.sendBeamEntry(agentID, entryIDOff, sbi.ScheduledDeleteBeam, window.end, beamSpec); err != nil {
+		if err := s.sendBeamEntry(link.ID, agentID, entryIDOff, sbi.ScheduledDeleteBeam, window.end, beamSpec); err != nil {
 			return err
 		}
 	}
@@ -257,7 +262,7 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 	return nil
 }
 
-func (s *Scheduler) sendBeamEntry(agentID, entryID string, actionType sbi.ScheduledActionType, when time.Time, beam *sbi.BeamSpec) error {
+func (s *Scheduler) sendBeamEntry(linkID, agentID, entryID string, actionType sbi.ScheduledActionType, when time.Time, beam *sbi.BeamSpec) error {
 	if entryID == "" || agentID == "" || beam == nil {
 		return fmt.Errorf("invalid beam entry parameters")
 	}
@@ -282,12 +287,60 @@ func (s *Scheduler) sendBeamEntry(agentID, entryID string, actionType sbi.Schedu
 	}
 
 	s.scheduledEntryIDs[entryID] = true
+	s.recordLinkEntry(linkID, scheduledEntryRef{
+		entryID: entryID,
+		agentID: agentID,
+	})
 	return nil
 }
 
 type contactWindow struct {
 	start time.Time
 	end   time.Time
+}
+
+func (s *Scheduler) ensureContactWindows(ctx context.Context) {
+	if len(s.contactWindows) > 0 {
+		return
+	}
+	now := s.Clock.Now()
+	horizon := now.Add(ContactHorizon)
+	if _, err := s.PrecomputeContactWindows(ctx, now, horizon); err != nil {
+		s.log.Warn(ctx, "Failed to compute contact windows for service requests",
+			logging.String("error", err.Error()),
+		)
+	}
+}
+
+func (s *Scheduler) linkHasWindow(linkID string, now time.Time, requireCurrent bool) bool {
+	if linkID == "" {
+		return false
+	}
+	windows := s.contactWindowsForLink(linkID)
+	if len(windows) == 0 {
+		return !requireCurrent
+	}
+	for _, window := range windows {
+		if requireCurrent {
+			if !window.start.After(now) && window.end.After(now) {
+				return true
+			}
+			continue
+		}
+		if window.end.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scheduler) linkHasWindowBetween(nodeA, nodeB string, requireCurrent bool) bool {
+	now := s.Clock.Now()
+	link, _, _, err := s.findLinkBetweenNodes(nodeA, nodeB)
+	if err != nil || link == nil {
+		return false
+	}
+	return s.linkHasWindow(link.ID, now, requireCurrent)
 }
 
 func (s *Scheduler) pickContactWindow(now time.Time, windows []contactWindow) (time.Time, time.Time) {
@@ -442,6 +495,8 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 		return nil
 	}
 
+	s.cleanupLinkEntries(ctx, link.ID)
+
 	interfacesByNode := s.State.InterfacesByNode()
 	ifaceA := findInterfaceByRef(interfacesByNode, link.InterfaceA)
 	ifaceB := findInterfaceByRef(interfacesByNode, link.InterfaceB)
@@ -473,6 +528,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			if err := s.CDPI.SendCreateEntry(agentAID, actionAOn); err != nil {
 				return fmt.Errorf("failed to send SetRoute for node A: %w", err)
 			}
+			s.recordLinkEntry(link.ID, scheduledEntryRef{
+				entryID: entryIDAOn,
+				agentID: agentAID,
+			})
 			s.scheduledEntryIDs[entryIDAOn] = true
 		}
 
@@ -483,6 +542,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			if err := s.CDPI.SendCreateEntry(agentBID, actionBOn); err != nil {
 				return fmt.Errorf("failed to send SetRoute for node B: %w", err)
 			}
+			s.recordLinkEntry(link.ID, scheduledEntryRef{
+				entryID: entryIDBOn,
+				agentID: agentBID,
+			})
 			s.scheduledEntryIDs[entryIDBOn] = true
 		}
 
@@ -493,6 +556,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			if err := s.CDPI.SendCreateEntry(agentAID, actionAOff); err != nil {
 				return fmt.Errorf("failed to send DeleteRoute for node A: %w", err)
 			}
+			s.recordLinkEntry(link.ID, scheduledEntryRef{
+				entryID: entryIDAOff,
+				agentID: agentAID,
+			})
 			s.scheduledEntryIDs[entryIDAOff] = true
 		}
 
@@ -503,6 +570,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			if err := s.CDPI.SendCreateEntry(agentBID, actionBOff); err != nil {
 				return fmt.Errorf("failed to send DeleteRoute for node B: %w", err)
 			}
+			s.recordLinkEntry(link.ID, scheduledEntryRef{
+				entryID: entryIDBOff,
+				agentID: agentBID,
+			})
 			s.scheduledEntryIDs[entryIDBOff] = true
 		}
 	}
@@ -594,6 +665,8 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		logging.Int("sr_count", len(serviceRequests)),
 	)
 
+	s.ensureContactWindows(ctx)
+
 	// Build connectivity graph from potential/active links
 	graph := s.buildConnectivityGraph()
 
@@ -613,7 +686,8 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		prevEntries := append([]scheduledEntryRef(nil), s.srEntries[sr.ID]...)
 
 		// Find a path from src to dst
-		path := s.findAnyPath(graph, sr.SrcNodeID, sr.DstNodeID)
+		requireCurrent := !sr.IsDisruptionTolerant
+		path := s.findAnyPath(graph, sr.SrcNodeID, sr.DstNodeID, requireCurrent)
 		if path == nil {
 			s.log.Debug(ctx, "No path found for service request",
 				logging.String("sr_id", sr.ID),
@@ -776,6 +850,35 @@ func (s *Scheduler) cleanupServiceRequestEntries(ctx context.Context, srID strin
 	delete(s.srEntries, srID)
 }
 
+func (s *Scheduler) cleanupLinkEntries(ctx context.Context, linkID string) {
+	if linkID == "" {
+		return
+	}
+	entries := s.linkEntries[linkID]
+	if len(entries) == 0 {
+		return
+	}
+	for _, entry := range entries {
+		if err := s.CDPI.SendDeleteEntry(entry.agentID, entry.entryID); err != nil {
+			s.log.Warn(ctx, "Failed to delete link entry during replan",
+				logging.String("link_id", linkID),
+				logging.String("agent_id", entry.agentID),
+				logging.String("entry_id", entry.entryID),
+				logging.String("error", err.Error()),
+			)
+		}
+		delete(s.scheduledEntryIDs, entry.entryID)
+	}
+	delete(s.linkEntries, linkID)
+}
+
+func (s *Scheduler) recordLinkEntry(linkID string, entry scheduledEntryRef) {
+	if linkID == "" || entry.entryID == "" {
+		return
+	}
+	s.linkEntries[linkID] = append(s.linkEntries[linkID], entry)
+}
+
 // connectivityGraph represents a simple undirected graph of node connectivity.
 type connectivityGraph struct {
 	adj map[string][]string // NodeID -> neighbor NodeIDs
@@ -840,9 +943,10 @@ func (g *connectivityGraph) addEdge(nodeA, nodeB string) {
 	g.adj[nodeB] = append(g.adj[nodeB], nodeA)
 }
 
-// findAnyPath performs BFS to find any path from src to dst.
+// findAnyPath performs BFS to find any path from src to dst that has upcoming contact windows.
+// For non-DTN flows (requireCurrent=true) it ensures each link is active now.
 // Returns a slice of node IDs [src, ..., dst], or nil if no path exists.
-func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID string) []string {
+func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID string, requireCurrent bool) []string {
 	if srcNodeID == dstNodeID {
 		return []string{srcNodeID} // Self-loop
 	}
@@ -874,14 +978,17 @@ func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID s
 			return path
 		}
 
-		// Explore neighbors
 		neighbors := graph.adj[current]
 		for _, neighbor := range neighbors {
-			if !visited[neighbor] {
-				visited[neighbor] = true
-				prev[neighbor] = current
-				queue = append(queue, neighbor)
+			if visited[neighbor] {
+				continue
 			}
+			if !s.linkHasWindowBetween(current, neighbor, requireCurrent) {
+				continue
+			}
+			visited[neighbor] = true
+			prev[neighbor] = current
+			queue = append(queue, neighbor)
 		}
 	}
 

@@ -534,3 +534,41 @@ func TestScheduler_LinkIntervals_Idempotency(t *testing.T) {
 		t.Errorf("expected idempotency: first call sent %d actions, second sent %d", firstCallCount, secondCallCount)
 	}
 }
+
+// TestScheduler_LinkBeamsReplanCleansEntries ensures periodic beam replans delete prior entries.
+func TestScheduler_LinkBeamsReplanCleansEntries(t *testing.T) {
+	scheduler, fakeCDPI, _ := setupSchedulerTest(t)
+
+	handle := &AgentHandle{
+		AgentID:  "node-A",
+		NodeID:   "node-A",
+		Stream:   &fakeStream{},
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 10),
+		token:    "tok-replan",
+		seqNo:    0,
+	}
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["node-A"] = handle
+	fakeCDPI.agentsMu.Unlock()
+
+	ctx := context.Background()
+	if err := scheduler.ScheduleLinkBeams(ctx); err != nil {
+		t.Fatalf("ScheduleLinkBeams failed: %v", err)
+	}
+
+	firstSent := len(fakeCDPI.sentActions)
+	if firstSent == 0 {
+		t.Fatalf("expected at least one action sent on first schedule")
+	}
+
+	fakeCDPI.deletedEntries = nil
+	fakeCDPI.sentActions = nil
+
+	if err := scheduler.ScheduleLinkBeams(ctx); err != nil {
+		t.Fatalf("ScheduleLinkBeams failed on replan: %v", err)
+	}
+
+	if len(fakeCDPI.deletedEntries) != firstSent {
+		t.Fatalf("expected %d delete requests, got %d", firstSent, len(fakeCDPI.deletedEntries))
+	}
+}

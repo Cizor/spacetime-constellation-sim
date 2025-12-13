@@ -130,6 +130,16 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	fakeCDPI.agents["nodeB"] = agentHandleB
 	fakeCDPI.agentsMu.Unlock()
 
+	// Seed contact windows so the path looks available
+	scheduler.contactWindows = map[string][]contactWindow{
+		"linkAB": {
+			{
+				start: T0,
+				end:   T0.Add(defaultPotentialWindow),
+			},
+		},
+	}
+
 	// Run scheduler
 	ctx := context.Background()
 	if err := scheduler.ScheduleServiceRequests(ctx); err != nil {

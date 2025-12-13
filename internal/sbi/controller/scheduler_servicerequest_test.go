@@ -274,12 +274,21 @@ func TestScheduler_ServiceRequestReplanCleansEntries(t *testing.T) {
 
 // TestScheduler_findAnyPath verifies BFS pathfinding.
 func TestScheduler_findAnyPath(t *testing.T) {
-	scheduler, _, _ := setupSchedulerTest(t)
+	scheduler, _, T0 := setupSchedulerTest(t)
+
+	scheduler.contactWindows = map[string][]contactWindow{
+		"link-ab": {
+			{
+				start: T0,
+				end:   T0.Add(defaultPotentialWindow),
+			},
+		},
+	}
 
 	graph := scheduler.buildConnectivityGraph()
 
 	// Test single-hop path
-	path := scheduler.findAnyPath(graph, "node-A", "node-B")
+	path := scheduler.findAnyPath(graph, "node-A", "node-B", true)
 	if path == nil {
 		t.Fatalf("expected path from node-A to node-B")
 	}
@@ -291,7 +300,7 @@ func TestScheduler_findAnyPath(t *testing.T) {
 	}
 
 	// Test self-loop
-	path = scheduler.findAnyPath(graph, "node-A", "node-A")
+	path = scheduler.findAnyPath(graph, "node-A", "node-A", true)
 	if path == nil {
 		t.Fatalf("expected self-loop path")
 	}
@@ -300,7 +309,7 @@ func TestScheduler_findAnyPath(t *testing.T) {
 	}
 
 	// Test no path
-	path = scheduler.findAnyPath(graph, "node-A", "node-nonexistent")
+	path = scheduler.findAnyPath(graph, "node-A", "node-nonexistent", true)
 	if path != nil {
 		t.Fatalf("expected nil path for non-existent node, got %v", path)
 	}
