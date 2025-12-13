@@ -424,4 +424,3 @@ func TestCDPIServer_setAgentToken_UnknownAgentReturnsError(t *testing.T) {
 		t.Errorf("error message should not be empty")
 	}
 }
-

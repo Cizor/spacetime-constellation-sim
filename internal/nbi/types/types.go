@@ -754,13 +754,6 @@ func (e bidirectionalEndpoint) txInterface() string {
 	return e.rxID
 }
 
-func (e bidirectionalEndpoint) rxInterface() string {
-	if e.rxID != "" {
-		return e.rxID
-	}
-	return e.txID
-}
-
 func stringPtr(s string) *string {
 	if s == "" {
 		return nil

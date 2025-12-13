@@ -26,4 +26,3 @@ func (s *CDPIServer) DumpAgentState(agentID string) (string, error) {
 
 	return buf.String(), nil
 }
-

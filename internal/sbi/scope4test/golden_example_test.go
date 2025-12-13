@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
@@ -16,8 +18,6 @@ import (
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
-	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -354,4 +354,3 @@ func TestScope4GoldenExampleScenario(t *testing.T) {
 	t.Logf("  - Agents started: %d", len(sbiRuntime.Agents))
 	t.Logf("  - Telemetry metrics: %d", len(allMetrics))
 }
-

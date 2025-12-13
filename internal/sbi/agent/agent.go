@@ -891,14 +891,6 @@ func (a *SimAgent) GetToken() string {
 	return a.token
 }
 
-// validateToken checks if the provided token matches the agent's current token.
-// Returns true if tokens match, false otherwise.
-func (a *SimAgent) validateToken(token string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return token == a.token
-}
-
 // startTelemetryLoop starts the periodic telemetry emission loop.
 // It schedules the first telemetry tick and reschedules itself after each tick.
 func (a *SimAgent) startTelemetryLoop() {

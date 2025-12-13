@@ -383,4 +383,3 @@ func TestScheduledAction_Validate_MissingSrPolicyPayload(t *testing.T) {
 		t.Fatalf("Validate() should return error for missing SrPolicy payload")
 	}
 }
-
