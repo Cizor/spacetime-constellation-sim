@@ -279,30 +279,37 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 	}
 
 	distKm := posA.DistanceTo(posB)
-	if trxA.MaxRangeKm > 0 || trxB.MaxRangeKm > 0 {
-		// Use the minimum (most restrictive) range between the two transceivers.
-		// When two transceivers have different MaxRangeKm values, the effective
-		// range is limited by the transceiver with the shorter range.
-		var maxRange float64
-		if trxA.MaxRangeKm > 0 && trxB.MaxRangeKm > 0 {
-			maxRange = math.Min(trxA.MaxRangeKm, trxB.MaxRangeKm)
-		} else if trxA.MaxRangeKm > 0 {
-			maxRange = trxA.MaxRangeKm
-		} else {
-			maxRange = trxB.MaxRangeKm
+	// Range check: use the minimum (most restrictive) range between the two transceivers.
+	// MaxRangeKm = 0 means unlimited (no limit). When both transceivers have limits,
+	// use the minimum. When only one has a limit, that limit applies.
+	// When neither has a limit (both are 0), skip the range check entirely.
+	var maxRange float64
+	hasLimitA := trxA.MaxRangeKm > 0
+	hasLimitB := trxB.MaxRangeKm > 0
+	if hasLimitA && hasLimitB {
+		// Both have limits: use the minimum (most restrictive)
+		maxRange = math.Min(trxA.MaxRangeKm, trxB.MaxRangeKm)
+	} else if hasLimitA {
+		// Only A has a limit: use A's limit
+		maxRange = trxA.MaxRangeKm
+	} else if hasLimitB {
+		// Only B has a limit: use B's limit
+		maxRange = trxB.MaxRangeKm
+	} else {
+		// Neither has a limit (both are 0/unlimited): skip range check
+		maxRange = 0
+	}
+	if maxRange > 0 && distKm > maxRange {
+		link.IsUp = false
+		link.Quality = LinkQualityDown
+		link.SNRdB = 0
+		link.MaxDataRateMbps = 0
+		// If Status was not set or was Active, set to Potential to maintain consistency
+		// (Active status with IsUp=false is inconsistent)
+		if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
+			link.Status = LinkStatusPotential
 		}
-		if distKm > maxRange {
-			link.IsUp = false
-			link.Quality = LinkQualityDown
-			link.SNRdB = 0
-			link.MaxDataRateMbps = 0
-			// If Status was not set or was Active, set to Potential to maintain consistency
-			// (Active status with IsUp=false is inconsistent)
-			if link.Status == LinkStatusUnknown || link.Status == LinkStatusActive {
-				link.Status = LinkStatusPotential
-			}
-			return
-		}
+		return
 	}
 
 	// 4) SNR estimate and quality classification.
