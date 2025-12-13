@@ -119,4 +119,3 @@ func TestUnknownStatusRestorationOnUnimpair(t *testing.T) {
 	// So the real test is that StatusBeforeImpairment was correctly saved and used.
 	// Let's verify that the restoration path was taken by ensuring StatusBeforeImpairment is nil.
 }
-
