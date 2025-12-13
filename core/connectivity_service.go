@@ -280,7 +280,17 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 
 	distKm := posA.DistanceTo(posB)
 	if trxA.MaxRangeKm > 0 || trxB.MaxRangeKm > 0 {
-		maxRange := math.Max(trxA.MaxRangeKm, trxB.MaxRangeKm)
+		// Use the minimum (most restrictive) range between the two transceivers.
+		// When two transceivers have different MaxRangeKm values, the effective
+		// range is limited by the transceiver with the shorter range.
+		var maxRange float64
+		if trxA.MaxRangeKm > 0 && trxB.MaxRangeKm > 0 {
+			maxRange = math.Min(trxA.MaxRangeKm, trxB.MaxRangeKm)
+		} else if trxA.MaxRangeKm > 0 {
+			maxRange = trxA.MaxRangeKm
+		} else {
+			maxRange = trxB.MaxRangeKm
+		}
 		if distKm > maxRange {
 			link.IsUp = false
 			link.Quality = LinkQualityDown
