@@ -154,7 +154,7 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	)
 
 	tc := timectrl.NewTimeController(time.Now().UTC(), cfg.TickInterval, timeMode(cfg))
-	
+
 	// Create EventScheduler for SBI components
 	eventScheduler := sbi.NewEventScheduler(tc)
 
@@ -351,17 +351,27 @@ func runSimLoop(
 	defer ticker.Stop()
 
 	simTime := tc.StartTime
+	firstTick := true
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			simTime = simTime.Add(tc.Tick)
-			
+			// On the first tick, process at StartTime without incrementing.
+			// This ensures events scheduled at StartTime (e.g., by RunInitialSchedule)
+			// are processed on the first tick, aligning with the comment that says
+			// "The sim loop will start at StartTime".
+			if firstTick {
+				firstTick = false
+				// simTime remains at StartTime for the first tick
+			} else {
+				simTime = simTime.Add(tc.Tick)
+			}
+
 			// Update TimeController's internal time so EventScheduler.Now() returns correct time
 			// This is critical for EventScheduler integration (Issue #168)
 			tc.SetTime(simTime)
-			
+
 			if err := state.RunSimTick(simTime, motion, connectivity, func() {
 				syncNodePositions(state.PhysicalKB(), state.NetworkKB())
 			}); err != nil {
