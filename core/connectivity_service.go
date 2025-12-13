@@ -138,8 +138,10 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 		// If we're transitioning to impaired state, save the current status
 		// (unless it's already impaired, in which case we've already saved it)
 		if link.Status != LinkStatusImpaired {
-			statusCopy := link.Status
-			link.StatusBeforeImpairment = &statusCopy
+			// Allocate on heap to avoid dangling pointer when function returns
+			statusCopy := new(LinkStatus)
+			*statusCopy = link.Status
+			link.StatusBeforeImpairment = statusCopy
 		}
 		link.IsUp = false
 		link.Quality = LinkQualityDown
@@ -411,10 +413,10 @@ func estimateLinkSNRdB(tx, rx *TransceiverModel, distanceKm float64) float64 {
 	// Received power in dBW.
 	pr := pt + gt + gr - fspl
 
-	// Simple, fixed noise floor assumption extended by noise figure.
-	// This keeps the estimator conservative while respecting TLE catalog
-	// metadata that was previously dropped.
-	noiseFloor := -120.0 + averageNoiseFigure(tx, rx)
+	// Simple, fixed noise floor assumption adjusted by noise figure.
+	// Noise figure increases the effective noise floor (makes it less negative),
+	// which reduces SNR. Higher noise figures should decrease SNR and link quality.
+	noiseFloor := -120.0 - averageNoiseFigure(tx, rx)
 
 	return pr - noiseFloor
 }

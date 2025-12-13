@@ -117,7 +117,7 @@ func (m *MotionModel) UpdatePositions(simTime time.Time) error {
 	updater := m.posUpdater
 	m.mu.RUnlock()
 
-	var lastErr error
+	var errs []error
 	for _, entry := range entries {
 		if entry.propagator == nil || entry.platform == nil {
 			continue
@@ -129,11 +129,15 @@ func (m *MotionModel) UpdatePositions(simTime time.Time) error {
 		}
 		if updater != nil {
 			if err := updater.UpdatePlatformPosition(entry.platform.ID, entry.platform.Coordinates); err != nil {
-				lastErr = err
+				errs = append(errs, err)
 			}
 		}
 	}
-	return lastErr
+	// Return the first error encountered, or nil if no errors
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
 }
 
 type motionEntry struct {
@@ -214,3 +218,4 @@ func clonePlatform(pd *model.PlatformDefinition) *model.PlatformDefinition {
 	cp := *pd
 	return &cp
 }
+
