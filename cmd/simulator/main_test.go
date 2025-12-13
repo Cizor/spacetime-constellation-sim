@@ -63,10 +63,14 @@ func TestIntegration_SingleSatAndGround(t *testing.T) {
 	tc.AddListener(func(simTime time.Time) {
 		_ = motionModel.UpdatePositions(simTime)
 
-		if ticks == 0 {
-			satFirst = sat.Coordinates
+		// Read updated coordinates from KB, not the original variables
+		satUpdated := store.GetPlatform("sat1")
+		if satUpdated != nil {
+			if ticks == 0 {
+				satFirst = satUpdated.Coordinates
+			}
+			satLast = satUpdated.Coordinates
 		}
-		satLast = sat.Coordinates
 		ticks++
 	})
 
@@ -79,7 +83,14 @@ func TestIntegration_SingleSatAndGround(t *testing.T) {
 	if satFirst == satLast {
 		t.Fatalf("expected satellite position to change over time, got %+v first == last", satFirst)
 	}
-	if got := store.GetPlatform("ground1"); got == nil || got.Coordinates != ground.Coordinates {
-		t.Fatalf("ground platform not found or coords mismatch")
+	// Verify ground platform coordinates are preserved in KB
+	groundUpdated := store.GetPlatform("ground1")
+	if groundUpdated == nil {
+		t.Fatalf("ground platform not found in KB")
+	}
+	// Ground platform should have static coordinates (no motion)
+	expectedGround := model.Motion{X: 6371000, Y: 0, Z: 0}
+	if groundUpdated.Coordinates != expectedGround {
+		t.Fatalf("ground platform coords mismatch: got %+v, want %+v", groundUpdated.Coordinates, expectedGround)
 	}
 }

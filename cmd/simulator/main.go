@@ -154,28 +154,38 @@ func main() {
 		// --- Push ECEF positions into network KB (Scope 2) ---
 		// Scope 1 uses metres; Scope 2 geometry layer uses km.
 		// Use network node IDs ("node-sat1", "node-ground1"), not platform IDs.
-		netKB.SetNodeECEFPosition("node-sat1", core.Vec3{
-			X: sat.Coordinates.X / 1000.0,
-			Y: sat.Coordinates.Y / 1000.0,
-			Z: sat.Coordinates.Z / 1000.0,
-		})
-		netKB.SetNodeECEFPosition("node-ground1", core.Vec3{
-			X: ground.Coordinates.X / 1000.0,
-			Y: ground.Coordinates.Y / 1000.0,
-			Z: ground.Coordinates.Z / 1000.0,
-		})
+		// Read updated coordinates from the KB, not the original variables,
+		// since motionModel.UpdatePositions updates the KB via posUpdater callback.
+		satUpdated := store.GetPlatform("sat1")
+		groundUpdated := store.GetPlatform("ground1")
+		if satUpdated != nil {
+			netKB.SetNodeECEFPosition("node-sat1", core.Vec3{
+				X: satUpdated.Coordinates.X / 1000.0,
+				Y: satUpdated.Coordinates.Y / 1000.0,
+				Z: satUpdated.Coordinates.Z / 1000.0,
+			})
+		}
+		if groundUpdated != nil {
+			netKB.SetNodeECEFPosition("node-ground1", core.Vec3{
+				X: groundUpdated.Coordinates.X / 1000.0,
+				Y: groundUpdated.Coordinates.Y / 1000.0,
+				Z: groundUpdated.Coordinates.Z / 1000.0,
+			})
+		}
 
 		// --- Evaluate connectivity (Scope 2) ---
 
 		connectivity.UpdateConnectivity()
 
 		// --- Logging / demo output ---
-
-		fmt.Printf("[%s] %s @ (%.0f, %.0f, %.0f); %s @ (%.0f, %.0f, %.0f)\n",
-			simTime.Format(time.RFC3339),
-			sat.ID, sat.Coordinates.X, sat.Coordinates.Y, sat.Coordinates.Z,
-			ground.ID, ground.Coordinates.X, ground.Coordinates.Y, ground.Coordinates.Z,
-		)
+		// Use updated coordinates from KB for logging (already retrieved above)
+		if satUpdated != nil && groundUpdated != nil {
+			fmt.Printf("[%s] %s @ (%.0f, %.0f, %.0f); %s @ (%.0f, %.0f, %.0f)\n",
+				simTime.Format(time.RFC3339),
+				satUpdated.ID, satUpdated.Coordinates.X, satUpdated.Coordinates.Y, satUpdated.Coordinates.Z,
+				groundUpdated.ID, groundUpdated.Coordinates.X, groundUpdated.Coordinates.Y, groundUpdated.Coordinates.Z,
+			)
+		}
 
 		// Show all links with SNR and quality. Most interesting will
 		// be the dynamic wireless sat1–ground1 link.
