@@ -69,7 +69,7 @@ proto:
 	protoc -I $(PROTO_API_ROOT) -I $(PROTO_GOOGLE_ROOT) \
 	  --go_out=$(PROTO_OUT_DIR) --go_opt=paths=source_relative \
 	  --go-grpc_out=$(PROTO_OUT_DIR) --go-grpc_opt=paths=source_relative \
-	  $(PROTO_FILES_REL)
+	  $(addprefix $(PROTO_API_ROOT)/,$(PROTO_FILES_REL))
 
 ## Backwards-compatible alias
 protos: proto
