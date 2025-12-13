@@ -213,6 +213,8 @@ func clonePlatform(pd *model.PlatformDefinition) *model.PlatformDefinition {
 	if pd == nil {
 		return nil
 	}
-	cp := *pd
-	return &cp
+	// Allocate on the heap to avoid returning a pointer to a stack-allocated variable
+	cp := new(model.PlatformDefinition)
+	*cp = *pd
+	return cp
 }
