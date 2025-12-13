@@ -218,6 +218,13 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	}
 	defer clientConn.Close()
 
+	// Set initial simulation time before starting agents and running initial schedule.
+	// This ensures EventScheduler.Now() returns the correct time when agents query time
+	// during initialization (e.g., in startTelemetryLoop) and when scheduling events.
+	// The sim loop will start at StartTime and advance by Tick on the first iteration,
+	// so we set the time to StartTime here to match the initial state.
+	tc.SetTime(tc.StartTime)
+
 	// Create and start SBI runtime with pre-created servers
 	sbiRuntime, err := sbiruntime.NewSBIRuntimeWithServers(state, eventScheduler, telemetryState, telemetryServer, cdpiServer, clientConn, log)
 	if err != nil {
@@ -226,15 +233,11 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	defer sbiRuntime.Close()
 
 	// Start agents (they will connect to CDPI and Telemetry servers)
+	// Agents may query simulation time during initialization (e.g., in startTelemetryLoop),
+	// so tc.SetTime() must be called before this point.
 	if err := sbiRuntime.StartAgents(ctx); err != nil {
 		return fmt.Errorf("failed to start agents: %w", err)
 	}
-
-	// Set initial simulation time before running initial schedule.
-	// This ensures EventScheduler.Now() returns the correct time when scheduling events.
-	// The sim loop will start at StartTime and advance by Tick on the first iteration,
-	// so we set the time to StartTime here to match the initial state.
-	tc.SetTime(tc.StartTime)
 
 	// Run initial schedule
 	// Note: We log a warning but don't fail startup if initial scheduling fails,
