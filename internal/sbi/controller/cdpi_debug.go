@@ -18,7 +18,7 @@ func (s *CDPIServer) DumpAgentState(agentID string) (string, error) {
 	}
 
 	var buf strings.Builder
-	buf.WriteString(fmt.Sprintf("CDPI Agent Handle:\n"))
+	buf.WriteString("CDPI Agent Handle:\n")
 	buf.WriteString(fmt.Sprintf("  AgentID: %s\n", handle.AgentID))
 	buf.WriteString(fmt.Sprintf("  NodeID: %s\n", handle.NodeID))
 	buf.WriteString(fmt.Sprintf("  Token: %s\n", handle.CurrentToken()))

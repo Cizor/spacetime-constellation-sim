@@ -147,9 +147,10 @@ func TestScope4GoldenExampleScenario(t *testing.T) {
 			IsOperational: iface.IsOperational,
 			TransceiverID: iface.TransceiverID,
 		}
-		if iface.ParentNodeID == "sat1" {
+		switch iface.ParentNodeID {
+		case "sat1":
 			satInterfaces = append(satInterfaces, ifaceCopy)
-		} else if iface.ParentNodeID == "gs1" {
+		case "gs1":
 			gsInterfaces = append(gsInterfaces, ifaceCopy)
 		}
 	}

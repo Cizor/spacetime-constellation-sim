@@ -682,7 +682,7 @@ func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID s
 }
 
 // scheduleActionsForPath schedules UpdateBeam and SetRoute actions for each hop in the path.
-func (s *Scheduler) scheduleActionsForPath(ctx context.Context, path []string, srID string) error {
+func (s *Scheduler) scheduleActionsForPath(_ context.Context, path []string, srID string) error {
 	if len(path) < 2 {
 		return fmt.Errorf("path must have at least 2 nodes, got %d", len(path))
 	}

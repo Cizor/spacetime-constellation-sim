@@ -51,10 +51,7 @@ func TestBeamSpec_Construction(t *testing.T) {
 		NodeID:       "nodeA",
 		InterfaceID:  "ifA",
 		TargetNodeID: "nodeB",
-		TargetIfID:   "ifB",
 		FrequencyHz:  11e9, // 11 GHz
-		BandwidthHz:  100e6, // 100 MHz
-		PowerDBw:     10.0,
 	}
 
 	if beam.NodeID != "nodeA" {

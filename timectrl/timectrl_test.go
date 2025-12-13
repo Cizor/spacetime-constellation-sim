@@ -42,9 +42,6 @@ func TestTimeControllerImplementsSimClock(t *testing.T) {
 
 	// Verify it implements SimClock interface
 	var clock SimClock = tc
-	if clock == nil {
-		t.Fatalf("TimeController does not implement SimClock")
-	}
 
 	// Test Now() returns initial time
 	now := clock.Now()
@@ -137,10 +134,7 @@ func TestFakeSimClock(t *testing.T) {
 	clock := NewFakeSimClock(start)
 
 	// Verify it implements SimClock interface
-	var simClock SimClock = clock
-	if simClock == nil {
-		t.Fatalf("FakeSimClock does not implement SimClock")
-	}
+	var _ SimClock = clock
 
 	// Test Now() returns start time
 	now := clock.Now()

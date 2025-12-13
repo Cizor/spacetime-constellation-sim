@@ -281,7 +281,7 @@ func TestCDPIServer_SendCreateEntry_ChannelFullReturnsError(t *testing.T) {
 		AgentID:  "agent-1",
 		NodeID:   "node1",
 		Stream:   &fakeStream{},
-		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 0), // unbuffered
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController), // unbuffered
 		token:    "tok-123",
 		seqNo:    0,
 	}
