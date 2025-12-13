@@ -29,8 +29,8 @@ A Go-based, API-compatible engine for modeling satellite constellations, ground 
 ## Getting started
 
 ```bash
-git clone https://github.com/<org>/constellation-simulator.git
-cd constellation-simulator
+git clone https://github.com/Cizor/spacetime-constellation-sim.git
+cd spacetime-constellation-sim
 
 # fetch dependencies
 go mod tidy
