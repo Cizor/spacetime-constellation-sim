@@ -192,8 +192,9 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 			// Clear explicit deactivation flag only when we actually auto-activate
 			link.WasExplicitlyDeactivated = false
 		}
-		// Link is only "up" if Status is Active
-		if link.Status == LinkStatusActive {
+		// Link is only "up" if Status is Active AND not explicitly deactivated
+		// This ensures IsUp accurately reflects the link's operational state
+		if link.Status == LinkStatusActive && !link.WasExplicitlyDeactivated {
 			link.IsUp = true
 		} else {
 			link.IsUp = false
@@ -324,8 +325,9 @@ func (cs *ConnectivityService) evaluateLink(link *NetworkLink) {
 			// This ensures the flag accurately reflects the link's state
 			link.WasExplicitlyDeactivated = false
 		}
-		// Link is only "up" if Status is Active
-		if link.Status == LinkStatusActive {
+		// Link is only "up" if Status is Active AND not explicitly deactivated
+		// This ensures IsUp accurately reflects the link's operational state
+		if link.Status == LinkStatusActive && !link.WasExplicitlyDeactivated {
 			link.IsUp = true
 		} else {
 			link.IsUp = false
