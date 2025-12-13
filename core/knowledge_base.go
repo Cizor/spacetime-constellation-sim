@@ -419,12 +419,19 @@ func (kb *KnowledgeBase) detachLinkFromInterface(linkID, ifID string) {
 // deleteInterfaceLocked removes the interface with the provided ID and cleans
 // up any adjacency state. Caller must hold kb.mu (write lock).
 func (kb *KnowledgeBase) deleteInterfaceLocked(id string) {
+	// Collect link IDs to delete first, then delete them.
+	// Modifying a map during iteration is undefined behavior in Go.
+	var linkIDsToDelete []string
 	for linkID, link := range kb.links {
 		if link.InterfaceA == id || link.InterfaceB == id {
-			kb.detachLinkFromInterface(linkID, link.InterfaceA)
-			kb.detachLinkFromInterface(linkID, link.InterfaceB)
-			delete(kb.links, linkID)
+			linkIDsToDelete = append(linkIDsToDelete, linkID)
 		}
+	}
+	for _, linkID := range linkIDsToDelete {
+		link := kb.links[linkID]
+		kb.detachLinkFromInterface(linkID, link.InterfaceA)
+		kb.detachLinkFromInterface(linkID, link.InterfaceB)
+		delete(kb.links, linkID)
 	}
 
 	delete(kb.linksByInterface, id)
@@ -442,6 +449,9 @@ func (kb *KnowledgeBase) ClearDynamicWirelessLinks() {
 	kb.mu.Lock()
 	defer kb.mu.Unlock()
 
+	// Collect link IDs to delete first, then delete them.
+	// Modifying a map during iteration is undefined behavior in Go.
+	var linkIDsToDelete []string
 	for id, link := range kb.links {
 		if link.Medium != MediumWireless {
 			continue
@@ -449,6 +459,10 @@ func (kb *KnowledgeBase) ClearDynamicWirelessLinks() {
 		if !strings.HasPrefix(id, "dyn-") {
 			continue
 		}
+		linkIDsToDelete = append(linkIDsToDelete, id)
+	}
+	for _, id := range linkIDsToDelete {
+		link := kb.links[id]
 		// Remove adjacency first.
 		kb.detachLinkFromInterface(id, link.InterfaceA)
 		kb.detachLinkFromInterface(id, link.InterfaceB)

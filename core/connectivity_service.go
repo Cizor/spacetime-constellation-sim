@@ -416,7 +416,7 @@ func estimateLinkSNRdB(tx, rx *TransceiverModel, distanceKm float64) float64 {
 	// Simple, fixed noise floor assumption adjusted by noise figure.
 	// Noise figure increases the effective noise floor (makes it less negative),
 	// which reduces SNR. Higher noise figures should decrease SNR and link quality.
-	noiseFloor := -120.0 - averageNoiseFigure(tx, rx)
+	noiseFloor := -120.0 + averageNoiseFigure(tx, rx)
 
 	return pr - noiseFloor
 }
