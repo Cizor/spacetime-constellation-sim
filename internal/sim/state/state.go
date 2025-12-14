@@ -38,6 +38,8 @@ var (
 	ErrTransceiverNotFound = errors.New("transceiver model not found")
 	// ErrNodeInvalid indicates a node failed validation.
 	ErrNodeInvalid = errors.New("invalid node")
+	// ErrStorageFull indicates there is no more DTN storage available on a node.
+	ErrStorageFull = errors.New("dtn storage full")
 	// ErrLinkNotFound indicates a requested link was not found.
 	ErrLinkNotFound = network.ErrLinkNotFound
 	// ErrLinkNotFoundForBeam indicates a link was not found when applying a beam operation.
@@ -74,7 +76,7 @@ type ScenarioState struct {
 	serviceRequests map[string]*model.ServiceRequest
 	// serviceRequestStatuses track provisioning state / intervals per request.
 	serviceRequestStatuses map[string]*model.ServiceRequestStatus
-	dtnStorageUsage        map[string]float64
+	dtnStorage             map[string]*DTNStorage
 	// interfacePowerStates tracks allocated power per interface.
 	interfacePowerStates map[string]*InterfacePowerState
 
@@ -117,6 +119,36 @@ type ScenarioSnapshot struct {
 // ScenarioMetricsRecorder receives count updates for core scenario entities.
 type ScenarioMetricsRecorder interface {
 	SetScenarioCounts(platforms, nodes, links, serviceRequests int)
+}
+
+// MessageState represents the lifecycle state for a stored DTN message.
+type MessageState string
+
+const (
+	MessageStatePending   MessageState = "pending"
+	MessageStateStored    MessageState = "stored"
+	MessageStateForwarded MessageState = "forwarded"
+	MessageStateExpired   MessageState = "expired"
+)
+
+// StoredMessage captures metadata about a DTN message stored on a node.
+type StoredMessage struct {
+	MessageID        string
+	ServiceRequestID string
+	SizeBytes        uint64
+	ArrivalTime      time.Time
+	ExpiryTime       time.Time
+	Destination      string
+	State            MessageState
+}
+
+// DTNStorage tracks stored messages and capacity for a single node.
+type DTNStorage struct {
+	NodeID        string
+	CapacityBytes uint64
+	UsedBytes     uint64
+	Messages      []StoredMessage
+	mu            sync.RWMutex
 }
 
 type motionResetter interface {
@@ -164,7 +196,7 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		netKB:                  net,
 		serviceRequests:        make(map[string]*model.ServiceRequest),
 		serviceRequestStatuses: make(map[string]*model.ServiceRequestStatus),
-		dtnStorageUsage:        make(map[string]float64),
+		dtnStorage:             make(map[string]*DTNStorage),
 		interfacePowerStates:   make(map[string]*InterfacePowerState),
 		log:                    log,
 	}
@@ -402,7 +434,7 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 		added = append(added, iface.ID)
 	}
 
-	s.dtnStorageUsage[node.ID] = 0
+	s.dtnStorage[node.ID] = newDTNStorage(node)
 
 	s.updateMetricsLocked()
 	return nil
@@ -520,7 +552,7 @@ func (s *ScenarioState) DeleteNode(id string) error {
 		return err
 	}
 
-	delete(s.dtnStorageUsage, id)
+	delete(s.dtnStorage, id)
 
 	s.updateMetricsLocked()
 	return nil
@@ -1503,28 +1535,17 @@ func (s *ScenarioState) validateNodeInterfacesLocked(nodeID string, interfaces [
 // ReserveStorage increments the DTN storage usage for a node, respecting capacity limits.
 func (s *ScenarioState) ReserveStorage(nodeID string, bytes float64) error {
 	if nodeID == "" {
-		return fmt.Errorf("node ID is empty")
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
 	}
 	if bytes <= 0 {
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	node := s.physKB.GetNetworkNode(nodeID)
-	if node == nil {
-		return ErrNodeNotFound
+	storage, err := s.getStorage(nodeID)
+	if err != nil {
+		return err
 	}
-
-	usage := s.dtnStorageUsage[nodeID]
-	capacity := node.StorageCapacityBytes
-	if capacity > 0 && usage+bytes > capacity {
-		return fmt.Errorf("storage capacity exceeded for node %q: %.0f/%.0f", nodeID, usage+bytes, capacity)
-	}
-
-	s.dtnStorageUsage[nodeID] = usage + bytes
-	return nil
+	return storage.reserve(uint64(math.Ceil(bytes)))
 }
 
 // ReleaseStorage decrements the DTN storage usage for a node, never dropping below zero.
@@ -1533,22 +1554,98 @@ func (s *ScenarioState) ReleaseStorage(nodeID string, bytes float64) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	usage := s.dtnStorageUsage[nodeID]
-	usage -= bytes
-	if usage < 0 {
-		usage = 0
+	s.mu.RLock()
+	storage := s.dtnStorage[nodeID]
+	s.mu.RUnlock()
+	if storage == nil {
+		return
 	}
-	s.dtnStorageUsage[nodeID] = usage
+	storage.release(uint64(math.Ceil(bytes)))
 }
 
 // StorageUsage reports the currently reserved DTN bytes for a node.
 func (s *ScenarioState) StorageUsage(nodeID string) float64 {
+	if nodeID == "" {
+		return 0
+	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.dtnStorageUsage[nodeID]
+	storage := s.dtnStorage[nodeID]
+	s.mu.RUnlock()
+	if storage == nil {
+		return 0
+	}
+	used, _ := storage.usage()
+	return float64(used)
+}
+
+// StoreMessage stores a DTN message at the specified node if space permits.
+func (s *ScenarioState) StoreMessage(nodeID string, msg StoredMessage) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	if msg.MessageID == "" {
+		return fmt.Errorf("message ID is required")
+	}
+	if msg.SizeBytes == 0 {
+		return fmt.Errorf("message %q must specify a positive size", msg.MessageID)
+	}
+	if msg.ArrivalTime.IsZero() {
+		msg.ArrivalTime = time.Now()
+	}
+	msg.State = MessageStateStored
+	storage, err := s.getStorage(nodeID)
+	if err != nil {
+		return err
+	}
+	return storage.storeMessage(msg)
+}
+
+// RetrieveMessage returns and removes a stored DTN message from a node.
+func (s *ScenarioState) RetrieveMessage(nodeID, msgID string) (*StoredMessage, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	if msgID == "" {
+		return nil, fmt.Errorf("message ID is required")
+	}
+	s.mu.RLock()
+	storage := s.dtnStorage[nodeID]
+	s.mu.RUnlock()
+	if storage == nil {
+		return nil, ErrNodeNotFound
+	}
+	return storage.retrieveMessage(msgID)
+}
+
+// GetStorageUsage returns the bytes used and configured capacity for a node's DTN storage.
+func (s *ScenarioState) GetStorageUsage(nodeID string) (used, capacity uint64, err error) {
+	if nodeID == "" {
+		return 0, 0, fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	storage, err := s.getStorage(nodeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	used, capacity = storage.usage()
+	return used, capacity, nil
+}
+
+// EvictExpiredMessages removes messages whose expiry time has passed.
+func (s *ScenarioState) EvictExpiredMessages(nodeID string, now time.Time) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.mu.RLock()
+	storage := s.dtnStorage[nodeID]
+	s.mu.RUnlock()
+	if storage == nil {
+		return ErrNodeNotFound
+	}
+	storage.evictExpired(now)
+	return nil
 }
 
 func splitInterfaceRef(ref string) (string, string) {
@@ -1557,6 +1654,139 @@ func splitInterfaceRef(ref string) (string, string) {
 		return parts[0], parts[1]
 	}
 	return "", ref
+}
+
+func (s *ScenarioState) getStorage(nodeID string) (*DTNStorage, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	s.mu.RLock()
+	storage := s.dtnStorage[nodeID]
+	s.mu.RUnlock()
+	if storage != nil {
+		return storage, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.storageForNodeLocked(nodeID)
+}
+
+func (s *ScenarioState) storageForNodeLocked(nodeID string) (*DTNStorage, error) {
+	storage := s.dtnStorage[nodeID]
+	if storage != nil {
+		return storage, nil
+	}
+	node := s.physKB.GetNetworkNode(nodeID)
+	if node == nil {
+		return nil, ErrNodeNotFound
+	}
+	storage = &DTNStorage{
+		NodeID:        nodeID,
+		CapacityBytes: nodeStorageCapacity(node),
+	}
+	s.dtnStorage[nodeID] = storage
+	return storage, nil
+}
+
+func nodeStorageCapacity(node *model.NetworkNode) uint64 {
+	if node == nil || node.StorageCapacityBytes <= 0 {
+		return 0
+	}
+	return uint64(math.Max(0, math.Floor(node.StorageCapacityBytes)))
+}
+
+func newDTNStorage(node *model.NetworkNode) *DTNStorage {
+	if node == nil {
+		return &DTNStorage{}
+	}
+	return &DTNStorage{
+		NodeID:        node.ID,
+		CapacityBytes: nodeStorageCapacity(node),
+	}
+}
+
+func (d *DTNStorage) reserve(bytes uint64) error {
+	if bytes == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.CapacityBytes > 0 && d.UsedBytes+bytes > d.CapacityBytes {
+		return ErrStorageFull
+	}
+	d.UsedBytes += bytes
+	return nil
+}
+
+func (d *DTNStorage) release(bytes uint64) {
+	if bytes == 0 {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.UsedBytes <= bytes {
+		d.UsedBytes = 0
+	} else {
+		d.UsedBytes -= bytes
+	}
+}
+
+func (d *DTNStorage) usage() (used, capacity uint64) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.UsedBytes, d.CapacityBytes
+}
+
+func (d *DTNStorage) storeMessage(msg StoredMessage) error {
+	if msg.SizeBytes == 0 {
+		return fmt.Errorf("message %q has zero size", msg.MessageID)
+	}
+	if err := d.reserve(msg.SizeBytes); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	msg.State = MessageStateStored
+	d.Messages = append(d.Messages, msg)
+	return nil
+}
+
+func (d *DTNStorage) retrieveMessage(msgID string) (*StoredMessage, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i, stored := range d.Messages {
+		if stored.MessageID == msgID {
+			// Remove from slice
+			d.Messages = append(d.Messages[:i], d.Messages[i+1:]...)
+			if d.UsedBytes <= stored.SizeBytes {
+				d.UsedBytes = 0
+			} else {
+				d.UsedBytes -= stored.SizeBytes
+			}
+			stored.State = MessageStateForwarded
+			return &stored, nil
+		}
+	}
+	return nil, fmt.Errorf("message %q not found", msgID)
+}
+
+func (d *DTNStorage) evictExpired(now time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	filtered := d.Messages[:0]
+	for _, msg := range d.Messages {
+		if !msg.ExpiryTime.IsZero() && !msg.ExpiryTime.After(now) {
+			msg.State = MessageStateExpired
+			if d.UsedBytes <= msg.SizeBytes {
+				d.UsedBytes = 0
+			} else {
+				d.UsedBytes -= msg.SizeBytes
+			}
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	d.Messages = filtered
 }
 
 // ClearScenario wipes all in-memory scenario data so a fresh scenario
@@ -1599,7 +1829,7 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 	s.serviceRequests = make(map[string]*model.ServiceRequest)
 	s.serviceRequestStatuses = make(map[string]*model.ServiceRequestStatus)
 	s.interfacePowerStates = make(map[string]*InterfacePowerState)
-	s.dtnStorageUsage = make(map[string]float64)
+	s.dtnStorage = make(map[string]*DTNStorage)
 
 	if s.motion != nil {
 		s.motion.Reset()
