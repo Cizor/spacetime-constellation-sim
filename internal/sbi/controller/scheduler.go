@@ -48,6 +48,8 @@ type Scheduler struct {
 	preemptionRecords map[string]preemptionRecord
 	// powerAllocations tracks which entries have power reserved per interface.
 	powerAllocations map[string]string
+	// activePaths tracks currently monitored paths.
+	activePaths map[string]*ActivePath
 }
 
 type preemptionRecord struct {
@@ -121,6 +123,24 @@ type scheduledEntryRef struct {
 	agentID string
 }
 
+// PathHealth describes the health of an active path.
+type PathHealth string
+
+const (
+	HealthHealthy  PathHealth = "healthy"
+	HealthDegraded PathHealth = "degraded"
+	HealthBroken   PathHealth = "broken"
+)
+
+// ActivePath captures monitoring data for a provisioned service request.
+type ActivePath struct {
+	ServiceRequestID string
+	Path             *Path
+	ScheduledActions []string
+	LastUpdated      time.Time
+	Health           PathHealth
+}
+
 // NewScheduler creates a new Scheduler with the given dependencies.
 func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdpiClient, log logging.Logger) *Scheduler {
 	if log == nil {
@@ -139,6 +159,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		bandwidthReservations: make(map[string]map[string]uint64),
 		preemptionRecords:     make(map[string]preemptionRecord),
 		powerAllocations:      make(map[string]string),
+		activePaths:           make(map[string]*ActivePath),
 	}
 }
 
@@ -754,6 +775,9 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 	// For each service request, find a path and schedule actions
 	for pq.Len() > 0 {
 		sr := pq.Pop()
+		if sr != nil {
+			s.removeActivePath(sr.ID)
+		}
 		s.ReleasePathCapacity(sr.ID)
 		if sr == nil || sr.SrcNodeID == "" || sr.DstNodeID == "" {
 			srID := "nil"
@@ -886,8 +910,10 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
 		if len(entries) > 0 {
 			s.srEntries[sr.ID] = entries
+			s.recordActivePath(sr.ID, path, entries)
 		} else {
 			delete(s.srEntries, sr.ID)
+			s.removeActivePath(sr.ID)
 		}
 
 		provisionedInterval := interval
@@ -1043,6 +1069,78 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 	}
 
 	return &model.TimeInterval{StartTime: earliest, EndTime: latest}, entries, nil
+}
+
+func (s *Scheduler) recordActivePath(srID string, path *Path, entries []scheduledEntryRef) {
+	if srID == "" || path == nil {
+		return
+	}
+	actionIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.entryID != "" {
+			actionIDs = append(actionIDs, entry.entryID)
+		}
+	}
+	s.activePaths[srID] = &ActivePath{
+		ServiceRequestID: srID,
+		Path:             path,
+		ScheduledActions: actionIDs,
+		LastUpdated:      s.Clock.Now(),
+		Health:           s.CheckPathHealth(path, s.Clock.Now()),
+	}
+}
+
+func (s *Scheduler) removeActivePath(srID string) {
+	if srID == "" {
+		return
+	}
+	delete(s.activePaths, srID)
+}
+
+func (s *Scheduler) CheckPathHealth(path *Path, now time.Time) PathHealth {
+	if path == nil || len(path.Hops) == 0 {
+		return HealthBroken
+	}
+	if now.IsZero() {
+		now = s.Clock.Now()
+	}
+	health := HealthHealthy
+
+	for _, hop := range path.Hops {
+		if hop.EndTime.IsZero() || now.After(hop.EndTime) {
+			return HealthBroken
+		}
+		windows := s.contactWindowsForLink(hop.LinkID)
+		if len(windows) == 0 {
+			health = worseHealth(health, HealthDegraded)
+			continue
+		}
+		valid := false
+		for _, window := range windows {
+			if !hop.StartTime.Before(window.StartTime) && !hop.EndTime.After(window.EndTime) {
+				valid = true
+				if now.After(window.EndTime) {
+					return HealthBroken
+				}
+				break
+			}
+		}
+		if !valid {
+			health = worseHealth(health, HealthDegraded)
+		}
+	}
+
+	return health
+}
+
+func worseHealth(current, candidate PathHealth) PathHealth {
+	if current == HealthBroken || candidate == HealthBroken {
+		return HealthBroken
+	}
+	if current == HealthDegraded || candidate == HealthDegraded {
+		return HealthDegraded
+	}
+	return HealthHealthy
 }
 
 func (s *Scheduler) reserveStorageForSR(ctx context.Context, sr *model.ServiceRequest) {
