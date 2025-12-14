@@ -1,7 +1,9 @@
 package model
 
+import "time"
+
 // RouteEntry represents a static routing table entry for a network node.
-// This is used by Scope 4 control-plane components (scheduler, agents) to
+// This is used by Scope 4/5 control-plane components (scheduler, agents) to
 // install and remove routes on nodes.
 type RouteEntry struct {
 	// DestinationCIDR is the destination network prefix in CIDR notation,
@@ -15,6 +17,19 @@ type RouteEntry struct {
 	// OutInterfaceID is the local interface ID used to reach the next hop
 	// or destination.
 	OutInterfaceID string
+
+	// Path is the full list of node IDs that form the multi-hop path.
+	// The first entry is the node that owns this route, and the last entry
+	// should be the ultimate destination node.
+	Path []string
+
+	// Cost represents the path metric (hops, latency, etc.) used for
+	// prioritization and conflict detection.
+	Cost int
+
+	// ValidUntil indicates when this route entry expires and should be
+	// garbage-collected.
+	ValidUntil time.Time
 }
 
 // NetworkNode represents a logical network endpoint.

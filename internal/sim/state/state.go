@@ -855,6 +855,14 @@ func (s *ScenarioState) InstallRoute(nodeID string, route model.RouteEntry) erro
 	return s.ApplySetRoute(nodeID, route)
 }
 
+// InstallMultiHopRoute installs a routing entry that includes a full multi-hop path.
+func (s *ScenarioState) InstallMultiHopRoute(nodeID string, route model.RouteEntry) error {
+	if len(route.Path) == 0 {
+		return fmt.Errorf("multi-hop route path must include at least one node")
+	}
+	return s.InstallRoute(nodeID, route)
+}
+
 // RemoveRoute removes a route from the specified node by destination CIDR.
 func (s *ScenarioState) RemoveRoute(nodeID string, destinationCIDR string) error {
 	if nodeID == "" {
@@ -895,6 +903,59 @@ func (s *ScenarioState) RemoveRoute(nodeID string, destinationCIDR string) error
 	}
 
 	s.updateMetricsLocked()
+	return nil
+}
+
+// GetRoutePath returns the stored path for the route installed at srcNodeID toward dstNodeID.
+func (s *ScenarioState) GetRoutePath(srcNodeID, dstNodeID string) ([]string, error) {
+	if srcNodeID == "" || dstNodeID == "" {
+		return nil, fmt.Errorf("%w: source and destination node IDs are required", ErrNodeInvalid)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	node := s.physKB.GetNetworkNode(srcNodeID)
+	if node == nil {
+		return nil, ErrNodeNotFound
+	}
+
+	for _, route := range node.Routes {
+		if len(route.Path) > 0 && route.Path[0] == srcNodeID && route.Path[len(route.Path)-1] == dstNodeID {
+			pathCopy := append([]string(nil), route.Path...)
+			return pathCopy, nil
+		}
+	}
+	return nil, fmt.Errorf("path from %q to %q not found", srcNodeID, dstNodeID)
+}
+
+// InvalidateExpiredRoutes removes routes whose ValidUntil timestamp has elapsed.
+func (s *ScenarioState) InvalidateExpiredRoutes(now time.Time) error {
+	if now.IsZero() {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	nodes := s.physKB.ListNetworkNodes()
+	for _, node := range nodes {
+		updated := false
+		newRoutes := make([]model.RouteEntry, 0, len(node.Routes))
+		for _, route := range node.Routes {
+			if !route.ValidUntil.IsZero() && !now.Before(route.ValidUntil) {
+				updated = true
+				continue
+			}
+			newRoutes = append(newRoutes, route)
+		}
+		if updated {
+			node.Routes = newRoutes
+			if err := s.physKB.UpdateNetworkNode(node); err != nil {
+				return fmt.Errorf("failed to update node %q: %w", node.ID, err)
+			}
+		}
+	}
 	return nil
 }
 
