@@ -40,6 +40,12 @@ type TransceiverModel struct {
 	// treated as "unspecified" and will be defaulted to 1 when the
 	// model is added to the KnowledgeBase.
 	MaxBeams int `json:"MaxBeams,omitempty"`
+
+	// MaxPowerWatts caps the total transmit power per interface; 0=unlimited.
+	MaxPowerWatts float64 `json:"MaxPowerWatts,omitempty"`
+	// InterferenceThresholdDBw is the allowed interference level before beams
+	// are considered to be in conflict. 0=use default.
+	InterferenceThresholdDBw float64 `json:"InterferenceThresholdDBw,omitempty"`
 }
 
 // IsCompatible returns true if the frequency bands overlap at all.
