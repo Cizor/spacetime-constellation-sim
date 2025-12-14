@@ -736,9 +736,6 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 
 	s.ensureContactWindows(ctx)
 
-	// Build connectivity graph from potential/active links
-	graph := s.buildConnectivityGraph()
-
 	// For each service request, find a path and schedule actions
 	for pq.Len() > 0 {
 		sr := pq.Pop()
@@ -756,16 +753,14 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 
 		prevEntries := append([]scheduledEntryRef(nil), s.srEntries[sr.ID]...)
 
-		// Find a path from src to dst
-		requireCurrent := !sr.IsDisruptionTolerant
-		path := s.findAnyPath(graph, sr.SrcNodeID, sr.DstNodeID, requireCurrent)
-		if path == nil {
+		path, err := s.FindMultiHopPath(ctx, sr.SrcNodeID, sr.DstNodeID, s.Clock.Now(), ContactHorizon)
+		if err != nil {
 			s.log.Debug(ctx, "No path found for service request",
 				logging.String("sr_id", sr.ID),
 				logging.String("src", sr.SrcNodeID),
 				logging.String("dst", sr.DstNodeID),
+				logging.String("error", err.Error()),
 			)
-			// Mark as not provisioned if no path found
 			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
 				s.log.Warn(ctx, "Failed to update service request status (no path)",
 					logging.String("sr_id", sr.ID),
@@ -779,11 +774,41 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 			continue
 		}
 
+		if err := s.validatePath(ctx, path); err != nil {
+			s.log.Warn(ctx, "Invalid path for service request",
+				logging.String("sr_id", sr.ID),
+				logging.String("error", err.Error()),
+			)
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (invalid path)",
+					logging.String("sr_id", sr.ID),
+					logging.String("error", err.Error()),
+				)
+			}
+			s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
+			continue
+		}
+
+		pathNodes := pathNodeSequence(path)
+		if len(pathNodes) < 2 {
+			s.log.Warn(ctx, "Invalid path node sequence",
+				logging.String("sr_id", sr.ID),
+			)
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (invalid path)",
+					logging.String("sr_id", sr.ID),
+					logging.String("error", err.Error()),
+				)
+			}
+			s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
+			continue
+		}
+
 		// Schedule actions along the path
 		requiredBps := s.requiredBandwidthForSR(sr)
-		hasCapacity, constrainedLinks := s.CheckPathCapacity(path, requiredBps)
+		hasCapacity, constrainedLinks := s.CheckPathCapacity(pathNodes, requiredBps)
 		if !hasCapacity {
-			preempted, err := s.preemptConflictingSRs(ctx, sr, path, requiredBps, constrainedLinks)
+			preempted, err := s.preemptConflictingSRs(ctx, sr, pathNodes, requiredBps, constrainedLinks)
 			if err != nil {
 				s.log.Warn(ctx, "Failed to preempt lower-priority service requests",
 					logging.String("sr_id", sr.ID),
@@ -795,7 +820,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 				)
 			}
 			if preempted {
-				hasCapacity, constrainedLinks = s.CheckPathCapacity(path, requiredBps)
+				hasCapacity, constrainedLinks = s.CheckPathCapacity(pathNodes, requiredBps)
 			}
 		}
 		if !hasCapacity {
@@ -810,7 +835,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 			continue
 		}
 
-		if err := s.AllocatePathCapacity(path, sr.ID, requiredBps); err != nil {
+		if err := s.AllocatePathCapacity(pathNodes, sr.ID, requiredBps); err != nil {
 			s.log.Warn(ctx, "Failed to reserve bandwidth for service request",
 				logging.String("sr_id", sr.ID),
 				logging.String("error", err.Error()),
@@ -822,8 +847,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 			continue
 		}
 
-		entrySeen := make(map[string]bool)
-		interval, entries, err := s.scheduleActionsForPath(ctx, path, sr.ID, entrySeen)
+		interval, entries, err := s.schedulePathHops(ctx, sr, path)
 		if err != nil {
 			s.log.Warn(ctx, "Failed to schedule actions for service request path",
 				logging.String("sr_id", sr.ID),
@@ -869,11 +893,141 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 
 		s.log.Debug(ctx, "Scheduled actions for service request",
 			logging.String("sr_id", sr.ID),
-			logging.Int("path_length", len(path)),
+			logging.Int("path_length", len(path.Hops)),
 		)
 	}
 
 	return nil
+}
+
+func pathNodeSequence(path *Path) []string {
+	if path == nil || len(path.Hops) == 0 {
+		return nil
+	}
+	nodes := make([]string, 0, len(path.Hops)+1)
+	nodes = append(nodes, path.Hops[0].FromNodeID)
+	for _, hop := range path.Hops {
+		nodes = append(nodes, hop.ToNodeID)
+	}
+	return nodes
+}
+
+func (s *Scheduler) validatePath(ctx context.Context, path *Path) error {
+	if path == nil || len(path.Hops) == 0 {
+		return fmt.Errorf("path is empty")
+	}
+
+	for _, hop := range path.Hops {
+		if hop.FromNodeID == "" || hop.ToNodeID == "" || hop.LinkID == "" {
+			return fmt.Errorf("path hop missing identifiers")
+		}
+		if hop.EndTime.Before(hop.StartTime) || hop.EndTime.Equal(hop.StartTime) {
+			return fmt.Errorf("invalid hop time window for link %s", hop.LinkID)
+		}
+		if _, _, err := s.State.GetNode(hop.FromNodeID); err != nil {
+			return fmt.Errorf("from node %s missing: %w", hop.FromNodeID, err)
+		}
+		if _, _, err := s.State.GetNode(hop.ToNodeID); err != nil {
+			return fmt.Errorf("to node %s missing: %w", hop.ToNodeID, err)
+		}
+		if _, err := s.State.GetLink(hop.LinkID); err != nil {
+			return fmt.Errorf("link %s missing: %w", hop.LinkID, err)
+		}
+		windowValid := false
+		for _, window := range s.contactWindowsForLink(hop.LinkID) {
+			if !hop.StartTime.Before(window.StartTime) && !hop.EndTime.After(window.EndTime) {
+				windowValid = true
+				break
+			}
+		}
+		if !windowValid {
+			return fmt.Errorf("hop %s-%s outside of known contact windows", hop.FromNodeID, hop.ToNodeID)
+		}
+	}
+	return nil
+}
+
+func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceRequest, path *Path) (*model.TimeInterval, []scheduledEntryRef, error) {
+	if sr == nil || path == nil || len(path.Hops) == 0 {
+		return nil, nil, fmt.Errorf("invalid path for scheduling")
+	}
+
+	var earliest time.Time
+	var latest time.Time
+	entries := []scheduledEntryRef{}
+	entrySeen := make(map[string]bool)
+
+	for i, hop := range path.Hops {
+		link, ifaceA, _, err := s.findLinkBetweenNodes(hop.FromNodeID, hop.ToNodeID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to find link for hop %d: %w", i, err)
+		}
+
+		agentID, err := s.agentIDForNode(hop.FromNodeID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to resolve agent for hop %d: %w", i, err)
+		}
+
+		beamSpec, err := s.beamSpecFromLink(link)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to build beam spec for hop %d: %w", i, err)
+		}
+
+		if earliest.IsZero() || hop.StartTime.Before(earliest) {
+			earliest = hop.StartTime
+		}
+		if latest.IsZero() || hop.EndTime.After(latest) {
+			latest = hop.EndTime
+		}
+
+		entryIDOn := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s:%d", sr.ID, i, hop.FromNodeID, hop.ToNodeID, hop.StartTime.UnixNano())
+		if !entrySeen[entryIDOn] {
+			entrySeen[entryIDOn] = true
+			if err := s.sendBeamEntry(link.ID, agentID, entryIDOn, sbi.ScheduledUpdateBeam, hop.StartTime, beamSpec); err != nil {
+				return nil, nil, err
+			}
+			entries = append(entries, scheduledEntryRef{entryID: entryIDOn, agentID: agentID})
+		}
+
+		entryIDOff := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s:off:%d", sr.ID, i, hop.FromNodeID, hop.ToNodeID, hop.EndTime.UnixNano())
+		if !entrySeen[entryIDOff] {
+			entrySeen[entryIDOff] = true
+			if err := s.sendBeamEntry(link.ID, agentID, entryIDOff, sbi.ScheduledDeleteBeam, hop.EndTime, beamSpec); err != nil {
+				return nil, nil, err
+			}
+			entries = append(entries, scheduledEntryRef{entryID: entryIDOff, agentID: agentID})
+		}
+
+		routeEntry := s.newRouteEntryForNode(hop.ToNodeID, ifaceA.ID)
+		entryIDRoute := fmt.Sprintf("sr:%s:hop:%d:route:%s->%s:%d", sr.ID, i, hop.FromNodeID, hop.ToNodeID, hop.StartTime.UnixNano())
+		if !entrySeen[entryIDRoute] {
+			entrySeen[entryIDRoute] = true
+			action := s.newSetRouteAction(entryIDRoute, sbi.AgentID(agentID), hop.StartTime, routeEntry)
+			if err := s.CDPI.SendCreateEntry(agentID, action); err != nil {
+				return nil, nil, fmt.Errorf("failed to send SetRoute for hop %d: %w", i, err)
+			}
+			entries = append(entries, scheduledEntryRef{entryID: entryIDRoute, agentID: agentID})
+		}
+
+		entryIDRouteOff := fmt.Sprintf("sr:%s:hop:%d:route:%s->%s:off:%d", sr.ID, i, hop.FromNodeID, hop.ToNodeID, hop.EndTime.UnixNano())
+		if !entrySeen[entryIDRouteOff] {
+			entrySeen[entryIDRouteOff] = true
+			action := s.newDeleteRouteAction(entryIDRouteOff, sbi.AgentID(agentID), hop.EndTime, routeEntry)
+			if err := s.CDPI.SendCreateEntry(agentID, action); err != nil {
+				return nil, nil, fmt.Errorf("failed to send DeleteRoute for hop %d: %w", i, err)
+			}
+			entries = append(entries, scheduledEntryRef{entryID: entryIDRouteOff, agentID: agentID})
+		}
+	}
+
+	if earliest.IsZero() {
+		earliest = s.Clock.Now()
+	}
+	if latest.IsZero() {
+		latest = earliest.Add(ContactHorizon)
+	}
+
+	return &model.TimeInterval{StartTime: earliest, EndTime: latest}, entries, nil
 }
 
 func (s *Scheduler) reserveStorageForSR(ctx context.Context, sr *model.ServiceRequest) {
@@ -1108,133 +1262,6 @@ func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID s
 	}
 
 	return nil // No path found
-}
-
-// scheduleActionsForPath schedules UpdateBeam, DeleteBeam, SetRoute, and DeleteRoute
-// actions for each hop in the path and returns the provisioned interval plus the
-// entries that were created, which can be cleaned up later.
-func (s *Scheduler) scheduleActionsForPath(_ context.Context, path []string, srID string, entrySeen map[string]bool) (*model.TimeInterval, []scheduledEntryRef, error) {
-	if len(path) < 2 {
-		return nil, nil, fmt.Errorf("path must have at least 2 nodes, got %d", len(path))
-	}
-
-	now := s.Clock.Now()
-
-	var earliestStart time.Time
-	var latestEnd time.Time
-	var entries []scheduledEntryRef
-
-	// For each hop (path[i] -> path[i+1])
-	for i := 0; i < len(path)-1; i++ {
-		nodeAID := path[i]
-		nodeBID := path[i+1]
-
-		// Find the link between nodeA and nodeB
-		link, ifaceA, _, err := s.findLinkBetweenNodes(nodeAID, nodeBID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to find link between %s and %s: %w", nodeAID, nodeBID, err)
-		}
-
-		// Determine agent ID for nodeA (controlling agent for this hop)
-		agentAID, err := s.agentIDForNode(nodeAID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to resolve agent for node %s: %w", nodeAID, err)
-		}
-
-		// Schedule UpdateBeam action
-		beamSpec, err := s.beamSpecFromLink(link)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to construct BeamSpec: %w", err)
-		}
-
-		onTime, offTime := s.pickContactWindow(now, s.contactWindowsForLink(link.ID))
-
-		if earliestStart.IsZero() || onTime.Before(earliestStart) {
-			earliestStart = onTime
-		}
-		if offTime.After(latestEnd) {
-			latestEnd = offTime
-		}
-
-		entryIDBeam := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s:%d", srID, i, nodeAID, nodeBID, onTime.UnixNano())
-		if entrySeen == nil {
-			entrySeen = make(map[string]bool)
-		}
-		if !entrySeen[entryIDBeam] {
-			entrySeen[entryIDBeam] = true
-
-			actionBeam := &sbi.ScheduledAction{
-				EntryID:   entryIDBeam,
-				AgentID:   sbi.AgentID(agentAID),
-				Type:      sbi.ScheduledUpdateBeam,
-				When:      onTime,
-				Beam:      beamSpec,
-				RequestID: "",
-				SeqNo:     0,
-				Token:     "",
-			}
-
-			if err := s.CDPI.SendCreateEntry(agentAID, actionBeam); err != nil {
-				return nil, nil, fmt.Errorf("failed to send UpdateBeam: %w", err)
-			}
-			entries = append(entries, scheduledEntryRef{entryID: entryIDBeam, agentID: agentAID})
-		}
-
-		entryIDBeamOff := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s:off:%d", srID, i, nodeAID, nodeBID, offTime.UnixNano())
-		if !entrySeen[entryIDBeamOff] {
-			entrySeen[entryIDBeamOff] = true
-			actionBeamOff := &sbi.ScheduledAction{
-				EntryID:   entryIDBeamOff,
-				AgentID:   sbi.AgentID(agentAID),
-				Type:      sbi.ScheduledDeleteBeam,
-				When:      offTime,
-				Beam:      beamSpec,
-				RequestID: "",
-				SeqNo:     0,
-				Token:     "",
-			}
-			if err := s.CDPI.SendCreateEntry(agentAID, actionBeamOff); err != nil {
-				return nil, nil, fmt.Errorf("failed to send DeleteBeam: %w", err)
-			}
-			entries = append(entries, scheduledEntryRef{entryID: entryIDBeamOff, agentID: agentAID})
-		}
-
-		// Schedule SetRoute action on nodeA to reach nodeB
-		route := s.newRouteEntryForNode(nodeBID, ifaceA.ID)
-		entryIDRoute := fmt.Sprintf("sr:%s:hop:%d:route:%s->%s:%d", srID, i, nodeAID, nodeBID, onTime.UnixNano())
-		if entrySeen[entryIDRoute] {
-			// already scheduled in this run
-		} else {
-			entrySeen[entryIDRoute] = true
-			actionRoute := s.newSetRouteAction(entryIDRoute, sbi.AgentID(agentAID), onTime, route)
-			if err := s.CDPI.SendCreateEntry(agentAID, actionRoute); err != nil {
-				return nil, nil, fmt.Errorf("failed to send SetRoute: %w", err)
-			}
-			entries = append(entries, scheduledEntryRef{entryID: entryIDRoute, agentID: agentAID})
-		}
-
-		entryIDRouteOff := fmt.Sprintf("sr:%s:hop:%d:route:%s->%s:off:%d", srID, i, nodeAID, nodeBID, offTime.UnixNano())
-		if !entrySeen[entryIDRouteOff] {
-			entrySeen[entryIDRouteOff] = true
-			actionRouteOff := s.newDeleteRouteAction(entryIDRouteOff, sbi.AgentID(agentAID), offTime, route)
-			if err := s.CDPI.SendCreateEntry(agentAID, actionRouteOff); err != nil {
-				return nil, nil, fmt.Errorf("failed to send DeleteRoute: %w", err)
-			}
-			entries = append(entries, scheduledEntryRef{entryID: entryIDRouteOff, agentID: agentAID})
-		}
-	}
-
-	if earliestStart.IsZero() {
-		earliestStart = now
-	}
-	if latestEnd.IsZero() {
-		latestEnd = earliestStart.Add(ContactHorizon)
-	}
-
-	return &model.TimeInterval{
-		StartTime: earliestStart,
-		EndTime:   latestEnd,
-	}, entries, nil
 }
 
 // updateServiceRequestStatus updates the provisioned status of a ServiceRequest.
