@@ -147,6 +147,7 @@ const (
 type ActivePath struct {
 	ServiceRequestID string
 	Path             *Path
+	DTNPath          *DTNPath
 	ScheduledActions []string
 	LastUpdated      time.Time
 	Health           PathHealth
@@ -199,12 +200,13 @@ func (s *Scheduler) SetReplanInterval(interval time.Duration) {
 }
 
 const (
-	ContactHorizon         = 1 * time.Hour
-	defaultActiveWindow    = 45 * time.Minute
-	defaultPotentialWindow = 20 * time.Minute
-	defaultDtnHold         = 30 * time.Second
-	defaultReplanInterval  = 15 * time.Second
-	betterWindowExtension  = 15 * time.Second
+	ContactHorizon             = 1 * time.Hour
+	defaultActiveWindow        = 45 * time.Minute
+	defaultPotentialWindow     = 20 * time.Minute
+	defaultDtnHold             = 30 * time.Second
+	defaultReplanInterval      = 15 * time.Second
+	betterWindowExtension      = 15 * time.Second
+	defaultDTNMessageSizeBytes = 1 << 20 // 1 MB
 )
 
 type replanHooks struct {
@@ -778,6 +780,70 @@ func (s *Scheduler) newDeleteRouteAction(entryID string, agentID sbi.AgentID, wh
 	}
 }
 
+func (s *Scheduler) messageSizeBytes(sr *model.ServiceRequest) uint64 {
+	if sr == nil {
+		return defaultDTNMessageSizeBytes
+	}
+	if sr.MessageSizeBytes > 0 {
+		return sr.MessageSizeBytes
+	}
+	return defaultDTNMessageSizeBytes
+}
+
+func (s *Scheduler) buildDTNMessageSpec(sr *model.ServiceRequest, hop DTNHop) *sbi.DTNMessageSpec {
+	if sr == nil {
+		return nil
+	}
+	spec := &sbi.DTNMessageSpec{
+		ServiceRequestID: sr.ID,
+		MessageID:        fmt.Sprintf("msg:%s", sr.ID),
+		MessageSizeBytes: s.messageSizeBytes(sr),
+		StorageNodeID:    hop.StorageNodeID,
+		StorageStart:     hop.StorageStart,
+		StorageDuration:  hop.StorageDuration,
+		DestinationNode:  sr.DstNodeID,
+		LinkID:           hop.LinkID,
+		NextHopNodeID:    hop.ToNodeID,
+		ExpiryTime:       hop.StorageEnd,
+	}
+	if spec.StorageStart.IsZero() {
+		spec.StorageStart = hop.StartTime
+	}
+	if spec.ExpiryTime.IsZero() {
+		spec.ExpiryTime = hop.StorageEnd
+	}
+	if spec.ExpiryTime.IsZero() {
+		spec.ExpiryTime = hop.EndTime
+	}
+	return spec
+}
+
+func (s *Scheduler) pathFromDTNPath(dtnPath *DTNPath) *Path {
+	if dtnPath == nil || len(dtnPath.Hops) == 0 {
+		return nil
+	}
+	path := &Path{
+		Hops: make([]PathHop, len(dtnPath.Hops)),
+	}
+	for i, hop := range dtnPath.Hops {
+		path.Hops[i] = PathHop{
+			FromNodeID: hop.FromNodeID,
+			ToNodeID:   hop.ToNodeID,
+			LinkID:     hop.LinkID,
+			StartTime:  hop.StartTime,
+			EndTime:    hop.EndTime,
+		}
+		if path.ValidFrom.IsZero() || hop.StartTime.Before(path.ValidFrom) {
+			path.ValidFrom = hop.StartTime
+		}
+		if hop.EndTime.After(path.ValidUntil) {
+			path.ValidUntil = hop.EndTime
+		}
+		path.TotalLatency += hop.EndTime.Sub(hop.StartTime)
+	}
+	return path
+}
+
 // agentIDForNode determines which agent should receive actions for a node.
 // For Scope 4, we use a simple mapping: agent_id equals node_id.
 func (s *Scheduler) agentIDForNode(nodeID string) (string, error) {
@@ -837,25 +903,49 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 
 		prevEntries := append([]scheduledEntryRef(nil), s.srEntries[sr.ID]...)
 
-		path, err := s.FindMultiHopPath(ctx, sr.SrcNodeID, sr.DstNodeID, s.Clock.Now(), ContactHorizon)
-		if err != nil {
-			s.log.Debug(ctx, "No path found for service request",
-				logging.String("sr_id", sr.ID),
-				logging.String("src", sr.SrcNodeID),
-				logging.String("dst", sr.DstNodeID),
-				logging.String("error", err.Error()),
-			)
-			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
-				s.log.Warn(ctx, "Failed to update service request status (no path)",
+		var path *Path
+		var dtnPath *DTNPath
+		var err error
+
+		if sr.IsDisruptionTolerant {
+			msgSize := s.messageSizeBytes(sr)
+			dtnPath, err = s.FindDTNPath(ctx, sr.SrcNodeID, sr.DstNodeID, msgSize, s.Clock.Now())
+			if err == nil {
+				path = s.pathFromDTNPath(dtnPath)
+				s.log.Debug(ctx, "Using DTN path for service request",
+					logging.String("sr_id", sr.ID),
+					logging.String("src", sr.SrcNodeID),
+					logging.String("dst", sr.DstNodeID),
+				)
+			} else {
+				s.log.Debug(ctx, "DTN path not available for service request",
 					logging.String("sr_id", sr.ID),
 					logging.String("error", err.Error()),
 				)
 			}
-			if sr.IsDisruptionTolerant {
-				s.reserveStorageForSR(ctx, sr)
+		}
+
+		if path == nil {
+			path, err = s.FindMultiHopPath(ctx, sr.SrcNodeID, sr.DstNodeID, s.Clock.Now(), ContactHorizon)
+			if err != nil {
+				s.log.Debug(ctx, "No path found for service request",
+					logging.String("sr_id", sr.ID),
+					logging.String("src", sr.SrcNodeID),
+					logging.String("dst", sr.DstNodeID),
+					logging.String("error", err.Error()),
+				)
+				if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+					s.log.Warn(ctx, "Failed to update service request status (no path)",
+						logging.String("sr_id", sr.ID),
+						logging.String("error", err.Error()),
+					)
+				}
+				if sr.IsDisruptionTolerant {
+					s.reserveStorageForSR(ctx, sr)
+				}
+				s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
+				continue
 			}
-			s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
-			continue
 		}
 
 		if err := s.validatePath(ctx, path); err != nil {
@@ -931,7 +1021,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 			continue
 		}
 
-		interval, entries, hopEntries, err := s.schedulePathHops(ctx, sr, path)
+		interval, entries, hopEntries, err := s.schedulePathHops(ctx, sr, path, dtnPath)
 		if err != nil {
 			s.log.Warn(ctx, "Failed to schedule actions for service request path",
 				logging.String("sr_id", sr.ID),
@@ -955,7 +1045,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
 		if len(entries) > 0 {
 			s.srEntries[sr.ID] = entries
-			s.recordActivePath(sr.ID, path, entries, hopEntries)
+			s.recordActivePath(sr.ID, path, entries, hopEntries, dtnPath)
 		} else {
 			delete(s.srEntries, sr.ID)
 			s.removeActivePath(sr.ID)
@@ -1218,7 +1308,7 @@ func (s *Scheduler) scheduleHopActions(ctx context.Context, sr *model.ServiceReq
 	return entries, hop.StartTime, hop.EndTime, nil
 }
 
-func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceRequest, path *Path) (*model.TimeInterval, []scheduledEntryRef, map[int][]scheduledEntryRef, error) {
+func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceRequest, path *Path, dtnPath *DTNPath) (*model.TimeInterval, []scheduledEntryRef, map[int][]scheduledEntryRef, error) {
 	if sr == nil || path == nil || len(path.Hops) == 0 {
 		return nil, nil, nil, fmt.Errorf("invalid path for scheduling")
 	}
@@ -1281,6 +1371,15 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 		entries = append(entries, ref)
 		hopEntries[i] = append(hopEntries[i], ref)
 
+		if dtnPath != nil && i < len(dtnPath.Hops) {
+			dtnHop := dtnPath.Hops[i]
+			if dtnHop.StorageNodeID != "" {
+				if err := s.scheduleDTNActions(ctx, sr, i, dtnHop, &entries, hopEntries); err != nil {
+					return nil, nil, nil, err
+				}
+			}
+		}
+
 		if earliest.IsZero() || hop.StartTime.Before(earliest) {
 			earliest = hop.StartTime
 		}
@@ -1299,7 +1398,54 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 	return &model.TimeInterval{StartTime: earliest, EndTime: latest}, entries, hopEntries, nil
 }
 
-func (s *Scheduler) recordActivePath(srID string, path *Path, entries []scheduledEntryRef, hopEntries map[int][]scheduledEntryRef) {
+func (s *Scheduler) scheduleDTNActions(ctx context.Context, sr *model.ServiceRequest, hopIdx int, hop DTNHop, entries *[]scheduledEntryRef, hopEntries map[int][]scheduledEntryRef) error {
+	storageAgent, err := s.agentIDForNode(hop.StorageNodeID)
+	if err != nil {
+		return fmt.Errorf("unable to resolve storage agent for node %s: %w", hop.StorageNodeID, err)
+	}
+	spec := s.buildDTNMessageSpec(sr, hop)
+	if spec == nil {
+		return fmt.Errorf("failed to build DTN message spec for hop %d", hopIdx)
+	}
+	if !hop.StorageStart.IsZero() {
+		entryIDStore := fmt.Sprintf("sr:%s:hop:%d:store:%s:%d", sr.ID, hopIdx, hop.StorageNodeID, hop.StorageStart.UnixNano())
+		action := &sbi.ScheduledAction{
+			EntryID:     entryIDStore,
+			AgentID:     sbi.AgentID(storageAgent),
+			Type:        sbi.ScheduledStoreMessage,
+			When:        hop.StorageStart,
+			MessageSpec: spec,
+		}
+		if err := s.CDPI.SendCreateEntry(storageAgent, action); err != nil {
+			return fmt.Errorf("failed to send StoreMessage for hop %d: %w", hopIdx, err)
+		}
+		ref := scheduledEntryRef{entryID: entryIDStore, agentID: storageAgent, hopIdx: hopIdx}
+		*entries = append(*entries, ref)
+		hopEntries[hopIdx] = append(hopEntries[hopIdx], ref)
+	}
+
+	forwardTime := hop.StorageEnd
+	if forwardTime.IsZero() {
+		forwardTime = hop.StartTime
+	}
+	entryIDForward := fmt.Sprintf("sr:%s:hop:%d:forward:%s:%d", sr.ID, hopIdx, hop.StorageNodeID, forwardTime.UnixNano())
+	action := &sbi.ScheduledAction{
+		EntryID:     entryIDForward,
+		AgentID:     sbi.AgentID(storageAgent),
+		Type:        sbi.ScheduledForwardMessage,
+		When:        forwardTime,
+		MessageSpec: spec,
+	}
+	if err := s.CDPI.SendCreateEntry(storageAgent, action); err != nil {
+		return fmt.Errorf("failed to send ForwardMessage for hop %d: %w", hopIdx, err)
+	}
+	ref := scheduledEntryRef{entryID: entryIDForward, agentID: storageAgent, hopIdx: hopIdx}
+	*entries = append(*entries, ref)
+	hopEntries[hopIdx] = append(hopEntries[hopIdx], ref)
+	return nil
+}
+
+func (s *Scheduler) recordActivePath(srID string, path *Path, entries []scheduledEntryRef, hopEntries map[int][]scheduledEntryRef, dtnPath *DTNPath) {
 	if srID == "" || path == nil {
 		return
 	}
@@ -1312,6 +1458,7 @@ func (s *Scheduler) recordActivePath(srID string, path *Path, entries []schedule
 	s.activePaths[srID] = &ActivePath{
 		ServiceRequestID: srID,
 		Path:             path,
+		DTNPath:          dtnPath,
 		ScheduledActions: actionIDs,
 		LastUpdated:      s.Clock.Now(),
 		Health:           s.CheckPathHealth(path, s.Clock.Now()),
@@ -1797,7 +1944,10 @@ func (s *Scheduler) storageRequirementBytes(sr *model.ServiceRequest) float64 {
 		bw = 1e6 // default 1 Mbps
 	}
 
-	return math.Max(0, bw*(defaultDtnHold.Seconds())/8.0)
+	bandwidthBytes := math.Max(0, bw*(defaultDtnHold.Seconds())/8.0)
+	sizeBytes := float64(s.messageSizeBytes(sr))
+
+	return math.Max(sizeBytes, bandwidthBytes)
 }
 
 func (s *Scheduler) cleanupServiceRequestEntries(ctx context.Context, srID string, entries []scheduledEntryRef) {
@@ -2044,27 +2194,15 @@ func (s *Scheduler) findAnyPath(graph *connectivityGraph, srcNodeID, dstNodeID s
 // If provisioned is true and interval is provided, it adds the interval to ProvisionedIntervals
 // and sets IsProvisionedNow to true. If provisioned is false, it sets IsProvisionedNow to false.
 func (s *Scheduler) updateServiceRequestStatus(ctx context.Context, srID string, provisioned bool, interval *model.TimeInterval) error {
-	sr, err := s.State.GetServiceRequest(srID)
-	if err != nil {
-		return fmt.Errorf("failed to get service request %s: %w", srID, err)
+	if !provisioned && interval == nil {
+		if sr, err := s.State.GetServiceRequest(srID); err == nil && sr.IsProvisionedNow {
+			interval = s.currentProvisioningInterval(srID)
+		}
 	}
-
-	// Create a copy to update
-	updated := *sr
-	updated.IsProvisionedNow = provisioned
-
-	if provisioned && interval != nil {
-		// Add the interval to the list (avoid duplicates by checking if it already exists)
-		// For simplicity, we'll just append - in a production system you might want to merge overlapping intervals
-		updated.ProvisionedIntervals = append(updated.ProvisionedIntervals, *interval)
-	} else if !provisioned {
-		// Clear provisioned intervals when not provisioned
-		// In a more sophisticated implementation, we might keep history
-		updated.ProvisionedIntervals = nil
+	if provisioned && interval == nil {
+		interval = s.currentProvisioningInterval(srID)
 	}
-
-	// Update via ScenarioState
-	if err := s.State.UpdateServiceRequest(&updated); err != nil {
+	if err := s.State.UpdateServiceRequestStatus(srID, provisioned, interval); err != nil {
 		return fmt.Errorf("failed to update service request %s: %w", srID, err)
 	}
 

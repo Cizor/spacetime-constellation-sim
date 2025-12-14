@@ -1278,22 +1278,36 @@ func (s *ScenarioState) UpdateServiceRequestStatus(srID string, isProvisioned bo
 
 	status := s.ensureServiceRequestStatusLocked(srID)
 	intervalCopy := copyTimeInterval(interval)
+	hadHistory := len(status.AllIntervals) > 0
+	currentTime := s.nowForStatus()
 
 	status.IsProvisionedNow = isProvisioned
-	if intervalCopy != nil {
-		status.AllIntervals = append(status.AllIntervals, *intervalCopy)
-	}
 	if isProvisioned {
+		if intervalCopy == nil {
+			intervalCopy = &model.TimeInterval{}
+		}
+		if intervalCopy.StartTime.IsZero() {
+			intervalCopy.StartTime = currentTime
+		}
 		status.CurrentInterval = intervalCopy
-		if intervalCopy != nil {
-			status.LastProvisionedAt = intervalCopy.StartTime
-			sr.ProvisionedIntervals = append(sr.ProvisionedIntervals, *intervalCopy)
-		}
+		status.AllIntervals = append(status.AllIntervals, *intervalCopy)
+		sr.ProvisionedIntervals = append(sr.ProvisionedIntervals, *intervalCopy)
+		status.LastProvisionedAt = intervalCopy.StartTime
 	} else {
-		status.CurrentInterval = nil
-		if intervalCopy != nil {
-			status.LastUnprovisionedAt = intervalCopy.EndTime
+		if intervalCopy == nil && status.CurrentInterval != nil {
+			intervalCopy = copyTimeInterval(status.CurrentInterval)
 		}
+		if intervalCopy != nil && intervalCopy.EndTime.IsZero() {
+			intervalCopy.EndTime = currentTime
+		}
+		if hadHistory {
+			closeProvisionedInterval(intervalCopy, &status.AllIntervals)
+			closeProvisionedInterval(intervalCopy, &sr.ProvisionedIntervals)
+			if intervalCopy != nil {
+				status.LastUnprovisionedAt = intervalCopy.EndTime
+			}
+		}
+		status.CurrentInterval = nil
 	}
 	sr.IsProvisionedNow = isProvisioned
 	sr.LastProvisionedAt = status.LastProvisionedAt
@@ -1344,6 +1358,34 @@ func (s *ScenarioState) ensureServiceRequestStatusLocked(srID string) *model.Ser
 	status := &model.ServiceRequestStatus{}
 	s.serviceRequestStatuses[srID] = status
 	return status
+}
+
+func (s *ScenarioState) nowForStatus() time.Time {
+	if s.scheduler != nil {
+		return s.scheduler.Now()
+	}
+	return time.Now()
+}
+
+func closeProvisionedInterval(interval *model.TimeInterval, intervals *[]model.TimeInterval) {
+	if interval == nil || intervals == nil {
+		return
+	}
+	if len(*intervals) == 0 {
+		*intervals = append(*intervals, *interval)
+		return
+	}
+	last := &(*intervals)[len(*intervals)-1]
+	if last.StartTime.IsZero() {
+		last.StartTime = interval.StartTime
+	}
+	if !interval.EndTime.IsZero() {
+		if last.EndTime.IsZero() || interval.EndTime.After(last.EndTime) {
+			last.EndTime = interval.EndTime
+		}
+	} else if last.EndTime.IsZero() {
+		last.EndTime = interval.EndTime
+	}
 }
 
 func copyTimeInterval(interval *model.TimeInterval) *model.TimeInterval {

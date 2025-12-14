@@ -390,4 +390,11 @@ func TestScheduler_PreemptsLowerPriorityServiceRequests(t *testing.T) {
 	if !high.IsProvisionedNow {
 		t.Errorf("high priority SR not provisioned after preemption")
 	}
+
+	if len(low.ProvisionedIntervals) == 0 {
+		t.Fatalf("expected low priority SR to keep interval history")
+	}
+	if low.ProvisionedIntervals[0].EndTime.IsZero() {
+		t.Fatalf("expected closed interval end time after preemption, got zero")
+	}
 }

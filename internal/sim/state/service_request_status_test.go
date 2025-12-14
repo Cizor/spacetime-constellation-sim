@@ -112,3 +112,52 @@ func TestUpdateServiceRequestStatusNotFound(t *testing.T) {
 		t.Fatalf("expected error fetching status for missing service request")
 	}
 }
+
+func TestUpdateServiceRequestStatusClosesIntervals(t *testing.T) {
+	state := newScenarioStateForStatusTest()
+	sr := &model.ServiceRequest{ID: "sr-close"}
+	if err := state.CreateServiceRequest(sr); err != nil {
+		t.Fatalf("CreateServiceRequest failed: %v", err)
+	}
+
+	start := time.Unix(10, 0)
+	interval := &model.TimeInterval{
+		StartTime: start,
+	}
+	if err := state.UpdateServiceRequestStatus(sr.ID, true, interval); err != nil {
+		t.Fatalf("UpdateServiceRequestStatus failed: %v", err)
+	}
+
+	closeInterval := &model.TimeInterval{
+		StartTime: start,
+		EndTime:   time.Unix(20, 0),
+	}
+	if err := state.UpdateServiceRequestStatus(sr.ID, false, closeInterval); err != nil {
+		t.Fatalf("UpdateServiceRequestStatus (unprovision) failed: %v", err)
+	}
+
+	status, err := state.GetServiceRequestStatus(sr.ID)
+	if err != nil {
+		t.Fatalf("GetServiceRequestStatus failed: %v", err)
+	}
+	if len(status.AllIntervals) != 1 {
+		t.Fatalf("expected 1 interval, got %d", len(status.AllIntervals))
+	}
+	if !status.AllIntervals[0].EndTime.Equal(closeInterval.EndTime) {
+		t.Fatalf("expected interval end %v, got %v", closeInterval.EndTime, status.AllIntervals[0].EndTime)
+	}
+	if !status.LastUnprovisionedAt.Equal(closeInterval.EndTime) {
+		t.Fatalf("expected LastUnprovisionedAt %v, got %v", closeInterval.EndTime, status.LastUnprovisionedAt)
+	}
+
+	sr, err = state.GetServiceRequest(sr.ID)
+	if err != nil {
+		t.Fatalf("GetServiceRequest failed: %v", err)
+	}
+	if len(sr.ProvisionedIntervals) != 1 {
+		t.Fatalf("expected ServiceRequest to track 1 interval, got %d", len(sr.ProvisionedIntervals))
+	}
+	if !sr.ProvisionedIntervals[0].EndTime.Equal(closeInterval.EndTime) {
+		t.Fatalf("expected last interval end %v, got %v", closeInterval.EndTime, sr.ProvisionedIntervals[0].EndTime)
+	}
+}
