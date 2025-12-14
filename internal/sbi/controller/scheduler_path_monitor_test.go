@@ -69,7 +69,7 @@ func TestRecordActivePath(t *testing.T) {
 	hopEntries := map[int][]scheduledEntryRef{
 		0: entries,
 	}
-	scheduler.recordActivePath("sr-1", path, entries, hopEntries)
+	scheduler.recordActivePath("sr-1", path, entries, hopEntries, nil)
 	ap, ok := scheduler.activePaths["sr-1"]
 	if !ok {
 		t.Fatalf("active path not recorded")

@@ -508,6 +508,7 @@ func (a *SimAgent) convertCreateEntryToAction(req *schedulingpb.CreateEntryReque
 		Token:     req.GetScheduleManipulationToken(),
 	}
 
+	var messageSpec *sbi.DTNMessageSpec
 	// Determine action type and payload based on ConfigurationChange
 	var actionType sbi.ScheduledActionType
 	var beam *sbi.BeamSpec
@@ -549,22 +550,35 @@ func (a *SimAgent) convertCreateEntryToAction(req *schedulingpb.CreateEntryReque
 		srPolicy = &sbi.SrPolicySpec{
 			PolicyID: req.GetDeleteSrPolicy().GetId(),
 		}
+	case req.GetStoreMessage() != nil:
+		actionType = sbi.ScheduledStoreMessage
+		messageSpec, err = a.convertProtoDTNMessageSpec(req.GetStoreMessage().GetMessage())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert StoreMessage: %w", err)
+		}
+	case req.GetForwardMessage() != nil:
+		actionType = sbi.ScheduledForwardMessage
+		messageSpec, err = a.convertProtoDTNMessageSpec(req.GetForwardMessage().GetMessage())
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert ForwardMessage: %w", err)
+		}
 	default:
 		return nil, fmt.Errorf("CreateEntryRequest has no ConfigurationChange")
 	}
 
 	// Create ScheduledAction
 	action := &sbi.ScheduledAction{
-		EntryID:   req.GetId(),
-		AgentID:   a.AgentID,
-		Type:      actionType,
-		When:      when,
-		RequestID: meta.RequestID,
-		SeqNo:     meta.SeqNo,
-		Token:     meta.Token,
-		Beam:      beam,
-		Route:     route,
-		SrPolicy:  srPolicy,
+		EntryID:     req.GetId(),
+		AgentID:     a.AgentID,
+		Type:        actionType,
+		When:        when,
+		RequestID:   meta.RequestID,
+		SeqNo:       meta.SeqNo,
+		Token:       meta.Token,
+		Beam:        beam,
+		Route:       route,
+		SrPolicy:    srPolicy,
+		MessageSpec: messageSpec,
 	}
 
 	return action, nil
@@ -676,6 +690,31 @@ func (a *SimAgent) convertDeleteRouteToRouteEntry(deleteRoute *schedulingpb.Dele
 	return route, nil
 }
 
+func (a *SimAgent) convertProtoDTNMessageSpec(proto *schedulingpb.DTNMessageSpec) (*sbi.DTNMessageSpec, error) {
+	if proto == nil {
+		return nil, fmt.Errorf("DTN message spec proto is nil")
+	}
+	spec := &sbi.DTNMessageSpec{
+		ServiceRequestID: proto.GetServiceRequestId(),
+		MessageID:        proto.GetMessageId(),
+		MessageSizeBytes: proto.GetSizeBytes(),
+		StorageNodeID:    proto.GetStorageNode(),
+		DestinationNode:  proto.GetDestinationNode(),
+		LinkID:           proto.GetLinkId(),
+		NextHopNodeID:    proto.GetNextHopNode(),
+	}
+	if proto.GetStorageStart() != nil {
+		spec.StorageStart = proto.GetStorageStart().AsTime()
+	}
+	if proto.GetStorageDuration() != nil {
+		spec.StorageDuration = proto.GetStorageDuration().AsDuration()
+	}
+	if proto.GetExpiryTime() != nil {
+		spec.ExpiryTime = proto.GetExpiryTime().AsTime()
+	}
+	return spec, nil
+}
+
 // execute executes a scheduled action and sends a Response.
 // This is called by the EventScheduler when the action's time arrives.
 // It switches on action.Type and calls the appropriate ScenarioState method,
@@ -740,6 +779,32 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 			break
 		}
 		err = a.State.RemoveRoute(a.NodeID, action.Route.DestinationCIDR)
+
+	case sbi.ScheduledStoreMessage:
+		if action.MessageSpec == nil {
+			err = fmt.Errorf("ScheduledStoreMessage action has nil MessageSpec")
+			break
+		}
+		msg := state.StoredMessage{
+			MessageID:        action.MessageSpec.MessageID,
+			ServiceRequestID: action.MessageSpec.ServiceRequestID,
+			SizeBytes:        action.MessageSpec.MessageSizeBytes,
+			ArrivalTime:      action.MessageSpec.StorageStart,
+			ExpiryTime:       action.MessageSpec.ExpiryTime,
+			Destination:      action.MessageSpec.DestinationNode,
+			State:            state.MessageStateStored,
+		}
+		if msg.ArrivalTime.IsZero() {
+			msg.ArrivalTime = a.Scheduler.Now()
+		}
+		err = a.State.StoreMessage(a.NodeID, msg)
+
+	case sbi.ScheduledForwardMessage:
+		if action.MessageSpec == nil {
+			err = fmt.Errorf("ScheduledForwardMessage action has nil MessageSpec")
+			break
+		}
+		_, err = a.State.RetrieveMessage(a.NodeID, action.MessageSpec.MessageID)
 
 	case sbi.ScheduledSetSrPolicy, sbi.ScheduledDeleteSrPolicy:
 		// For Scope 4, SrPolicy is stubbed - already handled in handleCreateEntry

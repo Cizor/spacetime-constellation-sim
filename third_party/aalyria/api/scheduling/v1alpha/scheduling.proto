@@ -141,6 +141,8 @@ message CreateEntryRequest {
     DeleteRoute delete_route = 6;
     SetSrPolicy set_sr_policy = 9;
     DeleteSrPolicy delete_sr_policy = 10;
+    StoreMessage store_message = 17;
+    ForwardMessage forward_message = 18;
   }
 
   reserved 7, 8, 11, 13, 14;
@@ -599,6 +601,27 @@ message SrSegment {
 
 message DeleteSrPolicy {
   string id = 1;
+}
+
+message StoreMessage {
+  DTNMessageSpec message = 1;
+}
+
+message ForwardMessage {
+  DTNMessageSpec message = 1;
+}
+
+message DTNMessageSpec {
+  string service_request_id = 1;
+  string message_id = 2;
+  uint64 size_bytes = 3;
+  string storage_node = 4;
+  google.protobuf.Timestamp storage_start = 5;
+  google.protobuf.Duration storage_duration = 6;
+  string destination_node = 7;
+  string link_id = 8;
+  string next_hop_node = 9;
+  google.protobuf.Timestamp expiry_time = 10;
 }
 
 message DeleteEntryRequest {

@@ -310,6 +310,8 @@ type CreateEntryRequest struct {
 	//	*CreateEntryRequest_DeleteRoute
 	//	*CreateEntryRequest_SetSrPolicy
 	//	*CreateEntryRequest_DeleteSrPolicy
+	//	*CreateEntryRequest_StoreMessage
+	//	*CreateEntryRequest_ForwardMessage
 	ConfigurationChange isCreateEntryRequest_ConfigurationChange `protobuf_oneof:"configuration_change"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
@@ -441,6 +443,24 @@ func (x *CreateEntryRequest) GetDeleteSrPolicy() *DeleteSrPolicy {
 	return nil
 }
 
+func (x *CreateEntryRequest) GetStoreMessage() *StoreMessage {
+	if x != nil {
+		if x, ok := x.ConfigurationChange.(*CreateEntryRequest_StoreMessage); ok {
+			return x.StoreMessage
+		}
+	}
+	return nil
+}
+
+func (x *CreateEntryRequest) GetForwardMessage() *ForwardMessage {
+	if x != nil {
+		if x, ok := x.ConfigurationChange.(*CreateEntryRequest_ForwardMessage); ok {
+			return x.ForwardMessage
+		}
+	}
+	return nil
+}
+
 type isCreateEntryRequest_ConfigurationChange interface {
 	isCreateEntryRequest_ConfigurationChange()
 }
@@ -469,6 +489,14 @@ type CreateEntryRequest_DeleteSrPolicy struct {
 	DeleteSrPolicy *DeleteSrPolicy `protobuf:"bytes,10,opt,name=delete_sr_policy,json=deleteSrPolicy,proto3,oneof"`
 }
 
+type CreateEntryRequest_StoreMessage struct {
+	StoreMessage *StoreMessage `protobuf:"bytes,17,opt,name=store_message,json=storeMessage,proto3,oneof"`
+}
+
+type CreateEntryRequest_ForwardMessage struct {
+	ForwardMessage *ForwardMessage `protobuf:"bytes,18,opt,name=forward_message,json=forwardMessage,proto3,oneof"`
+}
+
 func (*CreateEntryRequest_UpdateBeam) isCreateEntryRequest_ConfigurationChange() {}
 
 func (*CreateEntryRequest_DeleteBeam) isCreateEntryRequest_ConfigurationChange() {}
@@ -480,6 +508,10 @@ func (*CreateEntryRequest_DeleteRoute) isCreateEntryRequest_ConfigurationChange(
 func (*CreateEntryRequest_SetSrPolicy) isCreateEntryRequest_ConfigurationChange() {}
 
 func (*CreateEntryRequest_DeleteSrPolicy) isCreateEntryRequest_ConfigurationChange() {}
+
+func (*CreateEntryRequest_StoreMessage) isCreateEntryRequest_ConfigurationChange() {}
+
+func (*CreateEntryRequest_ForwardMessage) isCreateEntryRequest_ConfigurationChange() {}
 
 type SetRoute struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2382,6 +2414,210 @@ func (x *DeleteSrPolicy) GetId() string {
 	return ""
 }
 
+type StoreMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       *DTNMessageSpec        `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StoreMessage) Reset() {
+	*x = StoreMessage{}
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StoreMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StoreMessage) ProtoMessage() {}
+
+func (x *StoreMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StoreMessage.ProtoReflect.Descriptor instead.
+func (*StoreMessage) Descriptor() ([]byte, []int) {
+	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *StoreMessage) GetMessage() *DTNMessageSpec {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+type ForwardMessage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       *DTNMessageSpec        `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ForwardMessage) Reset() {
+	*x = ForwardMessage{}
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ForwardMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ForwardMessage) ProtoMessage() {}
+
+func (x *ForwardMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ForwardMessage.ProtoReflect.Descriptor instead.
+func (*ForwardMessage) Descriptor() ([]byte, []int) {
+	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ForwardMessage) GetMessage() *DTNMessageSpec {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+type DTNMessageSpec struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ServiceRequestId string                 `protobuf:"bytes,1,opt,name=service_request_id,json=serviceRequestId,proto3" json:"service_request_id,omitempty"`
+	MessageId        string                 `protobuf:"bytes,2,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	SizeBytes        uint64                 `protobuf:"varint,3,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	StorageNode      string                 `protobuf:"bytes,4,opt,name=storage_node,json=storageNode,proto3" json:"storage_node,omitempty"`
+	StorageStart     *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=storage_start,json=storageStart,proto3" json:"storage_start,omitempty"`
+	StorageDuration  *durationpb.Duration   `protobuf:"bytes,6,opt,name=storage_duration,json=storageDuration,proto3" json:"storage_duration,omitempty"`
+	DestinationNode  string                 `protobuf:"bytes,7,opt,name=destination_node,json=destinationNode,proto3" json:"destination_node,omitempty"`
+	LinkId           string                 `protobuf:"bytes,8,opt,name=link_id,json=linkId,proto3" json:"link_id,omitempty"`
+	NextHopNode      string                 `protobuf:"bytes,9,opt,name=next_hop_node,json=nextHopNode,proto3" json:"next_hop_node,omitempty"`
+	ExpiryTime       *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=expiry_time,json=expiryTime,proto3" json:"expiry_time,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *DTNMessageSpec) Reset() {
+	*x = DTNMessageSpec{}
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DTNMessageSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DTNMessageSpec) ProtoMessage() {}
+
+func (x *DTNMessageSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DTNMessageSpec.ProtoReflect.Descriptor instead.
+func (*DTNMessageSpec) Descriptor() ([]byte, []int) {
+	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *DTNMessageSpec) GetServiceRequestId() string {
+	if x != nil {
+		return x.ServiceRequestId
+	}
+	return ""
+}
+
+func (x *DTNMessageSpec) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
+func (x *DTNMessageSpec) GetSizeBytes() uint64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *DTNMessageSpec) GetStorageNode() string {
+	if x != nil {
+		return x.StorageNode
+	}
+	return ""
+}
+
+func (x *DTNMessageSpec) GetStorageStart() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StorageStart
+	}
+	return nil
+}
+
+func (x *DTNMessageSpec) GetStorageDuration() *durationpb.Duration {
+	if x != nil {
+		return x.StorageDuration
+	}
+	return nil
+}
+
+func (x *DTNMessageSpec) GetDestinationNode() string {
+	if x != nil {
+		return x.DestinationNode
+	}
+	return ""
+}
+
+func (x *DTNMessageSpec) GetLinkId() string {
+	if x != nil {
+		return x.LinkId
+	}
+	return ""
+}
+
+func (x *DTNMessageSpec) GetNextHopNode() string {
+	if x != nil {
+		return x.NextHopNode
+	}
+	return ""
+}
+
+func (x *DTNMessageSpec) GetExpiryTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiryTime
+	}
+	return nil
+}
+
 type DeleteEntryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. A token that must match the agent's token for the request to be
@@ -2401,7 +2637,7 @@ type DeleteEntryRequest struct {
 
 func (x *DeleteEntryRequest) Reset() {
 	*x = DeleteEntryRequest{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[25]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2413,7 +2649,7 @@ func (x *DeleteEntryRequest) String() string {
 func (*DeleteEntryRequest) ProtoMessage() {}
 
 func (x *DeleteEntryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[25]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2426,7 +2662,7 @@ func (x *DeleteEntryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteEntryRequest.ProtoReflect.Descriptor instead.
 func (*DeleteEntryRequest) Descriptor() ([]byte, []int) {
-	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{25}
+	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DeleteEntryRequest) GetScheduleManipulationToken() string {
@@ -2472,7 +2708,7 @@ type FinalizeRequest struct {
 
 func (x *FinalizeRequest) Reset() {
 	*x = FinalizeRequest{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[26]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2484,7 +2720,7 @@ func (x *FinalizeRequest) String() string {
 func (*FinalizeRequest) ProtoMessage() {}
 
 func (x *FinalizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[26]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2497,7 +2733,7 @@ func (x *FinalizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeRequest.ProtoReflect.Descriptor instead.
 func (*FinalizeRequest) Descriptor() ([]byte, []int) {
-	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{26}
+	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *FinalizeRequest) GetScheduleManipulationToken() string {
@@ -2541,7 +2777,7 @@ type ResetRequest struct {
 
 func (x *ResetRequest) Reset() {
 	*x = ResetRequest{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[27]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2553,7 +2789,7 @@ func (x *ResetRequest) String() string {
 func (*ResetRequest) ProtoMessage() {}
 
 func (x *ResetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[27]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2566,7 +2802,7 @@ func (x *ResetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResetRequest.ProtoReflect.Descriptor instead.
 func (*ResetRequest) Descriptor() ([]byte, []int) {
-	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{27}
+	return file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ResetRequest) GetAgentId() string {
@@ -2594,7 +2830,7 @@ type ReceiveRequestsMessageToController_Hello struct {
 
 func (x *ReceiveRequestsMessageToController_Hello) Reset() {
 	*x = ReceiveRequestsMessageToController_Hello{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[28]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2606,7 +2842,7 @@ func (x *ReceiveRequestsMessageToController_Hello) String() string {
 func (*ReceiveRequestsMessageToController_Hello) ProtoMessage() {}
 
 func (x *ReceiveRequestsMessageToController_Hello) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[28]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2642,7 +2878,7 @@ type ReceiveRequestsMessageToController_Response struct {
 
 func (x *ReceiveRequestsMessageToController_Response) Reset() {
 	*x = ReceiveRequestsMessageToController_Response{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[29]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2654,7 +2890,7 @@ func (x *ReceiveRequestsMessageToController_Response) String() string {
 func (*ReceiveRequestsMessageToController_Response) ProtoMessage() {}
 
 func (x *ReceiveRequestsMessageToController_Response) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[29]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2705,7 +2941,7 @@ type BeamHoppingPlan_Section struct {
 
 func (x *BeamHoppingPlan_Section) Reset() {
 	*x = BeamHoppingPlan_Section{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[33]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2717,7 +2953,7 @@ func (x *BeamHoppingPlan_Section) String() string {
 func (*BeamHoppingPlan_Section) ProtoMessage() {}
 
 func (x *BeamHoppingPlan_Section) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[33]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2767,7 +3003,7 @@ type BeamHoppingPlan_Section_Entry struct {
 
 func (x *BeamHoppingPlan_Section_Entry) Reset() {
 	*x = BeamHoppingPlan_Section_Entry{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[34]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2779,7 +3015,7 @@ func (x *BeamHoppingPlan_Section_Entry) String() string {
 func (*BeamHoppingPlan_Section_Entry) ProtoMessage() {}
 
 func (x *BeamHoppingPlan_Section_Entry) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[34]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2832,7 +3068,7 @@ type SetSrPolicy_ExplicitPath struct {
 
 func (x *SetSrPolicy_ExplicitPath) Reset() {
 	*x = SetSrPolicy_ExplicitPath{}
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[35]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2844,7 +3080,7 @@ func (x *SetSrPolicy_ExplicitPath) String() string {
 func (*SetSrPolicy_ExplicitPath) ProtoMessage() {}
 
 func (x *SetSrPolicy_ExplicitPath) ProtoReflect() protoreflect.Message {
-	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[35]
+	mi := &file_api_scheduling_v1alpha_scheduling_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2908,7 +3144,7 @@ const file_api_scheduling_v1alpha_scheduling_proto_rawDesc = "" +
 	"\fcreate_entry\x18\x02 \x01(\v28.aalyria.spacetime.scheduling.v1alpha.CreateEntryRequestH\x00R\vcreateEntry\x12]\n" +
 	"\fdelete_entry\x18\x03 \x01(\v28.aalyria.spacetime.scheduling.v1alpha.DeleteEntryRequestH\x00R\vdeleteEntry\x12S\n" +
 	"\bfinalize\x18\x04 \x01(\v25.aalyria.spacetime.scheduling.v1alpha.FinalizeRequestH\x00R\bfinalizeB\t\n" +
-	"\arequest\"\xa4\x06\n" +
+	"\arequest\"\xe0\a\n" +
 	"\x12CreateEntryRequest\x12>\n" +
 	"\x1bschedule_manipulation_token\x18\x01 \x01(\tR\x19scheduleManipulationToken\x12\x14\n" +
 	"\x05seqno\x18\x02 \x01(\x04R\x05seqno\x12\x0e\n" +
@@ -2923,7 +3159,9 @@ const file_api_scheduling_v1alpha_scheduling_proto_rawDesc = "" +
 	"\fdelete_route\x18\x06 \x01(\v21.aalyria.spacetime.scheduling.v1alpha.DeleteRouteH\x00R\vdeleteRoute\x12W\n" +
 	"\rset_sr_policy\x18\t \x01(\v21.aalyria.spacetime.scheduling.v1alpha.SetSrPolicyH\x00R\vsetSrPolicy\x12`\n" +
 	"\x10delete_sr_policy\x18\n" +
-	" \x01(\v24.aalyria.spacetime.scheduling.v1alpha.DeleteSrPolicyH\x00R\x0edeleteSrPolicyB\x16\n" +
+	" \x01(\v24.aalyria.spacetime.scheduling.v1alpha.DeleteSrPolicyH\x00R\x0edeleteSrPolicy\x12Y\n" +
+	"\rstore_message\x18\x11 \x01(\v22.aalyria.spacetime.scheduling.v1alpha.StoreMessageH\x00R\fstoreMessage\x12_\n" +
+	"\x0fforward_message\x18\x12 \x01(\v24.aalyria.spacetime.scheduling.v1alpha.ForwardMessageH\x00R\x0eforwardMessageB\x16\n" +
 	"\x14configuration_changeJ\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0f\"R\n" +
 	"\bSetRoute\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\tR\x04from\x12\x0e\n" +
@@ -3078,7 +3316,26 @@ const file_api_scheduling_v1alpha_scheduling_proto_rawDesc = "" +
 	"\x04mpls\x18\x01 \x01(\rR\x04mpls\x12\x12\n" +
 	"\x04srv6\x18\x02 \x01(\tR\x04srv6\" \n" +
 	"\x0eDeleteSrPolicy\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"z\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"^\n" +
+	"\fStoreMessage\x12N\n" +
+	"\amessage\x18\x01 \x01(\v24.aalyria.spacetime.scheduling.v1alpha.DTNMessageSpecR\amessage\"`\n" +
+	"\x0eForwardMessage\x12N\n" +
+	"\amessage\x18\x01 \x01(\v24.aalyria.spacetime.scheduling.v1alpha.DTNMessageSpecR\amessage\"\xcb\x03\n" +
+	"\x0eDTNMessageSpec\x12,\n" +
+	"\x12service_request_id\x18\x01 \x01(\tR\x10serviceRequestId\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x02 \x01(\tR\tmessageId\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x03 \x01(\x04R\tsizeBytes\x12!\n" +
+	"\fstorage_node\x18\x04 \x01(\tR\vstorageNode\x12?\n" +
+	"\rstorage_start\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\fstorageStart\x12D\n" +
+	"\x10storage_duration\x18\x06 \x01(\v2\x19.google.protobuf.DurationR\x0fstorageDuration\x12)\n" +
+	"\x10destination_node\x18\a \x01(\tR\x0fdestinationNode\x12\x17\n" +
+	"\alink_id\x18\b \x01(\tR\x06linkId\x12\"\n" +
+	"\rnext_hop_node\x18\t \x01(\tR\vnextHopNode\x12;\n" +
+	"\vexpiry_time\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expiryTime\"z\n" +
 	"\x12DeleteEntryRequest\x12>\n" +
 	"\x1bschedule_manipulation_token\x18\x01 \x01(\tR\x19scheduleManipulationToken\x12\x14\n" +
 	"\x05seqno\x18\x02 \x01(\x04R\x05seqno\x12\x0e\n" +
@@ -3115,7 +3372,7 @@ func file_api_scheduling_v1alpha_scheduling_proto_rawDescGZIP() []byte {
 }
 
 var file_api_scheduling_v1alpha_scheduling_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_api_scheduling_v1alpha_scheduling_proto_msgTypes = make([]protoimpl.MessageInfo, 36)
+var file_api_scheduling_v1alpha_scheduling_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_api_scheduling_v1alpha_scheduling_proto_goTypes = []any{
 	(Polarization)(0),                                   // 0: aalyria.spacetime.scheduling.v1alpha.Polarization
 	(*ReceiveRequestsMessageToController)(nil),          // 1: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController
@@ -3143,86 +3400,96 @@ var file_api_scheduling_v1alpha_scheduling_proto_goTypes = []any{
 	(*SetSrPolicy)(nil),                                 // 23: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy
 	(*SrSegment)(nil),                                   // 24: aalyria.spacetime.scheduling.v1alpha.SrSegment
 	(*DeleteSrPolicy)(nil),                              // 25: aalyria.spacetime.scheduling.v1alpha.DeleteSrPolicy
-	(*DeleteEntryRequest)(nil),                          // 26: aalyria.spacetime.scheduling.v1alpha.DeleteEntryRequest
-	(*FinalizeRequest)(nil),                             // 27: aalyria.spacetime.scheduling.v1alpha.FinalizeRequest
-	(*ResetRequest)(nil),                                // 28: aalyria.spacetime.scheduling.v1alpha.ResetRequest
-	(*ReceiveRequestsMessageToController_Hello)(nil),    // 29: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Hello
-	(*ReceiveRequestsMessageToController_Response)(nil), // 30: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Response
-	nil,                                   // 31: aalyria.spacetime.scheduling.v1alpha.Beam.RxsEntry
-	nil,                                   // 32: aalyria.spacetime.scheduling.v1alpha.Beam.TxsEntry
-	nil,                                   // 33: aalyria.spacetime.scheduling.v1alpha.Beam.EndpointsEntry
-	(*BeamHoppingPlan_Section)(nil),       // 34: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section
-	(*BeamHoppingPlan_Section_Entry)(nil), // 35: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section.Entry
-	(*SetSrPolicy_ExplicitPath)(nil),      // 36: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.ExplicitPath
-	(*timestamppb.Timestamp)(nil),         // 37: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),           // 38: google.protobuf.Duration
-	(*common.FieldMask)(nil),              // 39: aalyria.spacetime.api.common.FieldMask
-	(geophys.CoordinateFrame)(0),          // 40: nmts.v1.types.geophys.CoordinateFrame
-	(*status.Status)(nil),                 // 41: google.rpc.Status
-	(*emptypb.Empty)(nil),                 // 42: google.protobuf.Empty
+	(*StoreMessage)(nil),                                // 26: aalyria.spacetime.scheduling.v1alpha.StoreMessage
+	(*ForwardMessage)(nil),                              // 27: aalyria.spacetime.scheduling.v1alpha.ForwardMessage
+	(*DTNMessageSpec)(nil),                              // 28: aalyria.spacetime.scheduling.v1alpha.DTNMessageSpec
+	(*DeleteEntryRequest)(nil),                          // 29: aalyria.spacetime.scheduling.v1alpha.DeleteEntryRequest
+	(*FinalizeRequest)(nil),                             // 30: aalyria.spacetime.scheduling.v1alpha.FinalizeRequest
+	(*ResetRequest)(nil),                                // 31: aalyria.spacetime.scheduling.v1alpha.ResetRequest
+	(*ReceiveRequestsMessageToController_Hello)(nil),    // 32: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Hello
+	(*ReceiveRequestsMessageToController_Response)(nil), // 33: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Response
+	nil,                                   // 34: aalyria.spacetime.scheduling.v1alpha.Beam.RxsEntry
+	nil,                                   // 35: aalyria.spacetime.scheduling.v1alpha.Beam.TxsEntry
+	nil,                                   // 36: aalyria.spacetime.scheduling.v1alpha.Beam.EndpointsEntry
+	(*BeamHoppingPlan_Section)(nil),       // 37: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section
+	(*BeamHoppingPlan_Section_Entry)(nil), // 38: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section.Entry
+	(*SetSrPolicy_ExplicitPath)(nil),      // 39: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.ExplicitPath
+	(*timestamppb.Timestamp)(nil),         // 40: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),           // 41: google.protobuf.Duration
+	(*common.FieldMask)(nil),              // 42: aalyria.spacetime.api.common.FieldMask
+	(geophys.CoordinateFrame)(0),          // 43: nmts.v1.types.geophys.CoordinateFrame
+	(*status.Status)(nil),                 // 44: google.rpc.Status
+	(*emptypb.Empty)(nil),                 // 45: google.protobuf.Empty
 }
 var file_api_scheduling_v1alpha_scheduling_proto_depIdxs = []int32{
-	29, // 0: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.hello:type_name -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Hello
-	30, // 1: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.response:type_name -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Response
+	32, // 0: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.hello:type_name -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Hello
+	33, // 1: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.response:type_name -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Response
 	3,  // 2: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController.create_entry:type_name -> aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest
-	26, // 3: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController.delete_entry:type_name -> aalyria.spacetime.scheduling.v1alpha.DeleteEntryRequest
-	27, // 4: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController.finalize:type_name -> aalyria.spacetime.scheduling.v1alpha.FinalizeRequest
-	37, // 5: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.time:type_name -> google.protobuf.Timestamp
-	38, // 6: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.time_gpst:type_name -> google.protobuf.Duration
+	29, // 3: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController.delete_entry:type_name -> aalyria.spacetime.scheduling.v1alpha.DeleteEntryRequest
+	30, // 4: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController.finalize:type_name -> aalyria.spacetime.scheduling.v1alpha.FinalizeRequest
+	40, // 5: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.time:type_name -> google.protobuf.Timestamp
+	41, // 6: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.time_gpst:type_name -> google.protobuf.Duration
 	8,  // 7: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.update_beam:type_name -> aalyria.spacetime.scheduling.v1alpha.UpdateBeam
 	9,  // 8: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.delete_beam:type_name -> aalyria.spacetime.scheduling.v1alpha.DeleteBeam
 	4,  // 9: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.set_route:type_name -> aalyria.spacetime.scheduling.v1alpha.SetRoute
 	5,  // 10: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.delete_route:type_name -> aalyria.spacetime.scheduling.v1alpha.DeleteRoute
 	23, // 11: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.set_sr_policy:type_name -> aalyria.spacetime.scheduling.v1alpha.SetSrPolicy
 	25, // 12: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.delete_sr_policy:type_name -> aalyria.spacetime.scheduling.v1alpha.DeleteSrPolicy
-	10, // 13: aalyria.spacetime.scheduling.v1alpha.Beam.target:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamTarget
-	11, // 14: aalyria.spacetime.scheduling.v1alpha.Beam.origin:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamOrigin
-	31, // 15: aalyria.spacetime.scheduling.v1alpha.Beam.rxs:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam.RxsEntry
-	32, // 16: aalyria.spacetime.scheduling.v1alpha.Beam.txs:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam.TxsEntry
-	33, // 17: aalyria.spacetime.scheduling.v1alpha.Beam.endpoints:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam.EndpointsEntry
-	7,  // 18: aalyria.spacetime.scheduling.v1alpha.Beam.beam_hopping_plan:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan
-	34, // 19: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.sections:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section
-	6,  // 20: aalyria.spacetime.scheduling.v1alpha.UpdateBeam.beam:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam
-	39, // 21: aalyria.spacetime.scheduling.v1alpha.UpdateBeam.update_mask:type_name -> aalyria.spacetime.api.common.FieldMask
-	13, // 22: aalyria.spacetime.scheduling.v1alpha.BeamTarget.cartesian:type_name -> aalyria.spacetime.scheduling.v1alpha.Cartesian
-	15, // 23: aalyria.spacetime.scheduling.v1alpha.BeamTarget.az_el:type_name -> aalyria.spacetime.scheduling.v1alpha.AzEl
-	14, // 24: aalyria.spacetime.scheduling.v1alpha.BeamTarget.state_vector:type_name -> aalyria.spacetime.scheduling.v1alpha.StateVector
-	12, // 25: aalyria.spacetime.scheduling.v1alpha.BeamTarget.chebyshev_coefficients:type_name -> aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients
-	13, // 26: aalyria.spacetime.scheduling.v1alpha.BeamOrigin.cartesian:type_name -> aalyria.spacetime.scheduling.v1alpha.Cartesian
-	14, // 27: aalyria.spacetime.scheduling.v1alpha.BeamOrigin.state_vector:type_name -> aalyria.spacetime.scheduling.v1alpha.StateVector
-	12, // 28: aalyria.spacetime.scheduling.v1alpha.BeamOrigin.chebyshev_coefficients:type_name -> aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients
-	40, // 29: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.reference_frame:type_name -> nmts.v1.types.geophys.CoordinateFrame
-	37, // 30: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_start_time:type_name -> google.protobuf.Timestamp
-	38, // 31: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_start_time_gpst:type_name -> google.protobuf.Duration
-	37, // 32: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_end_time:type_name -> google.protobuf.Timestamp
-	38, // 33: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_end_time_gpst:type_name -> google.protobuf.Duration
-	40, // 34: aalyria.spacetime.scheduling.v1alpha.Cartesian.reference_frame:type_name -> nmts.v1.types.geophys.CoordinateFrame
-	40, // 35: aalyria.spacetime.scheduling.v1alpha.StateVector.reference_frame:type_name -> nmts.v1.types.geophys.CoordinateFrame
-	0,  // 36: aalyria.spacetime.scheduling.v1alpha.RxConfiguration.polarization:type_name -> aalyria.spacetime.scheduling.v1alpha.Polarization
-	18, // 37: aalyria.spacetime.scheduling.v1alpha.RxConfiguration.expected_rx_power:type_name -> aalyria.spacetime.scheduling.v1alpha.RxPower
-	19, // 38: aalyria.spacetime.scheduling.v1alpha.RxConfiguration.dvbs2_params:type_name -> aalyria.spacetime.scheduling.v1alpha.DvbS2Params
-	0,  // 39: aalyria.spacetime.scheduling.v1alpha.TxConfiguration.polarization:type_name -> aalyria.spacetime.scheduling.v1alpha.Polarization
-	19, // 40: aalyria.spacetime.scheduling.v1alpha.TxConfiguration.dvbs2_params:type_name -> aalyria.spacetime.scheduling.v1alpha.DvbS2Params
-	21, // 41: aalyria.spacetime.scheduling.v1alpha.Endpoint.security:type_name -> aalyria.spacetime.scheduling.v1alpha.EndpointSecurity
-	22, // 42: aalyria.spacetime.scheduling.v1alpha.Endpoint.routing:type_name -> aalyria.spacetime.scheduling.v1alpha.EndpointRouting
-	36, // 43: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.paths:type_name -> aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.ExplicitPath
-	37, // 44: aalyria.spacetime.scheduling.v1alpha.FinalizeRequest.up_to:type_name -> google.protobuf.Timestamp
-	38, // 45: aalyria.spacetime.scheduling.v1alpha.FinalizeRequest.up_to_gpst:type_name -> google.protobuf.Duration
-	41, // 46: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Response.status:type_name -> google.rpc.Status
-	16, // 47: aalyria.spacetime.scheduling.v1alpha.Beam.RxsEntry.value:type_name -> aalyria.spacetime.scheduling.v1alpha.RxConfiguration
-	17, // 48: aalyria.spacetime.scheduling.v1alpha.Beam.TxsEntry.value:type_name -> aalyria.spacetime.scheduling.v1alpha.TxConfiguration
-	20, // 49: aalyria.spacetime.scheduling.v1alpha.Beam.EndpointsEntry.value:type_name -> aalyria.spacetime.scheduling.v1alpha.Endpoint
-	35, // 50: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section.entries:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section.Entry
-	24, // 51: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.ExplicitPath.segments:type_name -> aalyria.spacetime.scheduling.v1alpha.SrSegment
-	1,  // 52: aalyria.spacetime.scheduling.v1alpha.Scheduling.ReceiveRequests:input_type -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController
-	28, // 53: aalyria.spacetime.scheduling.v1alpha.Scheduling.Reset:input_type -> aalyria.spacetime.scheduling.v1alpha.ResetRequest
-	2,  // 54: aalyria.spacetime.scheduling.v1alpha.Scheduling.ReceiveRequests:output_type -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController
-	42, // 55: aalyria.spacetime.scheduling.v1alpha.Scheduling.Reset:output_type -> google.protobuf.Empty
-	54, // [54:56] is the sub-list for method output_type
-	52, // [52:54] is the sub-list for method input_type
-	52, // [52:52] is the sub-list for extension type_name
-	52, // [52:52] is the sub-list for extension extendee
-	0,  // [0:52] is the sub-list for field type_name
+	26, // 13: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.store_message:type_name -> aalyria.spacetime.scheduling.v1alpha.StoreMessage
+	27, // 14: aalyria.spacetime.scheduling.v1alpha.CreateEntryRequest.forward_message:type_name -> aalyria.spacetime.scheduling.v1alpha.ForwardMessage
+	10, // 15: aalyria.spacetime.scheduling.v1alpha.Beam.target:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamTarget
+	11, // 16: aalyria.spacetime.scheduling.v1alpha.Beam.origin:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamOrigin
+	34, // 17: aalyria.spacetime.scheduling.v1alpha.Beam.rxs:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam.RxsEntry
+	35, // 18: aalyria.spacetime.scheduling.v1alpha.Beam.txs:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam.TxsEntry
+	36, // 19: aalyria.spacetime.scheduling.v1alpha.Beam.endpoints:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam.EndpointsEntry
+	7,  // 20: aalyria.spacetime.scheduling.v1alpha.Beam.beam_hopping_plan:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan
+	37, // 21: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.sections:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section
+	6,  // 22: aalyria.spacetime.scheduling.v1alpha.UpdateBeam.beam:type_name -> aalyria.spacetime.scheduling.v1alpha.Beam
+	42, // 23: aalyria.spacetime.scheduling.v1alpha.UpdateBeam.update_mask:type_name -> aalyria.spacetime.api.common.FieldMask
+	13, // 24: aalyria.spacetime.scheduling.v1alpha.BeamTarget.cartesian:type_name -> aalyria.spacetime.scheduling.v1alpha.Cartesian
+	15, // 25: aalyria.spacetime.scheduling.v1alpha.BeamTarget.az_el:type_name -> aalyria.spacetime.scheduling.v1alpha.AzEl
+	14, // 26: aalyria.spacetime.scheduling.v1alpha.BeamTarget.state_vector:type_name -> aalyria.spacetime.scheduling.v1alpha.StateVector
+	12, // 27: aalyria.spacetime.scheduling.v1alpha.BeamTarget.chebyshev_coefficients:type_name -> aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients
+	13, // 28: aalyria.spacetime.scheduling.v1alpha.BeamOrigin.cartesian:type_name -> aalyria.spacetime.scheduling.v1alpha.Cartesian
+	14, // 29: aalyria.spacetime.scheduling.v1alpha.BeamOrigin.state_vector:type_name -> aalyria.spacetime.scheduling.v1alpha.StateVector
+	12, // 30: aalyria.spacetime.scheduling.v1alpha.BeamOrigin.chebyshev_coefficients:type_name -> aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients
+	43, // 31: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.reference_frame:type_name -> nmts.v1.types.geophys.CoordinateFrame
+	40, // 32: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_start_time:type_name -> google.protobuf.Timestamp
+	41, // 33: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_start_time_gpst:type_name -> google.protobuf.Duration
+	40, // 34: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_end_time:type_name -> google.protobuf.Timestamp
+	41, // 35: aalyria.spacetime.scheduling.v1alpha.ChebyshevCoefficients.validity_period_end_time_gpst:type_name -> google.protobuf.Duration
+	43, // 36: aalyria.spacetime.scheduling.v1alpha.Cartesian.reference_frame:type_name -> nmts.v1.types.geophys.CoordinateFrame
+	43, // 37: aalyria.spacetime.scheduling.v1alpha.StateVector.reference_frame:type_name -> nmts.v1.types.geophys.CoordinateFrame
+	0,  // 38: aalyria.spacetime.scheduling.v1alpha.RxConfiguration.polarization:type_name -> aalyria.spacetime.scheduling.v1alpha.Polarization
+	18, // 39: aalyria.spacetime.scheduling.v1alpha.RxConfiguration.expected_rx_power:type_name -> aalyria.spacetime.scheduling.v1alpha.RxPower
+	19, // 40: aalyria.spacetime.scheduling.v1alpha.RxConfiguration.dvbs2_params:type_name -> aalyria.spacetime.scheduling.v1alpha.DvbS2Params
+	0,  // 41: aalyria.spacetime.scheduling.v1alpha.TxConfiguration.polarization:type_name -> aalyria.spacetime.scheduling.v1alpha.Polarization
+	19, // 42: aalyria.spacetime.scheduling.v1alpha.TxConfiguration.dvbs2_params:type_name -> aalyria.spacetime.scheduling.v1alpha.DvbS2Params
+	21, // 43: aalyria.spacetime.scheduling.v1alpha.Endpoint.security:type_name -> aalyria.spacetime.scheduling.v1alpha.EndpointSecurity
+	22, // 44: aalyria.spacetime.scheduling.v1alpha.Endpoint.routing:type_name -> aalyria.spacetime.scheduling.v1alpha.EndpointRouting
+	39, // 45: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.paths:type_name -> aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.ExplicitPath
+	28, // 46: aalyria.spacetime.scheduling.v1alpha.StoreMessage.message:type_name -> aalyria.spacetime.scheduling.v1alpha.DTNMessageSpec
+	28, // 47: aalyria.spacetime.scheduling.v1alpha.ForwardMessage.message:type_name -> aalyria.spacetime.scheduling.v1alpha.DTNMessageSpec
+	40, // 48: aalyria.spacetime.scheduling.v1alpha.DTNMessageSpec.storage_start:type_name -> google.protobuf.Timestamp
+	41, // 49: aalyria.spacetime.scheduling.v1alpha.DTNMessageSpec.storage_duration:type_name -> google.protobuf.Duration
+	40, // 50: aalyria.spacetime.scheduling.v1alpha.DTNMessageSpec.expiry_time:type_name -> google.protobuf.Timestamp
+	40, // 51: aalyria.spacetime.scheduling.v1alpha.FinalizeRequest.up_to:type_name -> google.protobuf.Timestamp
+	41, // 52: aalyria.spacetime.scheduling.v1alpha.FinalizeRequest.up_to_gpst:type_name -> google.protobuf.Duration
+	44, // 53: aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController.Response.status:type_name -> google.rpc.Status
+	16, // 54: aalyria.spacetime.scheduling.v1alpha.Beam.RxsEntry.value:type_name -> aalyria.spacetime.scheduling.v1alpha.RxConfiguration
+	17, // 55: aalyria.spacetime.scheduling.v1alpha.Beam.TxsEntry.value:type_name -> aalyria.spacetime.scheduling.v1alpha.TxConfiguration
+	20, // 56: aalyria.spacetime.scheduling.v1alpha.Beam.EndpointsEntry.value:type_name -> aalyria.spacetime.scheduling.v1alpha.Endpoint
+	38, // 57: aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section.entries:type_name -> aalyria.spacetime.scheduling.v1alpha.BeamHoppingPlan.Section.Entry
+	24, // 58: aalyria.spacetime.scheduling.v1alpha.SetSrPolicy.ExplicitPath.segments:type_name -> aalyria.spacetime.scheduling.v1alpha.SrSegment
+	1,  // 59: aalyria.spacetime.scheduling.v1alpha.Scheduling.ReceiveRequests:input_type -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageToController
+	31, // 60: aalyria.spacetime.scheduling.v1alpha.Scheduling.Reset:input_type -> aalyria.spacetime.scheduling.v1alpha.ResetRequest
+	2,  // 61: aalyria.spacetime.scheduling.v1alpha.Scheduling.ReceiveRequests:output_type -> aalyria.spacetime.scheduling.v1alpha.ReceiveRequestsMessageFromController
+	45, // 62: aalyria.spacetime.scheduling.v1alpha.Scheduling.Reset:output_type -> google.protobuf.Empty
+	61, // [61:63] is the sub-list for method output_type
+	59, // [59:61] is the sub-list for method input_type
+	59, // [59:59] is the sub-list for extension type_name
+	59, // [59:59] is the sub-list for extension extendee
+	0,  // [0:59] is the sub-list for field type_name
 }
 
 func init() { file_api_scheduling_v1alpha_scheduling_proto_init() }
@@ -3242,6 +3509,8 @@ func file_api_scheduling_v1alpha_scheduling_proto_init() {
 		(*CreateEntryRequest_DeleteRoute)(nil),
 		(*CreateEntryRequest_SetSrPolicy)(nil),
 		(*CreateEntryRequest_DeleteSrPolicy)(nil),
+		(*CreateEntryRequest_StoreMessage)(nil),
+		(*CreateEntryRequest_ForwardMessage)(nil),
 	}
 	file_api_scheduling_v1alpha_scheduling_proto_msgTypes[9].OneofWrappers = []any{
 		(*BeamTarget_Cartesian)(nil),
@@ -3271,7 +3540,7 @@ func file_api_scheduling_v1alpha_scheduling_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_scheduling_v1alpha_scheduling_proto_rawDesc), len(file_api_scheduling_v1alpha_scheduling_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   36,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
