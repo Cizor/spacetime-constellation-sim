@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/core"
@@ -41,6 +42,64 @@ type Scheduler struct {
 	srEntries map[string][]scheduledEntryRef
 	// linkEntries tracks entries created per link for cleanup.
 	linkEntries map[string][]scheduledEntryRef
+}
+
+type PriorityQueue struct {
+	mu    sync.Mutex
+	items []*model.ServiceRequest
+}
+
+func newPriorityQueue() *PriorityQueue {
+	return &PriorityQueue{}
+}
+
+func (pq *PriorityQueue) Len() int {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	return len(pq.items)
+}
+
+func (pq *PriorityQueue) Push(sr *model.ServiceRequest) {
+	if sr == nil {
+		return
+	}
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	pq.items = append(pq.items, sr)
+}
+
+func (pq *PriorityQueue) Pop() *model.ServiceRequest {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	if len(pq.items) == 0 {
+		return nil
+	}
+	pq.sortLocked()
+	sr := pq.items[0]
+	pq.items = pq.items[1:]
+	return sr
+}
+
+func (pq *PriorityQueue) Peek() *model.ServiceRequest {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	if len(pq.items) == 0 {
+		return nil
+	}
+	pq.sortLocked()
+	return pq.items[0]
+}
+
+func (pq *PriorityQueue) SortByPriority() {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	pq.sortLocked()
+}
+
+func (pq *PriorityQueue) sortLocked() {
+	sort.SliceStable(pq.items, func(i, j int) bool {
+		return pq.items[i].Priority > pq.items[j].Priority
+	})
 }
 
 // scheduledEntryRef captures a CDPI entry that we may need to clean up later.
@@ -657,9 +716,10 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		return nil
 	}
 
-	sort.Slice(serviceRequests, func(i, j int) bool {
-		return serviceRequests[i].Priority > serviceRequests[j].Priority
-	})
+	pq := newPriorityQueue()
+	for _, sr := range serviceRequests {
+		pq.Push(sr)
+	}
 
 	s.log.Debug(ctx, "Scheduling service requests",
 		logging.Int("sr_count", len(serviceRequests)),
@@ -671,7 +731,8 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 	graph := s.buildConnectivityGraph()
 
 	// For each service request, find a path and schedule actions
-	for _, sr := range serviceRequests {
+	for pq.Len() > 0 {
+		sr := pq.Pop()
 		if sr == nil || sr.SrcNodeID == "" || sr.DstNodeID == "" {
 			srID := "nil"
 			if sr != nil {
