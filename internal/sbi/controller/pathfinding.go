@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"container/heap"
 	"context"
 	"fmt"
 	"math"
@@ -26,6 +27,48 @@ type TimeExpandedEdge struct {
 type TimeExpandedGraph struct {
 	Nodes []TimeExpandedNode
 	Edges []TimeExpandedEdge
+}
+
+// DTNHop describes a link traversal within a store-and-forward path.
+type DTNHop struct {
+	FromNodeID      string
+	ToNodeID        string
+	LinkID          string
+	StartTime       time.Time
+	EndTime         time.Time
+	StorageAt       string
+	StorageDuration time.Duration
+}
+
+// DTNPath captures the store-and-forward path taken by a message.
+type DTNPath struct {
+	Hops         []DTNHop
+	StorageNodes []string
+	TotalDelay   time.Duration
+}
+
+// Path represents a sequence of hops over time-aware links.
+type Path struct {
+	Hops         []PathHop
+	TotalLatency time.Duration
+	ValidFrom    time.Time
+	ValidUntil   time.Time
+}
+
+// PathDiff describes shared, added, and removed hops when comparing paths.
+type PathDiff struct {
+	SharedHops  []PathHop
+	RemovedHops []PathHop
+	AddedHops   []PathHop
+}
+
+// PathHop describes one link traversal.
+type PathHop struct {
+	FromNodeID string
+	ToNodeID   string
+	LinkID     string
+	StartTime  time.Time
+	EndTime    time.Time
 }
 
 // BuildTimeExpandedGraph builds a time-expanded graph between srcNodeID and dstNodeID.
@@ -196,4 +239,364 @@ func timeCost(d time.Duration) int {
 		return 1
 	}
 	return int(math.Max(1, math.Ceil(seconds)))
+}
+
+var (
+	// ErrPathNotFound indicates there is no path within the given horizon.
+	ErrPathNotFound = fmt.Errorf("no multi-hop path found")
+)
+
+// FindMultiHopPath finds a multi-hop route between the given nodes within the specified horizon.
+func (s *Scheduler) FindMultiHopPath(ctx context.Context, srcNodeID, dstNodeID string, startTime time.Time, horizon time.Duration) (*Path, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if srcNodeID == "" || dstNodeID == "" {
+		return nil, fmt.Errorf("source and destination nodes must be provided")
+	}
+	if horizon <= 0 {
+		return nil, fmt.Errorf("horizon must be positive")
+	}
+
+	endTime := startTime.Add(horizon)
+	graph, err := s.BuildTimeExpandedGraph(ctx, srcNodeID, dstNodeID, startTime, endTime)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(graph.Nodes) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	nodeIdx := make(map[TimeExpandedNode]int)
+	for i, node := range graph.Nodes {
+		nodeIdx[node] = i
+	}
+
+	adj := make([][]int, len(graph.Nodes))
+	for ei, edge := range graph.Edges {
+		fromIdx, ok := nodeIdx[edge.From]
+		if !ok {
+			continue
+		}
+		adj[fromIdx] = append(adj[fromIdx], ei)
+	}
+
+	startNodes := []int{}
+	for idx, node := range graph.Nodes {
+		if node.NodeID == srcNodeID && !node.Time.Before(startTime) {
+			startNodes = append(startNodes, idx)
+		}
+	}
+	if len(startNodes) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	destCandidates := make(map[int]struct{})
+	for idx, node := range graph.Nodes {
+		if node.NodeID == dstNodeID && !node.Time.Before(startTime) && !node.Time.After(endTime) {
+			destCandidates[idx] = struct{}{}
+		}
+	}
+	if len(destCandidates) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	dist := make([]int, len(graph.Nodes))
+	prevEdge := make([]int, len(graph.Nodes))
+	for i := range dist {
+		dist[i] = math.MaxInt32
+		prevEdge[i] = -1
+	}
+
+	pq := &dijkstraQueue{}
+	heap.Init(pq)
+	for _, idx := range startNodes {
+		dist[idx] = 0
+		heap.Push(pq, dijkstraNode{nodeIdx: idx, cost: 0})
+	}
+
+	var destIdx = -1
+	for pq.Len() > 0 {
+		state := heap.Pop(pq).(dijkstraNode)
+		if state.cost > dist[state.nodeIdx] {
+			continue
+		}
+		if _, ok := destCandidates[state.nodeIdx]; ok {
+			destIdx = state.nodeIdx
+			break
+		}
+		for _, ei := range adj[state.nodeIdx] {
+			edge := graph.Edges[ei]
+			toIdx, ok := nodeIdx[edge.To]
+			if !ok {
+				continue
+			}
+			newCost := state.cost + edge.Cost
+			if newCost < dist[toIdx] {
+				dist[toIdx] = newCost
+				prevEdge[toIdx] = ei
+				heap.Push(pq, dijkstraNode{nodeIdx: toIdx, cost: newCost})
+			}
+		}
+	}
+
+	if destIdx == -1 || dist[destIdx] == math.MaxInt32 {
+		return nil, ErrPathNotFound
+	}
+
+	var edgePath []TimeExpandedEdge
+	current := destIdx
+	for prevEdge[current] != -1 {
+		edge := graph.Edges[prevEdge[current]]
+		edgePath = append(edgePath, edge)
+		fromIdx, ok := nodeIdx[edge.From]
+		if !ok || fromIdx == current {
+			break
+		}
+		current = fromIdx
+	}
+
+	if len(edgePath) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	// Reverse edgePath
+	for i, j := 0, len(edgePath)-1; i < j; i, j = i+1, j-1 {
+		edgePath[i], edgePath[j] = edgePath[j], edgePath[i]
+	}
+
+	var path Path
+	for _, edge := range edgePath {
+		if edge.LinkID == "" {
+			continue
+		}
+		hop := PathHop{
+			FromNodeID: edge.From.NodeID,
+			ToNodeID:   edge.To.NodeID,
+			LinkID:     edge.LinkID,
+			StartTime:  edge.From.Time,
+			EndTime:    edge.To.Time,
+		}
+		path.Hops = append(path.Hops, hop)
+		path.TotalLatency += hop.EndTime.Sub(hop.StartTime)
+		if path.ValidFrom.IsZero() || hop.StartTime.Before(path.ValidFrom) {
+			path.ValidFrom = hop.StartTime
+		}
+		if hop.EndTime.After(path.ValidUntil) {
+			path.ValidUntil = hop.EndTime
+		}
+	}
+
+	if len(path.Hops) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	return &path, nil
+}
+
+// FindDTNPath finds a store-and-forward route considering DTN storage constraints.
+func (s *Scheduler) FindDTNPath(ctx context.Context, srcNodeID, dstNodeID string, msgSize uint64, startTime time.Time) (*DTNPath, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if srcNodeID == "" || dstNodeID == "" {
+		return nil, fmt.Errorf("source and destination nodes must be provided")
+	}
+	if msgSize == 0 {
+		// zero-size messages do not consume storage, treat as standard pathfinding.
+		msgSize = 0
+	}
+	if startTime.IsZero() && s.Clock != nil {
+		startTime = s.Clock.Now()
+	}
+
+	endTime := startTime.Add(ContactHorizon)
+	graph, err := s.BuildTimeExpandedGraph(ctx, srcNodeID, dstNodeID, startTime, endTime)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(graph.Nodes) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	nodeIdx := make(map[TimeExpandedNode]int)
+	for i, node := range graph.Nodes {
+		nodeIdx[node] = i
+	}
+
+	adj := make([][]int, len(graph.Nodes))
+	allowWait := func(nodeID string) bool {
+		if msgSize == 0 {
+			return true
+		}
+		return s.canStoreMessage(nodeID, msgSize)
+	}
+	for ei, edge := range graph.Edges {
+		if edge.LinkID == "" && !allowWait(edge.From.NodeID) {
+			continue
+		}
+		fromIdx, ok := nodeIdx[edge.From]
+		if !ok {
+			continue
+		}
+		adj[fromIdx] = append(adj[fromIdx], ei)
+	}
+
+	startNodes := []int{}
+	for idx, node := range graph.Nodes {
+		if node.NodeID == srcNodeID && !node.Time.Before(startTime) {
+			startNodes = append(startNodes, idx)
+		}
+	}
+	if len(startNodes) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	destCandidates := make(map[int]struct{})
+	for idx, node := range graph.Nodes {
+		if node.NodeID == dstNodeID && !node.Time.Before(startTime) && !node.Time.After(endTime) {
+			destCandidates[idx] = struct{}{}
+		}
+	}
+	if len(destCandidates) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	dist := make([]int, len(graph.Nodes))
+	prevEdge := make([]int, len(graph.Nodes))
+	for i := range dist {
+		dist[i] = math.MaxInt32
+		prevEdge[i] = -1
+	}
+
+	pq := &dijkstraQueue{}
+	heap.Init(pq)
+	for _, idx := range startNodes {
+		dist[idx] = 0
+		heap.Push(pq, dijkstraNode{nodeIdx: idx, cost: 0})
+	}
+
+	var destIdx = -1
+	for pq.Len() > 0 {
+		state := heap.Pop(pq).(dijkstraNode)
+		if state.cost > dist[state.nodeIdx] {
+			continue
+		}
+		if _, ok := destCandidates[state.nodeIdx]; ok {
+			destIdx = state.nodeIdx
+			break
+		}
+		for _, ei := range adj[state.nodeIdx] {
+			edge := graph.Edges[ei]
+			toIdx, ok := nodeIdx[edge.To]
+			if !ok {
+				continue
+			}
+			newCost := state.cost + edge.Cost
+			if newCost < dist[toIdx] {
+				dist[toIdx] = newCost
+				prevEdge[toIdx] = ei
+				heap.Push(pq, dijkstraNode{nodeIdx: toIdx, cost: newCost})
+			}
+		}
+	}
+
+	if destIdx == -1 || dist[destIdx] == math.MaxInt32 {
+		return nil, ErrPathNotFound
+	}
+
+	var edgePath []TimeExpandedEdge
+	current := destIdx
+	for prevEdge[current] != -1 {
+		edge := graph.Edges[prevEdge[current]]
+		edgePath = append(edgePath, edge)
+		fromIdx, ok := nodeIdx[edge.From]
+		if !ok || fromIdx == current {
+			break
+		}
+		current = fromIdx
+	}
+
+	if len(edgePath) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	for i, j := 0, len(edgePath)-1; i < j; i, j = i+1, j-1 {
+		edgePath[i], edgePath[j] = edgePath[j], edgePath[i]
+	}
+
+	path := &DTNPath{}
+	storageSet := make(map[string]struct{})
+	var storageNode string
+	var storageDuration time.Duration
+	for _, edge := range edgePath {
+		if edge.LinkID == "" {
+			storageNode = edge.From.NodeID
+			storageDuration += edge.To.Time.Sub(edge.From.Time)
+			storageSet[storageNode] = struct{}{}
+			continue
+		}
+		hop := DTNHop{
+			FromNodeID:      edge.From.NodeID,
+			ToNodeID:        edge.To.NodeID,
+			LinkID:          edge.LinkID,
+			StartTime:       edge.From.Time,
+			EndTime:         edge.To.Time,
+			StorageAt:       storageNode,
+			StorageDuration: storageDuration,
+		}
+		path.Hops = append(path.Hops, hop)
+		storageNode = ""
+		storageDuration = 0
+	}
+
+	if len(path.Hops) == 0 {
+		return nil, ErrPathNotFound
+	}
+
+	for node := range storageSet {
+		path.StorageNodes = append(path.StorageNodes, node)
+	}
+	sort.Strings(path.StorageNodes)
+
+	path.TotalDelay = edgePath[len(edgePath)-1].To.Time.Sub(edgePath[0].From.Time)
+	return path, nil
+}
+
+func (s *Scheduler) canStoreMessage(nodeID string, msgSize uint64) bool {
+	if nodeID == "" || msgSize == 0 {
+		return true
+	}
+	used, capacity, err := s.State.GetStorageUsage(nodeID)
+	if err != nil {
+		return false
+	}
+	if capacity == 0 {
+		return false
+	}
+	if used+msgSize > capacity {
+		return false
+	}
+	return true
+}
+
+type dijkstraNode struct {
+	nodeIdx int
+	cost    int
+}
+
+type dijkstraQueue []dijkstraNode
+
+func (pq dijkstraQueue) Len() int            { return len(pq) }
+func (pq dijkstraQueue) Less(i, j int) bool  { return pq[i].cost < pq[j].cost }
+func (pq dijkstraQueue) Swap(i, j int)       { pq[i], pq[j] = pq[j], pq[i] }
+func (pq *dijkstraQueue) Push(x interface{}) { *pq = append(*pq, x.(dijkstraNode)) }
+func (pq *dijkstraQueue) Pop() interface{} {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	*pq = old[:n-1]
+	return item
 }
