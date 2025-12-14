@@ -3,6 +3,7 @@ package controller
 import (
 	"math"
 	"sort"
+	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
@@ -18,24 +19,68 @@ type BeamConflict struct {
 
 // BeamAssignment describes a single beam scheduled on an interface.
 type BeamAssignment struct {
-	InterfaceID string
-	Beam        *sbi.BeamSpec
-	StartTime   int64 // UnixNano
-	EndTime     int64
-	FrequencyHz float64
-	BandwidthHz float64
-	PowerDBw    float64
+	InterfaceID      string
+	Beam             *sbi.BeamSpec
+	StartTime        int64 // UnixNano
+	EndTime          int64
+	FrequencyHz      float64
+	BandwidthHz      float64
+	PowerDBw         float64
+	ServiceRequestID string
+	Priority         int
+	FairnessScore    float64
+	Deadline         time.Time
 }
 
-// FrequencyInterference describes aggregated interference information for beams
-// that share frequency space.
+// FrequencyInterference describes aggregated interference around a center frequency.
 type FrequencyInterference struct {
 	FrequencyGHz        float64
 	InterferingBeams    []BeamAssignment
 	InterferenceLeveldB float64
 }
 
+// BeamActionType describes what to do about a conflicting beam.
+type BeamActionType string
+
+const (
+	ActionCancel BeamActionType = "cancel"
+	ActionDelay  BeamActionType = "delay"
+	ActionAdjust BeamActionType = "adjust"
+)
+
+// BeamAction is returned by conflict resolution to instruct schedulers how to modify beams.
+type BeamAction struct {
+	Assignment BeamAssignment
+	Action     BeamActionType
+	Notes      string
+}
+
+// ResolutionStrategy dictates how conflicts should be resolved.
+type ResolutionStrategy string
+
+const (
+	StrategyPriority         ResolutionStrategy = "priority"
+	StrategyEarliestDeadline ResolutionStrategy = "earliest_deadline"
+	StrategyFairness         ResolutionStrategy = "fairness"
+)
+
 const defaultInterferenceThresholdDBw = 3.0
+
+// ResolveConflicts produces BeamAction plans to resolve conflicts according to strategy.
+func ResolveConflicts(conflicts []BeamConflict, strategy ResolutionStrategy) []BeamAction {
+	actions := []BeamAction{}
+	for _, conflict := range conflicts {
+		switch strategy {
+		case StrategyPriority:
+			actions = append(actions, resolvePriorityConflict(conflict)...)
+		case StrategyEarliestDeadline:
+			actions = append(actions, resolveDeadlineConflict(conflict)...)
+		case StrategyFairness:
+			actions = append(actions, resolveFairnessConflict(conflict)...)
+		}
+	}
+	return actions
+}
 
 // DetectBeamConflicts inspects the given assignments for violations.
 func DetectBeamConflicts(interfaceID string, assignments []BeamAssignment, trx *core.TransceiverModel) []BeamConflict {
@@ -180,6 +225,64 @@ func collectInterferingBeams(subject BeamAssignment, assignments []BeamAssignmen
 		result = append(result, other)
 	}
 	return result
+}
+
+func resolvePriorityConflict(conflict BeamConflict) []BeamAction {
+	beams := append([]BeamAssignment(nil), conflict.ConflictingBeams...)
+	sort.SliceStable(beams, func(i, j int) bool {
+		if beams[i].Priority == beams[j].Priority {
+			return beams[i].StartTime < beams[j].StartTime
+		}
+		return beams[i].Priority > beams[j].Priority
+	})
+	return cancelBeamsExcept(beams, 0, "higher priority kept")
+}
+
+func resolveDeadlineConflict(conflict BeamConflict) []BeamAction {
+	beams := append([]BeamAssignment(nil), conflict.ConflictingBeams...)
+	sort.SliceStable(beams, func(i, j int) bool {
+		return beamDeadline(beams[i]).Before(beamDeadline(beams[j]))
+	})
+	return cancelBeamsExcept(beams, 0, "earliest deadline kept")
+}
+
+func resolveFairnessConflict(conflict BeamConflict) []BeamAction {
+	beams := append([]BeamAssignment(nil), conflict.ConflictingBeams...)
+	sort.SliceStable(beams, func(i, j int) bool {
+		if beams[i].FairnessScore == beams[j].FairnessScore {
+			return beams[i].StartTime < beams[j].StartTime
+		}
+		return beams[i].FairnessScore < beams[j].FairnessScore
+	})
+	return cancelBeamsExcept(beams, 0, "fairness selection")
+}
+
+func cancelBeamsExcept(beams []BeamAssignment, keepIdx int, reason string) []BeamAction {
+	actions := make([]BeamAction, 0, len(beams))
+	for idx, beam := range beams {
+		if idx == keepIdx {
+			continue
+		}
+		actions = append(actions, BeamAction{
+			Assignment: beam,
+			Action:     ActionCancel,
+			Notes:      reason,
+		})
+	}
+	return actions
+}
+
+func beamDeadline(beam BeamAssignment) time.Time {
+	if !beam.Deadline.IsZero() {
+		return beam.Deadline
+	}
+	if beam.EndTime > 0 {
+		return time.Unix(0, beam.EndTime)
+	}
+	if beam.StartTime > 0 {
+		return time.Unix(0, beam.StartTime)
+	}
+	return time.Now()
 }
 
 func timeOverlap(a, b BeamAssignment) bool {

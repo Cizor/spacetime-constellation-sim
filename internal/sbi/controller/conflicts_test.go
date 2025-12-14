@@ -2,6 +2,7 @@ package controller
 
 import (
 	"testing"
+	"time"
 
 	"github.com/signalsfoundry/constellation-simulator/core"
 )
@@ -80,5 +81,51 @@ func TestDetectBeamConflictsFrequencyThreshold(t *testing.T) {
 	}
 	if conflicts[0].FrequencyDetails.InterferenceLeveldB <= trx.InterferenceThresholdDBw {
 		t.Fatalf("expected interference level > threshold, got %v", conflicts[0].FrequencyDetails.InterferenceLeveldB)
+	}
+}
+
+func TestResolveConflictsPriority(t *testing.T) {
+	beams := []BeamAssignment{
+		{ServiceRequestID: "sr-low", InterfaceID: "if-1", Priority: 1},
+		{ServiceRequestID: "sr-high", InterfaceID: "if-1", Priority: 10},
+	}
+	conflict := BeamConflict{InterfaceID: "if-1", ConflictingBeams: beams}
+	actions := ResolveConflicts([]BeamConflict{conflict}, StrategyPriority)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Assignment.ServiceRequestID != "sr-low" {
+		t.Fatalf("expected low priority beam cancelled, got %s", actions[0].Assignment.ServiceRequestID)
+	}
+}
+
+func TestResolveConflictsEarliestDeadline(t *testing.T) {
+	now := time.Now()
+	beams := []BeamAssignment{
+		{ServiceRequestID: "sr-late", InterfaceID: "if-1", Deadline: now.Add(10 * time.Second)},
+		{ServiceRequestID: "sr-soon", InterfaceID: "if-1", Deadline: now.Add(1 * time.Second)},
+	}
+	conflict := BeamConflict{InterfaceID: "if-1", ConflictingBeams: beams}
+	actions := ResolveConflicts([]BeamConflict{conflict}, StrategyEarliestDeadline)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Assignment.ServiceRequestID != "sr-late" {
+		t.Fatalf("expected later deadline cancelled, got %s", actions[0].Assignment.ServiceRequestID)
+	}
+}
+
+func TestResolveConflictsFairness(t *testing.T) {
+	beams := []BeamAssignment{
+		{ServiceRequestID: "sr-A", InterfaceID: "if-1", FairnessScore: 5, StartTime: 0},
+		{ServiceRequestID: "sr-B", InterfaceID: "if-1", FairnessScore: 1, StartTime: 1},
+	}
+	conflict := BeamConflict{InterfaceID: "if-1", ConflictingBeams: beams}
+	actions := ResolveConflicts([]BeamConflict{conflict}, StrategyFairness)
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Assignment.ServiceRequestID != "sr-A" {
+		t.Fatalf("expected less fair sr cancelled, got %s", actions[0].Assignment.ServiceRequestID)
 	}
 }
