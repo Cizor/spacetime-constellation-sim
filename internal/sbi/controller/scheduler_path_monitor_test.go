@@ -66,7 +66,10 @@ func TestRecordActivePath(t *testing.T) {
 	entries := []scheduledEntryRef{
 		{entryID: "entry-1", agentID: "node-A"},
 	}
-	scheduler.recordActivePath("sr-1", path, entries)
+	hopEntries := map[int][]scheduledEntryRef{
+		0: entries,
+	}
+	scheduler.recordActivePath("sr-1", path, entries, hopEntries)
 	ap, ok := scheduler.activePaths["sr-1"]
 	if !ok {
 		t.Fatalf("active path not recorded")
