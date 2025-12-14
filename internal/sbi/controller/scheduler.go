@@ -46,6 +46,8 @@ type Scheduler struct {
 	bandwidthReservations map[string]map[string]uint64
 	// preemptionRecords stores which SRs were preempted, why, and when.
 	preemptionRecords map[string]preemptionRecord
+	// powerAllocations tracks which entries have power reserved per interface.
+	powerAllocations map[string]string
 }
 
 type preemptionRecord struct {
@@ -136,6 +138,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		linkEntries:           make(map[string][]scheduledEntryRef),
 		bandwidthReservations: make(map[string]map[string]uint64),
 		preemptionRecords:     make(map[string]preemptionRecord),
+		powerAllocations:      make(map[string]string),
 	}
 }
 
@@ -313,12 +316,12 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 		}
 
 		entryIDOn := fmt.Sprintf("link:%s:on:%d", link.ID, window.StartTime.UnixNano())
-		if err := s.sendBeamEntry(link.ID, agentID, entryIDOn, sbi.ScheduledUpdateBeam, onTime, beamSpec); err != nil {
+		if err := s.sendBeamEntry(link.ID, agentID, link.InterfaceA, entryIDOn, sbi.ScheduledUpdateBeam, onTime, beamSpec); err != nil {
 			return err
 		}
 
 		entryIDOff := fmt.Sprintf("link:%s:off:%d", link.ID, window.EndTime.UnixNano())
-		if err := s.sendBeamEntry(link.ID, agentID, entryIDOff, sbi.ScheduledDeleteBeam, window.EndTime, beamSpec); err != nil {
+		if err := s.sendBeamEntry(link.ID, agentID, link.InterfaceA, entryIDOff, sbi.ScheduledDeleteBeam, window.EndTime, beamSpec); err != nil {
 			return err
 		}
 	}
@@ -335,13 +338,21 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 	return nil
 }
 
-func (s *Scheduler) sendBeamEntry(linkID, agentID, entryID string, actionType sbi.ScheduledActionType, when time.Time, beam *sbi.BeamSpec) error {
+func (s *Scheduler) sendBeamEntry(linkID, agentID, interfaceID, entryID string, actionType sbi.ScheduledActionType, when time.Time, beam *sbi.BeamSpec) error {
 	if entryID == "" || agentID == "" || beam == nil {
 		return fmt.Errorf("invalid beam entry parameters")
 	}
 
 	if s.scheduledEntryIDs[entryID] {
 		return nil
+	}
+	var allocated bool
+	if actionType == sbi.ScheduledUpdateBeam {
+		powerWatts := s.beamPowerWatts(interfaceID)
+		if err := s.allocatePowerForEntry(entryID, interfaceID, powerWatts); err != nil {
+			return fmt.Errorf("allocate power for entry %s failed: %w", entryID, err)
+		}
+		allocated = true
 	}
 
 	action := &sbi.ScheduledAction{
@@ -356,6 +367,9 @@ func (s *Scheduler) sendBeamEntry(linkID, agentID, entryID string, actionType sb
 	}
 
 	if err := s.CDPI.SendCreateEntry(agentID, action); err != nil {
+		if allocated {
+			s.releasePowerForEntry(entryID)
+		}
 		return fmt.Errorf("failed to send %s: %w", actionType.String(), err)
 	}
 
@@ -462,6 +476,7 @@ func (s *Scheduler) beamSpecFromLink(link *core.NetworkLink) (*sbi.BeamSpec, err
 		return nil, fmt.Errorf("interface not found: ifaceA=%v, ifaceB=%v", ifaceA != nil, ifaceB != nil)
 	}
 
+	_, dbw := s.beamPowerMetrics(link.InterfaceA)
 	beamSpec := &sbi.BeamSpec{
 		NodeID:       ifaceA.ParentNodeID,
 		InterfaceID:  localInterfaceID(link.InterfaceA),
@@ -470,7 +485,7 @@ func (s *Scheduler) beamSpecFromLink(link *core.NetworkLink) (*sbi.BeamSpec, err
 		// RF parameters can be filled from transceiver models if needed
 		FrequencyHz: 0,
 		BandwidthHz: 0,
-		PowerDBw:    0,
+		PowerDBw:    dbw,
 	}
 
 	return beamSpec, nil
@@ -983,7 +998,7 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 		entryIDOn := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s:%d", sr.ID, i, hop.FromNodeID, hop.ToNodeID, hop.StartTime.UnixNano())
 		if !entrySeen[entryIDOn] {
 			entrySeen[entryIDOn] = true
-			if err := s.sendBeamEntry(link.ID, agentID, entryIDOn, sbi.ScheduledUpdateBeam, hop.StartTime, beamSpec); err != nil {
+			if err := s.sendBeamEntry(link.ID, agentID, ifaceA.ID, entryIDOn, sbi.ScheduledUpdateBeam, hop.StartTime, beamSpec); err != nil {
 				return nil, nil, err
 			}
 			entries = append(entries, scheduledEntryRef{entryID: entryIDOn, agentID: agentID})
@@ -992,7 +1007,7 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 		entryIDOff := fmt.Sprintf("sr:%s:hop:%d:beam:%s->%s:off:%d", sr.ID, i, hop.FromNodeID, hop.ToNodeID, hop.EndTime.UnixNano())
 		if !entrySeen[entryIDOff] {
 			entrySeen[entryIDOff] = true
-			if err := s.sendBeamEntry(link.ID, agentID, entryIDOff, sbi.ScheduledDeleteBeam, hop.EndTime, beamSpec); err != nil {
+			if err := s.sendBeamEntry(link.ID, agentID, ifaceA.ID, entryIDOff, sbi.ScheduledDeleteBeam, hop.EndTime, beamSpec); err != nil {
 				return nil, nil, err
 			}
 			entries = append(entries, scheduledEntryRef{entryID: entryIDOff, agentID: agentID})
@@ -1106,6 +1121,7 @@ func (s *Scheduler) cleanupServiceRequestEntries(ctx context.Context, srID strin
 	}
 
 	for _, entry := range entries {
+		s.releasePowerForEntry(entry.entryID)
 		if err := s.CDPI.SendDeleteEntry(entry.agentID, entry.entryID); err != nil {
 			s.log.Warn(ctx, "Failed to delete previous scheduled entry",
 				logging.String("sr_id", srID),
@@ -1128,6 +1144,7 @@ func (s *Scheduler) cleanupLinkEntries(ctx context.Context, linkID string) {
 		return
 	}
 	for _, entry := range entries {
+		s.releasePowerForEntry(entry.entryID)
 		if err := s.CDPI.SendDeleteEntry(entry.agentID, entry.entryID); err != nil {
 			s.log.Warn(ctx, "Failed to delete link entry during replan",
 				logging.String("link_id", linkID),
@@ -1146,6 +1163,61 @@ func (s *Scheduler) recordLinkEntry(linkID string, entry scheduledEntryRef) {
 		return
 	}
 	s.linkEntries[linkID] = append(s.linkEntries[linkID], entry)
+}
+
+func (s *Scheduler) beamPowerMetrics(interfaceID string) (float64, float64) {
+	if interfaceID == "" {
+		return 1, 0
+	}
+	netKB := s.State.NetworkKB()
+	if netKB == nil {
+		return 1, 0
+	}
+	iface := netKB.GetNetworkInterface(interfaceID)
+	if iface == nil {
+		return 1, 0
+	}
+	trx := netKB.GetTransceiverModel(iface.TransceiverID)
+	if trx == nil {
+		return 1, 0
+	}
+	dbw := trx.TxPowerDBw
+	watts := math.Pow(10, dbw/10)
+	if math.IsNaN(watts) || watts <= 0 {
+		watts = 1
+	}
+	return watts, dbw
+}
+
+func (s *Scheduler) beamPowerWatts(interfaceID string) float64 {
+	watts, _ := s.beamPowerMetrics(interfaceID)
+	return watts
+}
+
+func (s *Scheduler) allocatePowerForEntry(entryID, interfaceID string, powerWatts float64) error {
+	if entryID == "" || interfaceID == "" {
+		return fmt.Errorf("entry ID and interface ID are required")
+	}
+	if powerWatts < 0 {
+		powerWatts = 0
+	}
+	if err := s.State.AllocatePower(interfaceID, entryID, powerWatts); err != nil {
+		return err
+	}
+	s.powerAllocations[entryID] = interfaceID
+	return nil
+}
+
+func (s *Scheduler) releasePowerForEntry(entryID string) {
+	if entryID == "" {
+		return
+	}
+	interfaceID, ok := s.powerAllocations[entryID]
+	if !ok || interfaceID == "" {
+		return
+	}
+	s.State.ReleasePower(interfaceID, entryID)
+	delete(s.powerAllocations, entryID)
 }
 
 // connectivityGraph represents a simple undirected graph of node connectivity.

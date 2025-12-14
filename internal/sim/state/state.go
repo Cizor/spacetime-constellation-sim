@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -74,6 +75,8 @@ type ScenarioState struct {
 	// serviceRequestStatuses track provisioning state / intervals per request.
 	serviceRequestStatuses map[string]*model.ServiceRequestStatus
 	dtnStorageUsage        map[string]float64
+	// interfacePowerStates tracks allocated power per interface.
+	interfacePowerStates map[string]*InterfacePowerState
 
 	// motion is an optional motion model used by the simulator; it is
 	// reset alongside scenario clears.
@@ -88,6 +91,13 @@ type ScenarioState struct {
 
 	// metrics is an optional recorder for Prometheus-friendly gauges.
 	metrics ScenarioMetricsRecorder
+}
+
+// InterfacePowerState tracks the power usage on an interface.
+type InterfacePowerState struct {
+	InterfaceID    string
+	AllocatedPower float64
+	assignments    map[string]float64
 }
 
 // ScenarioSnapshot captures a consistent view of all in-memory state
@@ -155,6 +165,7 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		serviceRequests:        make(map[string]*model.ServiceRequest),
 		serviceRequestStatuses: make(map[string]*model.ServiceRequestStatus),
 		dtnStorageUsage:        make(map[string]float64),
+		interfacePowerStates:   make(map[string]*InterfacePowerState),
 		log:                    log,
 	}
 	for _, opt := range opts {
@@ -1305,6 +1316,102 @@ func cloneServiceRequestStatus(src *model.ServiceRequestStatus) *model.ServiceRe
 	return &dst
 }
 
+// AllocatePower reserves power for the given interface/entry combination.
+func (s *ScenarioState) AllocatePower(interfaceID, entryID string, powerWatts float64) error {
+	if interfaceID == "" || entryID == "" {
+		return fmt.Errorf("interface and entry IDs are required")
+	}
+	if powerWatts < 0 {
+		return fmt.Errorf("power must be non-negative")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.allocatePowerLocked(interfaceID, entryID, powerWatts)
+}
+
+func (s *ScenarioState) allocatePowerLocked(interfaceID, entryID string, powerWatts float64) error {
+	iface := s.netKB.GetNetworkInterface(interfaceID)
+	if iface == nil {
+		return fmt.Errorf("interface %s not found", interfaceID)
+	}
+	trx := s.netKB.GetTransceiverModel(iface.TransceiverID)
+	limit := math.Inf(1)
+	if trx != nil && trx.MaxPowerWatts > 0 {
+		limit = trx.MaxPowerWatts
+	}
+	state := s.ensureInterfacePowerStateLocked(interfaceID)
+	if _, exists := state.assignments[entryID]; exists {
+		return fmt.Errorf("entry %s already allocated", entryID)
+	}
+	newAllocated := state.AllocatedPower + powerWatts
+	if limit != math.Inf(1) && newAllocated > limit {
+		return fmt.Errorf("power limit exceeded on %s (%.2f > %.2f)", interfaceID, newAllocated, limit)
+	}
+	state.assignments[entryID] = powerWatts
+	state.AllocatedPower = newAllocated
+	return nil
+}
+
+// ReleasePower removes a previously allocated beam power.
+func (s *ScenarioState) ReleasePower(interfaceID, entryID string) {
+	if interfaceID == "" || entryID == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.interfacePowerStates[interfaceID]
+	if state == nil {
+		return
+	}
+	power, ok := state.assignments[entryID]
+	if !ok {
+		return
+	}
+	delete(state.assignments, entryID)
+	state.AllocatedPower -= power
+	if state.AllocatedPower < 0 {
+		state.AllocatedPower = 0
+	}
+}
+
+// GetAvailablePower reports remaining watts on the interface.
+func (s *ScenarioState) GetAvailablePower(interfaceID string) float64 {
+	if interfaceID == "" {
+		return math.Inf(1)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state := s.interfacePowerStates[interfaceID]
+	var allocated float64
+	if state != nil {
+		allocated = state.AllocatedPower
+	}
+
+	iface := s.netKB.GetNetworkInterface(interfaceID)
+	if iface == nil {
+		return math.Inf(1)
+	}
+	trx := s.netKB.GetTransceiverModel(iface.TransceiverID)
+	if trx == nil || trx.MaxPowerWatts <= 0 {
+		return math.Inf(1)
+	}
+	return math.Max(0, trx.MaxPowerWatts-allocated)
+}
+
+func (s *ScenarioState) ensureInterfacePowerStateLocked(interfaceID string) *InterfacePowerState {
+	if state := s.interfacePowerStates[interfaceID]; state != nil {
+		return state
+	}
+	state := &InterfacePowerState{
+		InterfaceID: interfaceID,
+		assignments: make(map[string]float64),
+	}
+	s.interfacePowerStates[interfaceID] = state
+	return state
+}
+
 // interfacesByNodeLocked builds a map of nodeID -> interfaces for callers that
 // already hold the ScenarioState lock.
 func (s *ScenarioState) interfacesByNodeLocked(nodes []*model.NetworkNode, interfaces []*network.NetworkInterface) map[string][]*network.NetworkInterface {
@@ -1491,6 +1598,7 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 	}
 	s.serviceRequests = make(map[string]*model.ServiceRequest)
 	s.serviceRequestStatuses = make(map[string]*model.ServiceRequestStatus)
+	s.interfacePowerStates = make(map[string]*InterfacePowerState)
 	s.dtnStorageUsage = make(map[string]float64)
 
 	if s.motion != nil {

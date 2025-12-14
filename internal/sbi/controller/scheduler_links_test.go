@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
@@ -272,6 +273,66 @@ func TestScheduler_beamSpecFromLink(t *testing.T) {
 	}
 	if beamSpec.TargetIfID != "if-B" {
 		t.Fatalf("BeamSpec.TargetIfID = %q, want %q", beamSpec.TargetIfID, "if-B")
+	}
+}
+
+func TestScheduler_sendBeamEntryAllocatesAndReleasesPower(t *testing.T) {
+	scheduler, fakeCDPI, _ := setupSchedulerTest(t)
+	ctx := context.Background()
+
+	// Register agent for node-A so sendBeamEntry can succeed.
+	handle := &AgentHandle{
+		AgentID:  "node-A",
+		NodeID:   "node-A",
+		Stream:   &fakeStream{},
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 10),
+		token:    "tok-123",
+		seqNo:    0,
+	}
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["node-A"] = handle
+	fakeCDPI.agentsMu.Unlock()
+
+	trx := scheduler.State.NetworkKB().GetTransceiverModel("trx-A")
+	if trx == nil {
+		t.Fatalf("transceiver trx-A missing")
+	}
+	trx.MaxPowerWatts = 10
+	trx.TxPowerDBw = 0 // corresponds to 1 W
+
+	links := scheduler.State.ListLinks()
+	if len(links) == 0 {
+		t.Fatalf("expected at least one link")
+	}
+	link := links[0]
+
+	beamSpec, err := scheduler.beamSpecFromLink(link)
+	if err != nil {
+		t.Fatalf("beamSpecFromLink failed: %v", err)
+	}
+
+	initial := scheduler.State.GetAvailablePower("if-A")
+	if initial != 10 {
+		t.Fatalf("expected 10W available on if-A, got %v", initial)
+	}
+
+	entryID := "test-entry-power"
+	if err := scheduler.sendBeamEntry(link.ID, "node-A", link.InterfaceA, entryID, sbi.ScheduledUpdateBeam, scheduler.Clock.Now(), beamSpec); err != nil {
+		t.Fatalf("sendBeamEntry failed: %v", err)
+	}
+
+	if available := scheduler.State.GetAvailablePower("if-A"); available != 9 {
+		t.Fatalf("expected 9W available after allocation, got %v", available)
+	}
+
+	scheduler.cleanupServiceRequestEntries(ctx, "sr-power", []scheduledEntryRef{{entryID: entryID, agentID: "node-A"}})
+
+	if available := scheduler.State.GetAvailablePower("if-A"); available != 10 {
+		t.Fatalf("expected power released to 10W, got %v", available)
+	}
+
+	if len(fakeCDPI.deletedEntries) != 1 || fakeCDPI.deletedEntries[0].entryID != entryID {
+		t.Fatalf("expected delete entry for %s, got %v", entryID, fakeCDPI.deletedEntries)
 	}
 }
 
