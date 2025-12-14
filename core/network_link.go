@@ -69,4 +69,11 @@ type NetworkLink struct {
 	// A pointer is used to distinguish between unset (nil) and explicitly
 	// set to Unknown (0 dB is a valid status for links loaded from JSON).
 	StatusBeforeImpairment *LinkStatus `json:"StatusBeforeImpairment,omitempty"`
+
+	// MaxBandwidthBps represents the total capacity of the link in bits per second.
+	MaxBandwidthBps uint64 `json:"MaxBandwidthBps,omitempty"`
+	// AvailableBandwidthBps is the remaining capacity that can be reserved.
+	AvailableBandwidthBps uint64 `json:"AvailableBandwidthBps,omitempty"`
+	// ReservedBandwidthBps tracks how much bandwidth has already been reserved.
+	ReservedBandwidthBps uint64 `json:"ReservedBandwidthBps,omitempty"`
 }

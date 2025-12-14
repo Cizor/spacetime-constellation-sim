@@ -602,6 +602,10 @@ func (s *ScenarioState) CreateLinks(links ...*network.NetworkLink) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	for _, link := range links {
+		s.initLinkBandwidthLocked(link)
+	}
+
 	added := make([]string, 0, len(links))
 
 	for _, link := range links {
@@ -616,6 +620,93 @@ func (s *ScenarioState) CreateLinks(links ...*network.NetworkLink) error {
 
 	s.updateMetricsLocked()
 	return nil
+}
+
+// ReserveBandwidth reserves bps bits per second on the specified link.
+func (s *ScenarioState) ReserveBandwidth(linkID string, bps uint64) error {
+	if linkID == "" {
+		return errors.New("link ID is empty")
+	}
+	if bps == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	link := s.netKB.GetNetworkLink(linkID)
+	if link == nil {
+		return ErrLinkNotFound
+	}
+	if link.AvailableBandwidthBps < bps {
+		return fmt.Errorf("insufficient bandwidth on link %q", linkID)
+	}
+
+	link.AvailableBandwidthBps -= bps
+	link.ReservedBandwidthBps += bps
+	if err := s.netKB.UpdateNetworkLink(link); err != nil {
+		return fmt.Errorf("failed to update link bandwidth: %w", err)
+	}
+	return nil
+}
+
+// ReleaseBandwidth frees bps bits per second on the specified link.
+func (s *ScenarioState) ReleaseBandwidth(linkID string, bps uint64) error {
+	if linkID == "" {
+		return errors.New("link ID is empty")
+	}
+	if bps == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	link := s.netKB.GetNetworkLink(linkID)
+	if link == nil {
+		return ErrLinkNotFound
+	}
+	if link.ReservedBandwidthBps < bps {
+		return fmt.Errorf("release exceeds reserved bandwidth on link %q", linkID)
+	}
+
+	link.ReservedBandwidthBps -= bps
+	link.AvailableBandwidthBps += bps
+	if link.MaxBandwidthBps > 0 && link.AvailableBandwidthBps > link.MaxBandwidthBps {
+		link.AvailableBandwidthBps = link.MaxBandwidthBps
+	}
+	if err := s.netKB.UpdateNetworkLink(link); err != nil {
+		return fmt.Errorf("failed to update link bandwidth: %w", err)
+	}
+	return nil
+}
+
+// GetAvailableBandwidth returns how much bandwidth can still be reserved.
+func (s *ScenarioState) GetAvailableBandwidth(linkID string) (uint64, error) {
+	if linkID == "" {
+		return 0, errors.New("link ID is empty")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	link := s.netKB.GetNetworkLink(linkID)
+	if link == nil {
+		return 0, ErrLinkNotFound
+	}
+	return link.AvailableBandwidthBps, nil
+}
+
+func (s *ScenarioState) initLinkBandwidthLocked(link *network.NetworkLink) {
+	if link.MaxBandwidthBps > 0 && link.AvailableBandwidthBps == 0 {
+		link.AvailableBandwidthBps = link.MaxBandwidthBps
+	}
+	if link.ReservedBandwidthBps > link.MaxBandwidthBps {
+		link.ReservedBandwidthBps = link.MaxBandwidthBps
+	}
+	if link.AvailableBandwidthBps > link.MaxBandwidthBps {
+		link.AvailableBandwidthBps = link.MaxBandwidthBps
+	}
 }
 
 // GetLink returns a network link by ID.
