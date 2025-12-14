@@ -307,24 +307,22 @@ type ConnectivityUpdater interface {
 	UpdateConnectivity()
 }
 
-// RunSimTick executes a single simulation tick while holding the ScenarioState
-// read lock. Callers must keep the work inside fn read-only with respect to
-// ScenarioState; writes that touch underlying KBs must follow their own locking.
+// RunSimTick executes a single simulation tick.
+// Callers must keep the work inside fn read-only with respect to ScenarioState;
+// writes that touch underlying KBs must follow their own locking.
 func (s *ScenarioState) RunSimTick(simTime time.Time, motion MotionUpdater, connectivity ConnectivityUpdater, fn func()) error {
-	return s.WithReadLock(func() error {
-		if fn != nil {
-			fn()
+	if fn != nil {
+		fn()
+	}
+	if motion != nil {
+		if err := motion.UpdatePositions(simTime); err != nil {
+			return err
 		}
-		if motion != nil {
-			if err := motion.UpdatePositions(simTime); err != nil {
-				return err
-			}
-		}
-		if connectivity != nil {
-			connectivity.UpdateConnectivity()
-		}
-		return nil
-	})
+	}
+	if connectivity != nil {
+		connectivity.UpdateConnectivity()
+	}
+	return nil
 }
 
 // Snapshot returns a coherent view of the current scenario state.
@@ -362,6 +360,7 @@ func (s *ScenarioState) CreatePlatform(pd *model.PlatformDefinition) error {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.physKB.AddPlatform(pd); err != nil {
 		if errors.Is(err, kb.ErrPlatformExists) {
@@ -400,6 +399,7 @@ func (s *ScenarioState) UpdatePlatform(pd *model.PlatformDefinition) error {
 	}
 
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.physKB.UpdatePlatform(pd); err != nil {
 		if errors.Is(err, kb.ErrPlatformNotFound) {
@@ -415,6 +415,7 @@ func (s *ScenarioState) UpdatePlatform(pd *model.PlatformDefinition) error {
 // DeletePlatform removes a platform by ID.
 func (s *ScenarioState) DeletePlatform(id string) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.physKB.GetPlatform(id) == nil {
 		return ErrPlatformNotFound
@@ -2188,7 +2189,6 @@ func (s *ScenarioState) UpdateRegionMembership(regionID string) error {
 	now := s.now()
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var prevMembers map[string]struct{}
 	entry := s.regionMembership[regionID]
