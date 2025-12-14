@@ -1,0 +1,186 @@
+Chunk 1 - Scope 5 baseline audit & extension hooks
+
+Goals
+
+Establish a clean handoff from Scope 4 so Scope 5 work can safely iterate on the scheduler, agents, and telemetry without second-guessing state assumptions.
+
+What we'll change
+
+Document the public APIs and extension points that Scope 4 exposes (scheduler entrypoints, ScenarioState helpers, telemetry counters, agent state dumps) and add any lightweight helpers Scope 5 features will immediately need for pathing/conflict awareness.
+
+Steps
+
+1. Walk `internal/sbi/controller`, `internal/sbi/agent`, and their clients to identify which methods are stable (`CDPIServer.SendCreateEntry`, agent scheduler loop, telemetry export hooks) and which will need refactors for multi-hop planning.
+2. Add explicit helper methods to `sim/state` and `kb/core` for querying route tables, link metadata, and beam assignments so the scheduler later can reference them without poking at internals.
+3. Introduce new log/metric counters (e.g., `scheduler_conflict_count`, `agent_intent_executed`) and ensure telemetry/agent state dumps already capture the data Scope 5 will enrich.
+4. Create a short engineering note or README section under `docs/planning` documenting how Scope 5 should hook into these helpers.
+
+Acceptance
+
+There is a published note (linked in Scope 5 plan) showing the baseline APIs, plus new helper methods/metrics that Scope 5 chunks can rely on without reworking Scope 4 code; no existing behavior is broken.
+
+Chunk 2 - Multi-hop path-aware scheduler
+
+Goals
+
+Move beyond per-link scheduling by letting the controller reason about entire multi-hop paths, including the beams, routes, and timing windows that make a ServiceRequest end-to-end feasible.
+
+What we'll change
+
+The scheduler, `ScenarioState`, and knowledge bases need to represent candidate paths (sequence of links/interfaces), annotate their windows, and emit grouped actions that coordinate beams/routes along that path.
+
+Steps
+
+1. Define a `ScheduledPath` domain model (`internal/sbi/controller/path.go`) that ties together a `ServiceRequest`, ordered hops, associated beam specs, and when each hop should be active/deleted.
+2. Extend the connectivity graph helpers (`kb`/`core`) to return neighbour lists, active/potential link details, and `LinkWindow` intervals so the scheduler can compute path timing.
+3. Update the scheduler loop to:
+   * Build candidate paths using BFS/heuristics over the `ScenarioState` graph.
+   * Attach `ScheduleAction`s for each hop (beam updates, routes) with the correct `When`.
+   * Group actions per agent so `CDPIServer.SendCreateEntry` can send ordered requests (e.g., beam on before routes set).
+4. Add unit tests validating that for a simple two-hop path, the scheduler emits at least `UpdateBeam`/`SetRoute` per hop in the right order, with predictable timings based on the link windows.
+
+Acceptance
+
+The scheduler has a clear `ScheduledPath` model, path-building logic produces expected sequences in unit tests, and the controller can turn paths into grouped SBI entries without hacking raw link IDs.
+
+Chunk 3 - Conflict detection & conservative scheduling
+
+Goals
+
+Prevent overlapping beam assignments/configured multi-beam limits from causing conflicting actions; capture and expose conflict diagnostics before sending them to agents.
+
+What we'll change
+
+Introduce occupancy tracking for interfaces/links, add conflict heuristics to the scheduler, and tie it into the logging/metrics plumbing so operations see when a reservation is denied or delayed.
+
+Steps
+
+1. Track per-interface occupancy in the scheduler (`interfaceReservations` map with time ranges) and add a `ConflictPolicy` helper that checks for multi-beam limits (`TransceiverModel.MaxBeams`) and overlapping time windows.
+2. When a new `ScheduledPath` would violate a reservation, the scheduler should:
+   * Emit a structured log/metric (`scheduler_conflict_count`, `scheduler_conflict_reason`) keyed by agent/service request.
+   * Either delay the path (if a conservative policy is configured) or drop it with a `Conflict` note in the plan.
+3. Provide a simple `ConflictReport` helper/struct that can be surfaced via telemetry or CLI so engineers know why a path was skipped.
+4. Add tests verifying that:
+   * Scheduling two simultaneous beams sharing the same interface increments the conflict counter and prevents the second beam from being sent.
+   * When `MaxBeams` is 2, the third assignment is blocked until time ranges no longer overlap.
+
+Acceptance
+
+Scheduler tests include conflict scenarios, logs/metrics show conflict counts, and nothing in Scope 4 agents needs modification because conflicts are resolved before `CreateEntryRequest`s go out.
+
+Chunk 4 - Reactive scheduling & replanning
+
+Goals
+
+Allow the scheduler to detect runtime events (failed responses, telemetry signals, resets) and replan by canceling/rescheduling entries when conditions change.
+
+What we'll change
+
+CDPIServer, scheduler state, and agent telemetry reporting need new hooks so events (link down, response errors) can trigger a replanning cycle that refreshes pending entries while honoring `schedule_manipulation_token`s.
+
+Steps
+
+1. Define a `ReplanTrigger` interface that can be implemented by telemetry processors, manual command handlers, or the scheduler itself; it should expose `TriggerReplan(agentID, reason string)` and carry metadata (affected service request, timestamp).
+2. Wire CDPIServer to observe agent `Response` messages and `Finalize` cutoffs; when failures arrive or an agent resets, enqueue `ReplanTrigger` events and update `AgentHandle.token`.
+3. Extend the scheduler with a `ReplanLoop` that:
+   * Cancels pending `ScheduledAction`s via `CDPIServer.SendDeleteEntry`.
+   * Recomputes paths for affected service requests using updated connectivity.
+   * Resends new `CreateEntryRequest`s to agents with the latest tokens.
+4. Add a `SchedulerStateSnapshot` structure that the scheduler updates after each cycle, capturing pending entries, conflicts, and last replan reason; this can later be exposed via telemetry/NBI.
+5. Unit tests should confirm that when an agent reports a `Response` error or telemetry indicates a link disappeared, the scheduler cancels the old beam and sends a fresh one with a new token.
+
+Acceptance
+
+Triggered replans result in canceled and retransmitted SBI entries, the scheduler state snapshot records the event, and agent tokens stay synchronized so no stale commands are delivered.
+
+Chunk 5 - Expanded telemetry (modem stats & intent visibility)
+
+Goals
+
+Deliver richer telemetry so operators can see modem statistics (SNR, modulation, power) and the intents/service requests tied to each beam or route.
+
+What we'll change
+
+Extend `InterfaceMetrics`, telemetry exports, and agent instrumentation so they carry RF parameters and intent metadata derived from link evaluations and scheduling decisions.
+
+Steps
+
+1. Add fields to `InterfaceMetrics` (SNRdB, Modulation, BeamPowerDbm, IntentID, RequestID) and ensure `TelemetryState` can store/retrieve them by interface key.
+2. Have agents compute these values each time they execute an action:
+   * Pull link evaluation metadata (range, bandwidth, transceiver model) from `core`/`kb`.
+   * Record which `ServiceRequest`/`ScheduledPath` granted the beam and set `IntentID`/`RequestID` appropriately.
+3. Extend telemetry loops to include intent summaries (for example, `IntentSummary` entries describing which requests are currently active on a node) and add a new field to `ExportMetricsRequest`.
+4. Add telemetry tests that:
+   * Confirm metrics update when beams switch on/off.
+   * Validate intent metadata flows through to `TelemetryState` and the service response.
+
+Acceptance
+
+Telemetry payloads routinely include SNR/modulation/power numbers, and intent IDs are visible (in both logs and the telemetry store) for each interface update.
+
+Chunk 6 - Region-aware service requests & policy routing
+
+Goals
+
+Let clients attach region and policy constraints to service requests, and ensure the scheduler respects those constraints (dropping actions whose T_on/T_off fall outside the authorized area or policy window).
+
+What we'll change
+
+`model.ServiceRequest`, NBI mappings, validation logic, and scheduler heuristics will carry region descriptors (bounding boxes, territory tags) and policy attributes (latency/priority overrides, restricted corridors).
+
+Steps
+
+1. Extend the `ServiceRequest` domain model with `RegionConstraints` (e.g., polygons, country lists) and `PolicyOverrides` (latency limits, priority tiers); reflect the same fields in `nbi/types` so NBI clients can populate them.
+2. Update validation helpers to ensure region descriptors are well-formed (e.g., simple polygons, known country codes) and to reject requests without valid nodes when region enforcement requires both endpoints to be inside the region.
+3. When generating `ScheduledPath`s, intersect link visibility windows with the declared region; drop or defer path actions if the beam window would occur outside the allowed geographic zone, logging a `RegionViolation`.
+4. Provide commands or API helpers (NBI or CLI) to query which requests touch a given region and to see which scheduled actions were suppressed due to region policy.
+
+Acceptance
+
+Region-constrained requests are not scheduled outside their zone, validation catches malformed region data, and scheduler logs clearly state when region enforcement prevented an action.
+
+Chunk 7 - Federation & multi-controller coordination
+
+Goals
+
+Enable multiple control-plane actors to coexist by tagging SBI/NBI artifacts with federation metadata, honoring priority tiers, and exposing ownership information via telemetry/logs.
+
+What we'll change
+
+Extend SBI messages, `ScenarioState`, `CDPIServer`, and scheduler internals so multiple controllers can schedule overlapping beams while respecting priority rules and sharing telemetry.
+
+Steps
+
+1. Tag `ScheduledAction`s, telemetry exports, and `ServiceRequest`s with `FederationID`/`ControllerID` metadata; store this info in `ScenarioState` so any action can be traced back to its owner.
+2. Update `CDPIServer` to manage per-controller streams (e.g., multiple instances representing different federated controllers) and to maintain reservation maps by federation.
+3. Implement a priority arbitration helper: when two controllers want the same interface/time window, the one with the higher priority (or earlier reservation) wins; the losing controller receives a structured conflict response and logged metric.
+4. Ensure telemetry captures federation context (e.g., include `ControllerID` in `InterfaceMetrics`), allowing downstream tools to filter by owner.
+5. Add integration tests that simulate two controllers racing over a single interface; verify that the priority rules resolve conflicts and that agents report the owning controller.
+
+Acceptance
+
+Federated controllers can co-exist with clear ownership semantics, priority-based conflict handling, and telemetry that surfaces controller IDs for each action.
+
+Chunk 8 - Scope 5 validation & runbooks
+
+Goals
+
+Document the new Scope 5 features (multi-hop paths, conflicts, region policies, federation) with example scenarios, checklists, and verification steps so reviewers and QA engineers can confirm readiness.
+
+What we'll change
+
+Add comprehensive documentation and regression scenarios to `docs/planning`, `cmd/nbi-server/README.md`, and `tests/` that describe how to exercise Scope 5 success criteria end-to-end.
+
+Steps
+
+1. Compose a golden scenario (JSON/textproto) that includes:
+   * A multi-hop service request requiring at least two beams/routes.
+   * Region constraints and federation metadata.
+   * A planned conflict that the scheduler should detect.
+2. Write a Scope 5 checklist (aligned with Requirements/Roadmap) that enumerates each new capability, the expected logs/metrics, and the validation steps (unit tests, telemetry queries).
+3. Update `cmd/nbi-server/README.md` with instructions on how to start the server, load the golden scenario, and interpret the new telemetry/federation outputs.
+4. Create focused regression tests (unit or integration) that replay the golden scenario and assert the scheduler/telemetry/federation behavior.
+
+Acceptance
+
+Scope 5 documentation lives next to the implementation plan, a golden scenario plus regression tests prove the new behaviors, and the checklist ties back to the requirements so you can confidently mark Scope 5 complete.

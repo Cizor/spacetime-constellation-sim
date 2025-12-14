@@ -69,7 +69,9 @@ type ScenarioState struct {
 	// serviceRequests is an in-memory store of active ServiceRequests,
 	// keyed by their internal ID.
 	serviceRequests map[string]*model.ServiceRequest
-	dtnStorageUsage map[string]float64
+	// serviceRequestStatuses track provisioning state / intervals per request.
+	serviceRequestStatuses map[string]*model.ServiceRequestStatus
+	dtnStorageUsage        map[string]float64
 
 	// motion is an optional motion model used by the simulator; it is
 	// reset alongside scenario clears.
@@ -146,11 +148,12 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		log = logging.Noop()
 	}
 	state := &ScenarioState{
-		physKB:          phys,
-		netKB:           net,
-		serviceRequests: make(map[string]*model.ServiceRequest),
-		dtnStorageUsage: make(map[string]float64),
-		log:             log,
+		physKB:                 phys,
+		netKB:                  net,
+		serviceRequests:        make(map[string]*model.ServiceRequest),
+		serviceRequestStatuses: make(map[string]*model.ServiceRequestStatus),
+		dtnStorageUsage:        make(map[string]float64),
+		log:                    log,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -968,6 +971,8 @@ func (s *ScenarioState) CreateServiceRequest(sr *model.ServiceRequest) error {
 	}
 	s.serviceRequests[sr.ID] = sr
 
+	s.ensureServiceRequestStatusLocked(sr.ID)
+
 	s.updateMetricsLocked()
 	return nil
 }
@@ -1026,9 +1031,66 @@ func (s *ScenarioState) DeleteServiceRequest(id string) error {
 		return ErrServiceRequestNotFound
 	}
 	delete(s.serviceRequests, id)
+	delete(s.serviceRequestStatuses, id)
 
 	s.updateMetricsLocked()
 	return nil
+}
+
+// UpdateServiceRequestStatus updates the provisioning metadata tracked for a ServiceRequest.
+func (s *ScenarioState) UpdateServiceRequestStatus(srID string, isProvisioned bool, interval *model.TimeInterval) error {
+	if srID == "" {
+		return errors.New("service request ID is empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sr, exists := s.serviceRequests[srID]
+	if !exists {
+		return ErrServiceRequestNotFound
+	}
+
+	status := s.ensureServiceRequestStatusLocked(srID)
+	intervalCopy := copyTimeInterval(interval)
+
+	status.IsProvisionedNow = isProvisioned
+	if intervalCopy != nil {
+		status.AllIntervals = append(status.AllIntervals, *intervalCopy)
+	}
+	if isProvisioned {
+		status.CurrentInterval = intervalCopy
+		if intervalCopy != nil {
+			status.LastProvisionedAt = intervalCopy.StartTime
+			sr.ProvisionedIntervals = append(sr.ProvisionedIntervals, *intervalCopy)
+		}
+	} else {
+		status.CurrentInterval = nil
+		if intervalCopy != nil {
+			status.LastUnprovisionedAt = intervalCopy.EndTime
+		}
+	}
+	sr.IsProvisionedNow = isProvisioned
+	sr.LastProvisionedAt = status.LastProvisionedAt
+	sr.LastUnprovisionedAt = status.LastUnprovisionedAt
+
+	return nil
+}
+
+// GetServiceRequestStatus returns a copy of the provisioning metadata for the request.
+func (s *ScenarioState) GetServiceRequestStatus(srID string) (*model.ServiceRequestStatus, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, exists := s.serviceRequests[srID]; !exists {
+		return nil, ErrServiceRequestNotFound
+	}
+
+	status := s.serviceRequestStatuses[srID]
+	if status == nil {
+		return &model.ServiceRequestStatus{}, nil
+	}
+	return cloneServiceRequestStatus(status), nil
 }
 
 // updateMetricsLocked pushes current entity counts into the metrics recorder.
@@ -1048,6 +1110,42 @@ func (s *ScenarioState) updateMetricsLocked() {
 		links = len(s.netKB.GetAllNetworkLinks())
 	}
 	s.metrics.SetScenarioCounts(platforms, nodes, links, len(s.serviceRequests))
+}
+
+func (s *ScenarioState) ensureServiceRequestStatusLocked(srID string) *model.ServiceRequestStatus {
+	if status := s.serviceRequestStatuses[srID]; status != nil {
+		return status
+	}
+	status := &model.ServiceRequestStatus{}
+	s.serviceRequestStatuses[srID] = status
+	return status
+}
+
+func copyTimeInterval(interval *model.TimeInterval) *model.TimeInterval {
+	if interval == nil {
+		return nil
+	}
+	clone := *interval
+	if interval.Path != nil {
+		pathCopy := *interval.Path
+		clone.Path = &pathCopy
+	}
+	return &clone
+}
+
+func cloneServiceRequestStatus(src *model.ServiceRequestStatus) *model.ServiceRequestStatus {
+	if src == nil {
+		return nil
+	}
+	dst := *src
+	if src.CurrentInterval != nil {
+		intervalCopy := *src.CurrentInterval
+		dst.CurrentInterval = &intervalCopy
+	}
+	if len(src.AllIntervals) > 0 {
+		dst.AllIntervals = append([]model.TimeInterval(nil), src.AllIntervals...)
+	}
+	return &dst
 }
 
 // interfacesByNodeLocked builds a map of nodeID -> interfaces for callers that
@@ -1235,6 +1333,7 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 		s.netKB.Clear()
 	}
 	s.serviceRequests = make(map[string]*model.ServiceRequest)
+	s.serviceRequestStatuses = make(map[string]*model.ServiceRequestStatus)
 	s.dtnStorageUsage = make(map[string]float64)
 
 	if s.motion != nil {

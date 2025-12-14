@@ -17,8 +17,16 @@ type FlowRequirement struct {
 
 // TimeInterval represents a time interval with start and end times.
 type TimeInterval struct {
-	Start time.Time
-	End   time.Time
+	StartTime time.Time
+	EndTime   time.Time
+	Path      *Path
+}
+
+type Path struct {
+	// ID is an internal identifier for the path.
+	ID string
+	// Nodes captures the ordered nodes that form the path.
+	Nodes []string
 }
 
 type ServiceRequest struct {
@@ -41,4 +49,16 @@ type ServiceRequest struct {
 	// ProvisionedIntervals tracks the time intervals when this service request
 	// was/is provisioned. This allows tracking provisioning history.
 	ProvisionedIntervals []TimeInterval
+	// LastProvisionedAt records when the request was last marked as provisioned.
+	LastProvisionedAt time.Time
+	// LastUnprovisionedAt records when the request was last marked as not provisioned.
+	LastUnprovisionedAt time.Time
+}
+
+type ServiceRequestStatus struct {
+	IsProvisionedNow    bool
+	CurrentInterval     *TimeInterval
+	AllIntervals        []TimeInterval
+	LastProvisionedAt   time.Time
+	LastUnprovisionedAt time.Time
 }

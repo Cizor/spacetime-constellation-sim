@@ -159,10 +159,10 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	}
 	if len(sr.ProvisionedIntervals) > 0 {
 		interval := sr.ProvisionedIntervals[0]
-		if interval.Start.IsZero() || interval.End.IsZero() {
+		if interval.StartTime.IsZero() || interval.EndTime.IsZero() {
 			t.Errorf("ProvisionedInterval has zero times: %+v", interval)
 		}
-		if interval.End.Before(interval.Start) {
+		if interval.EndTime.Before(interval.StartTime) {
 			t.Errorf("ProvisionedInterval End before Start: %+v", interval)
 		}
 	}

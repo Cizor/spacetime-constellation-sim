@@ -740,8 +740,8 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		if provisionedInterval == nil {
 			now := s.Clock.Now()
 			provisionedInterval = &model.TimeInterval{
-				Start: now,
-				End:   now.Add(ContactHorizon),
+				StartTime: now,
+				EndTime:   now.Add(ContactHorizon),
 			}
 		}
 		if err := s.updateServiceRequestStatus(ctx, sr.ID, true, provisionedInterval); err != nil {
@@ -1117,8 +1117,8 @@ func (s *Scheduler) scheduleActionsForPath(_ context.Context, path []string, srI
 	}
 
 	return &model.TimeInterval{
-		Start: earliestStart,
-		End:   latestEnd,
+		StartTime: earliestStart,
+		EndTime:   latestEnd,
 	}, entries, nil
 }
 

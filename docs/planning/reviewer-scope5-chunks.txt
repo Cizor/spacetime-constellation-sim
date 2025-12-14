@@ -1,0 +1,1135 @@
+Below is Scope 5 – Advanced Scheduling, Multi-Hop Routing & Enhanced Telemetry: Chunks.
+
+Chunk 0 – Prep Scope 1–4 Base for Advanced Scheduling (audit & extensions)
+
+Goal: Ensure the existing scheduler, routing, and telemetry infrastructure can support Scope 5's advanced features without architectural changes.
+
+0.1 – Audit ServiceRequest status tracking
+
+Scope 3 introduced ServiceRequest with status fields (IsProvisionedNow, ProvisionedIntervals) that were not actively updated in Scope 4. For Scope 5, we need to:
+
+Verify the data model in model/servicerequest.go includes:
+    IsProvisionedNow bool
+    ProvisionedIntervals []TimeInterval
+    LastProvisionedAt time.Time
+    LastUnprovisionedAt time.Time
+
+Ensure ScenarioState has helpers:
+    UpdateServiceRequestStatus(srID string, isProvisioned bool, interval *TimeInterval) error
+    GetServiceRequestStatus(srID string) (*ServiceRequestStatus, error)
+
+These will be called by the scheduler when paths are found/lost.
+
+0.2 – Extend routing table model for multi-hop
+
+Scope 4 introduced basic RouteEntry for single-hop. For multi-hop, extend:
+
+type RouteEntry struct {
+    DestinationCIDR string
+    NextHopNodeID   string
+    OutInterfaceID  string
+    // New for Scope 5:
+    Path []string // full path: [srcNode, hop1, hop2, ..., dstNode]
+    Cost int      // path cost metric (hops, latency, etc.)
+    ValidUntil time.Time // when this route expires
+}
+
+Add to ScenarioState:
+    InstallMultiHopRoute(nodeID string, route RouteEntry) error
+    GetRoutePath(srcNodeID, dstNodeID string) ([]string, error)
+    InvalidateExpiredRoutes(now time.Time) error
+
+0.3 – Add capacity/bandwidth tracking to links
+
+For conflict resolution, we need to track:
+
+In core.NetworkLink or ScenarioState:
+    AvailableBandwidthBps uint64 // current available capacity
+    ReservedBandwidthBps  uint64 // reserved by active flows
+    MaxBandwidthBps       uint64 // link's maximum capacity
+
+Add helpers:
+    ReserveBandwidth(linkID string, bps uint64) error
+    ReleaseBandwidth(linkID string, bps uint64) error
+    GetAvailableBandwidth(linkID string) uint64
+
+0.4 – Extend telemetry model for modem metrics
+
+Scope 4 stubbed ModemMetrics. For Scope 5, define:
+
+type ModemMetrics struct {
+    InterfaceID string
+    SNRdB       float64
+    Modulation  string
+    CodingRate  string
+    BER         float64 // bit error rate
+    ThroughputBps uint64
+    Timestamp   time.Time
+}
+
+Extend TelemetryState to store modem metrics alongside interface metrics.
+
+Output:
+A verified and extended base where ServiceRequest status can be tracked, multi-hop routes are supported, bandwidth is tracked, and telemetry can store modem metrics.
+
+Chunk 1 – Priority-Based ServiceRequest Scheduling
+
+Goal: Implement priority-aware scheduling so that when multiple ServiceRequests contend for limited capacity, higher-priority requests are served first.
+
+1.1 – ServiceRequest priority ordering
+
+Extend the scheduler to:
+
+Sort ServiceRequests by priority (higher priority first).
+
+When multiple SRs need the same link:
+    Allocate bandwidth to highest-priority SRs first.
+    Lower-priority SRs wait or are rejected if capacity is insufficient.
+
+Implement in internal/sbi/controller/scheduler.go:
+
+type PriorityQueue struct {
+    items []*ServiceRequest
+}
+
+func (pq *PriorityQueue) Push(sr *ServiceRequest)
+func (pq *PriorityQueue) Pop() *ServiceRequest
+func (pq *PriorityQueue) SortByPriority()
+
+1.2 – Bandwidth-aware allocation
+
+When scheduling a ServiceRequest:
+
+Check each link in the path for available bandwidth.
+
+If any link lacks sufficient capacity:
+    If SR has higher priority than existing flows, preempt lower-priority flows.
+    Otherwise, mark SR as "insufficient capacity" and skip.
+
+Implement:
+    func (s *Scheduler) CheckPathCapacity(path []string, requiredBps uint64) (bool, []string)
+    func (s *Scheduler) AllocatePathCapacity(path []string, srID string, bps uint64) error
+    func (s *Scheduler) ReleasePathCapacity(path []string, srID string, bps uint64) error
+
+1.3 – Preemption logic
+
+When a high-priority SR needs capacity occupied by lower-priority SRs:
+
+Identify conflicting SRs (same links, lower priority).
+
+For each conflicting SR:
+    Mark as "preempted".
+    Update ServiceRequest status: IsProvisionedNow = false.
+    Schedule DeleteBeam/DeleteRoute actions to tear down existing paths.
+    Release bandwidth reservations.
+
+Then schedule the new high-priority SR.
+
+1.4 – Tests
+
+In scheduler_priority_test.go:
+
+Test priority ordering: 3 SRs with priorities [10, 5, 1] → highest scheduled first.
+
+Test capacity contention: 2 SRs need same link with insufficient capacity → higher priority wins.
+
+Test preemption: low-priority SR active, high-priority SR arrives → low-priority preempted.
+
+Output:
+Scheduler respects ServiceRequest priority when allocating resources, with preemption support for capacity contention.
+
+Chunk 2 – Time-Aware Multi-Hop Path Computation
+
+Goal: Compute multi-hop paths between source and destination nodes, considering time-varying link availability and contact windows.
+
+2.1 – Contact window data structure
+
+Extend connectivity evaluation to maintain contact windows:
+
+type ContactWindow struct {
+    LinkID      string
+    StartTime   time.Time
+    EndTime     time.Time
+    Quality     float64 // SNR or link quality metric
+}
+
+type ContactPlan struct {
+    LinkID string
+    Windows []ContactWindow
+}
+
+Add to ScenarioState or connectivity service:
+    GetContactPlan(linkID string, horizon time.Duration) []ContactWindow
+    GetContactPlansForNode(nodeID string, horizon time.Duration) map[string][]ContactWindow
+
+2.2 – Time-expanded graph construction
+
+For multi-hop pathfinding, build a time-expanded graph:
+
+type TimeExpandedNode struct {
+    NodeID string
+    Time   time.Time
+}
+
+type TimeExpandedEdge struct {
+    From   TimeExpandedNode
+    To     TimeExpandedNode
+    LinkID string
+    Cost   int
+}
+
+Implement:
+    func BuildTimeExpandedGraph(srcNodeID, dstNodeID string, startTime, endTime time.Time) (*TimeExpandedGraph, error)
+
+This graph includes:
+    Nodes at each time step where contacts are available.
+    Edges representing links active during specific time windows.
+    Wait edges (same node, different time) for DTN/store-and-forward.
+
+2.3 – Multi-hop pathfinding algorithm
+
+Implement a time-aware shortest path algorithm:
+
+func FindMultiHopPath(srcNodeID, dstNodeID string, startTime time.Time, horizon time.Duration) (*Path, error)
+
+Algorithm options:
+    Dijkstra on time-expanded graph.
+    A* with time-aware heuristics.
+    Consider: path length (hops), total latency, contact window overlap.
+
+Return:
+    type Path struct {
+        Hops []PathHop
+        TotalLatency time.Duration
+        ValidFrom    time.Time
+        ValidUntil   time.Time
+    }
+
+    type PathHop struct {
+        FromNodeID string
+        ToNodeID   string
+        LinkID     string
+        StartTime  time.Time
+        EndTime    time.Time
+    }
+
+2.4 – Path validation and scheduling
+
+When a path is found:
+
+Validate each hop's contact window is still valid.
+
+Schedule UpdateBeam actions for each link at the correct times.
+
+Schedule SetRoute actions for each intermediate node:
+    Route to destination via next hop in path.
+
+Update ServiceRequest status: IsProvisionedNow = true, add to ProvisionedIntervals.
+
+2.5 – Tests
+
+In scheduler_multihop_test.go:
+
+Test simple 2-hop path: A → B → C, with overlapping contact windows.
+
+Test path with gaps: A → B (contact 0-10s), B → C (contact 15-25s) → should use DTN at B.
+
+Test no path exists: A and C never have connecting path → returns error.
+
+Test path recomputation when contact windows change.
+
+Output:
+Scheduler can compute and schedule multi-hop paths considering time-varying connectivity.
+
+Chunk 3 – Conflict Detection & Resolution
+
+Goal: Detect and resolve scheduling conflicts (multiple beams on same interface, power limits, frequency interference).
+
+3.1 – Beam conflict detection
+
+Detect when multiple beams are scheduled on the same interface:
+
+type BeamConflict struct {
+    InterfaceID string
+    ConflictingBeams []BeamSpec
+    ConflictType string // "concurrent_beams", "power_limit", "frequency"
+}
+
+Implement:
+    func DetectBeamConflicts(interfaceID string, scheduledBeams []BeamSpec) []BeamConflict
+
+Check:
+    MaxBeams constraint: if interface has MaxBeams=2, only 2 concurrent beams allowed.
+    Power budget: sum of beam powers must not exceed interface power limit.
+    Frequency overlap: beams on same frequency may interfere.
+
+3.2 – Power budget tracking
+
+Extend TransceiverModel to include:
+    MaxPowerWatts float64
+    CurrentPowerWatts float64
+
+Track per interface:
+    type InterfacePowerState struct {
+        InterfaceID string
+        AllocatedPower float64
+        Beams []BeamSpec // active beams
+    }
+
+Add to ScenarioState:
+    AllocatePower(interfaceID string, powerWatts float64) error
+    ReleasePower(interfaceID string, powerWatts float64) error
+    GetAvailablePower(interfaceID string) float64
+
+3.3 – Conflict resolution strategies
+
+When conflicts are detected, apply resolution:
+
+Priority-based: higher-priority ServiceRequest's beams take precedence.
+
+Earliest-deadline-first: beams with earlier deadlines are kept.
+
+Fairness: round-robin or proportional allocation.
+
+Implement:
+    func ResolveConflicts(conflicts []BeamConflict, strategy string) []BeamAction
+
+Returns actions to:
+    Cancel conflicting lower-priority beams.
+    Adjust beam parameters (power, frequency) if possible.
+    Delay beams if conflicts are temporary.
+
+3.4 – Frequency interference modeling
+
+For wireless links, model frequency interference:
+
+type FrequencyInterference struct {
+    FrequencyGHz float64
+    InterferingBeams []BeamSpec
+    InterferenceLeveldB float64
+}
+
+Implement:
+    func ComputeInterference(beam BeamSpec, allBeams []BeamSpec) float64
+
+If interference exceeds threshold:
+    Mark as conflict.
+    Resolve by: frequency separation, time separation, or beam cancellation.
+
+3.5 – Tests
+
+In scheduler_conflicts_test.go:
+
+Test MaxBeams constraint: interface with MaxBeams=1, 2 beams scheduled → conflict detected.
+
+Test power budget: interface max 10W, beams need 6W + 5W → conflict (11W > 10W).
+
+Test frequency interference: 2 beams on same frequency, overlapping time → conflict.
+
+Test resolution: conflict resolved by canceling lower-priority beam.
+
+Output:
+Scheduler detects and resolves beam conflicts based on MaxBeams, power, and frequency constraints.
+
+Chunk 4 – Reactive Re-Planning & Path Updates
+
+Goal: Monitor active paths and recompute/update them when connectivity changes or better paths become available.
+
+4.1 – Path monitoring
+
+Track active ServiceRequest paths:
+
+type ActivePath struct {
+    ServiceRequestID string
+    Path             *Path
+    ScheduledActions []string // entry IDs
+    LastUpdated      time.Time
+}
+
+Add to Scheduler:
+    activePaths map[string]*ActivePath
+
+Monitor:
+    Contact window changes (links go down earlier/later than expected).
+    New better paths become available (shorter, lower latency).
+    Link quality degradation.
+
+4.2 – Trigger conditions for re-planning
+
+Re-plan when:
+
+Contact window closes earlier than scheduled → path broken.
+
+New contact window opens → potentially better path available.
+
+Link quality degrades below threshold → consider alternative path.
+
+Higher-priority SR arrives → may need to re-plan lower-priority SRs.
+
+Implement:
+    func (s *Scheduler) ShouldReplan(srID string, now time.Time) bool
+    func (s *Scheduler) CheckPathHealth(path *Path, now time.Time) PathHealth
+
+4.3 – Incremental path updates
+
+When re-planning:
+
+If new path shares some hops with old path:
+    Keep shared hops (don't reschedule).
+    Only update changed segments.
+
+If completely new path:
+    Tear down old path (DeleteBeam, DeleteRoute).
+    Schedule new path.
+
+Implement:
+    func (s *Scheduler) UpdatePath(srID string, newPath *Path) error
+    func (s *Scheduler) ComputePathDiff(oldPath, newPath *Path) PathDiff
+
+4.4 – Re-planning loop
+
+Integrate into scheduler's periodic run:
+
+Every N simulation seconds (or on connectivity change events):
+
+For each active ServiceRequest:
+    Check if re-planning is needed.
+    If yes, compute new path.
+    If new path is better, update.
+
+Respect re-planning frequency limits (don't thrash).
+
+4.5 – Tests
+
+In scheduler_replanning_test.go:
+
+Test path break: contact window closes early → path recomputed.
+
+Test better path: new shorter path becomes available → old path updated.
+
+Test no better path: connectivity unchanged → no re-planning.
+
+Test re-planning frequency: ensure not too frequent (thrashing prevention).
+
+Output:
+Scheduler monitors active paths and reactively updates them when connectivity changes or better paths become available.
+
+Chunk 5 – DTN Storage & Store-and-Forward
+
+Goal: Model DTN (Delay-Tolerant Networking) storage at nodes to enable store-and-forward routing when end-to-end paths are not immediately available.
+
+5.1 – DTN storage model
+
+Add per-node storage capacity:
+
+type DTNStorage struct {
+    NodeID        string
+    CapacityBytes uint64
+    UsedBytes     uint64
+    Messages      []StoredMessage
+}
+
+type StoredMessage struct {
+    MessageID    string
+    ServiceRequestID string
+    SizeBytes    uint64
+    ArrivalTime  time.Time
+    ExpiryTime   time.Time
+    Destination  string
+}
+
+Add to ScenarioState:
+    StoreMessage(nodeID string, msg StoredMessage) error
+    RetrieveMessage(nodeID string, msgID string) (*StoredMessage, error)
+    GetStorageUsage(nodeID string) (used, capacity uint64)
+    EvictExpiredMessages(nodeID string, now time.Time) error
+
+5.2 – Store-and-forward path computation
+
+Extend pathfinding to include storage nodes:
+
+In time-expanded graph:
+    Add "wait" edges at storage-capable nodes.
+    Messages can wait at nodes until next contact window.
+
+Path computation:
+    If direct path exists → use it.
+    If not, find path with storage nodes:
+        A → B (store) → wait → B → C (forward).
+
+Implement:
+    func FindDTNPath(srcNodeID, dstNodeID string, msgSize uint64, startTime time.Time) (*DTNPath, error)
+
+5.3 – Storage-aware scheduling
+
+When scheduling DTN paths:
+
+At storage node:
+    Schedule StoreMessage action when message arrives.
+    Schedule ForwardMessage action when next contact opens.
+
+Check storage capacity:
+    If node storage full → evict oldest/lowest-priority messages.
+    Or reject new message if no space.
+
+5.4 – Message lifecycle
+
+Track message state:
+
+type MessageState string
+const (
+    MessagePending MessageState = "pending"
+    MessageInTransit = "in_transit"
+    MessageStored = "stored"
+    MessageDelivered = "delivered"
+    MessageExpired = "expired"
+)
+
+Update state as message moves through network.
+
+5.5 – Tests
+
+In scheduler_dtn_test.go:
+
+Test simple store-and-forward: A → B (store) → B → C.
+
+Test storage capacity: node full → evict or reject.
+
+Test message expiry: message expires before delivery → mark expired.
+
+Test multi-hop DTN: A → B → C → D with storage at B and C.
+
+Output:
+Scheduler can compute and schedule store-and-forward paths using DTN storage at intermediate nodes.
+
+Chunk 6 – ServiceRequest Status Tracking & Updates
+
+Goal: Actively maintain ServiceRequest status fields (IsProvisionedNow, ProvisionedIntervals) based on actual path availability and scheduling decisions.
+
+6.1 – Status update triggers
+
+Update ServiceRequest status when:
+
+Path is found and scheduled → IsProvisionedNow = true, add interval.
+
+Path is torn down → IsProvisionedNow = false, close current interval.
+
+Path is preempted → IsProvisionedNow = false.
+
+Path recomputed → update intervals.
+
+Implement in scheduler:
+    func (s *Scheduler) UpdateSRStatus(srID string, isProvisioned bool, interval *TimeInterval) error
+
+6.2 – ProvisionedIntervals tracking
+
+Maintain chronological list of provisioned intervals:
+
+type TimeInterval struct {
+    StartTime time.Time
+    EndTime   time.Time
+    Path      *Path // which path was used
+}
+
+When new interval starts:
+    If previous interval just ended → add new interval.
+    If gap exists → record gap.
+
+When interval ends:
+    Mark end time.
+    Keep interval in history.
+
+6.3 – Status query API
+
+Expose ServiceRequest status via NBI (if not already):
+
+Extend ServiceRequestService:
+    GetServiceRequestStatus(GetServiceRequestStatusRequest) returns (ServiceRequestStatus)
+
+Returns:
+    IsProvisionedNow
+    CurrentProvisionedInterval
+    AllProvisionedIntervals (history)
+    LastProvisionedAt
+    LastUnprovisionedAt
+
+6.4 – Integration with scheduler
+
+Hook status updates into scheduler actions:
+
+When path scheduled:
+    Call UpdateSRStatus(srID, true, interval).
+
+When path deleted:
+    Call UpdateSRStatus(srID, false, nil).
+
+When path updated:
+    Close old interval, start new one.
+
+6.5 – Tests
+
+In servicerequest_status_test.go:
+
+Test status on path found: SR status → IsProvisionedNow = true.
+
+Test status on path lost: SR status → IsProvisionedNow = false.
+
+Test interval tracking: multiple provision/unprovision cycles → correct intervals.
+
+Test status persistence: status survives scheduler restarts (if persisted).
+
+Output:
+ServiceRequest status fields are actively maintained and accurately reflect current provisioning state.
+
+Chunk 7 – Enhanced Telemetry: Modem Metrics & Intent Tracking
+
+Goal: Expand telemetry beyond basic interface metrics to include modem-level metrics and intent/ServiceRequest fulfillment tracking.
+
+7.1 – Modem metrics collection
+
+Extend agent telemetry generation:
+
+When link is active, collect:
+    SNR from connectivity evaluation.
+    Modulation/coding from transceiver model.
+    Throughput from active flows.
+    BER (bit error rate) - can be derived or modeled.
+
+Implement in agent:
+    func (a *Agent) CollectModemMetrics(interfaceID string) *ModemMetrics
+
+Periodically (every telemetry interval):
+    Collect modem metrics for all active interfaces.
+    Include in ExportMetrics request.
+
+7.2 – Intent/ServiceRequest telemetry
+
+Track ServiceRequest fulfillment metrics:
+
+type IntentMetrics struct {
+    ServiceRequestID string
+    IsProvisioned    bool
+    ProvisionedDuration time.Duration
+    TotalDuration    time.Duration
+    FulfillmentRate  float64 // provisioned / total
+    AverageLatency    time.Duration
+    BytesTransferred uint64
+}
+
+Add to TelemetryState:
+    UpdateIntentMetrics(metrics *IntentMetrics)
+
+Scheduler updates these as SRs are provisioned/unprovisioned.
+
+7.3 – Telemetry aggregation
+
+Provide aggregated views:
+
+Per-node telemetry: sum of all interface metrics for a node.
+
+Per-link telemetry: metrics for both endpoints of a link.
+
+Per-ServiceRequest telemetry: fulfillment and performance metrics.
+
+Implement:
+    func AggregateNodeTelemetry(nodeID string) *AggregatedMetrics
+    func AggregateLinkTelemetry(linkID string) *AggregatedMetrics
+    func GetServiceRequestTelemetry(srID string) *IntentMetrics
+
+7.4 – NBI telemetry exposure (optional)
+
+If telemetry should be queryable via NBI:
+
+Extend TelemetryService or add to existing service:
+    GetInterfaceMetrics(GetInterfaceMetricsRequest) returns (InterfaceMetrics)
+    GetModemMetrics(GetModemMetricsRequest) returns (ModemMetrics)
+    GetIntentMetrics(GetIntentMetricsRequest) returns (IntentMetrics)
+
+7.5 – Tests
+
+In telemetry_enhanced_test.go:
+
+Test modem metrics collection: active link → modem metrics generated.
+
+Test intent metrics: SR provisioned → fulfillment rate updated.
+
+Test aggregation: multiple interfaces → node-level aggregation correct.
+
+Output:
+Telemetry includes modem-level metrics and ServiceRequest fulfillment tracking, with optional NBI exposure.
+
+Chunk 8 – Region-Based Service Requests
+
+Goal: Support ServiceRequests where source or destination is specified as a geographic region rather than a specific node.
+
+8.1 – Region data model
+
+Define region types:
+
+type Region struct {
+    ID          string
+    Type        string // "circle", "polygon", "country", etc.
+    Center      Coordinates // for circle
+    RadiusKm    float64 // for circle
+    Vertices    []Coordinates // for polygon
+    CountryCode string // for country-based
+}
+
+Add to model or ScenarioState:
+    CreateRegion(region *Region) error
+    GetNodesInRegion(regionID string) ([]string, error) // returns node IDs
+
+8.2 – Region-based ServiceRequest
+
+Extend ServiceRequest model:
+
+type ServiceRequest struct {
+    // existing fields...
+    SrcNodeID    string // if specific node
+    SrcRegionID  string // if region-based
+    DstNodeID    string // if specific node
+    DstRegionID  string // if region-based
+    // exactly one of SrcNodeID/SrcRegionID set, same for dest
+}
+
+8.3 – Region-aware pathfinding
+
+When ServiceRequest has region source/destination:
+
+For region source:
+    Find all nodes in source region.
+    Compute paths from each to destination.
+    Choose best path (shortest, highest capacity, etc.).
+
+For region destination:
+    Find all nodes in destination region.
+    Compute paths from source to each.
+    Choose best path.
+
+For region-to-region:
+    Compute paths between all source-destination pairs.
+    Choose globally best path.
+
+Implement:
+    func FindRegionPath(srcRegionID, dstRegionID string, ...) (*Path, error)
+    func FindRegionToNodePath(srcRegionID, dstNodeID string, ...) (*Path, error)
+    func FindNodeToRegionPath(srcNodeID, dstRegionID string, ...) (*Path, error)
+
+8.4 – Dynamic region membership
+
+As platforms move (satellites orbit), region membership changes:
+
+Periodically (or on motion update):
+    Recompute which nodes are in which regions.
+    If active SR's source/dest node leaves region:
+        Re-plan path (may need different source/dest node).
+
+Implement:
+    func UpdateRegionMembership(regionID string) error
+    func CheckRegionMembership(nodeID, regionID string) bool
+
+8.5 – Tests
+
+In scheduler_region_test.go:
+
+Test region-to-node: SR from region → specific node → path found.
+
+Test node-to-region: SR from node → region → path to any node in region.
+
+Test region-to-region: SR between regions → best path selected.
+
+Test dynamic membership: node moves out of region → path recomputed.
+
+Output:
+Scheduler supports ServiceRequests with region-based sources and destinations, with dynamic membership tracking.
+
+Chunk 9 – Federation Support (Multi-Domain Scheduling)
+
+Goal: Support federation scenarios where multiple scheduling domains (different operators, regions) coordinate to fulfill ServiceRequests that span domains.
+
+9.1 – Domain model
+
+Define scheduling domains:
+
+type SchedulingDomain struct {
+    DomainID     string
+    Name         string
+    Nodes        []string // nodes in this domain
+    Capabilities map[string]interface{} // domain-specific capabilities
+    FederationEndpoint string // gRPC endpoint for inter-domain coordination
+}
+
+Add to ScenarioState:
+    CreateDomain(domain *SchedulingDomain) error
+    GetDomain(nodeID string) (string, error) // which domain owns a node
+    ListDomains() []*SchedulingDomain
+
+9.2 – Inter-domain ServiceRequest
+
+Extend ServiceRequest:
+
+type ServiceRequest struct {
+    // existing fields...
+    CrossDomain   bool
+    SourceDomain  string
+    DestDomain    string
+    FederationToken string // for authentication
+}
+
+When CrossDomain = true:
+    Path may span multiple domains.
+    Requires inter-domain coordination.
+
+9.3 – Inter-domain path computation
+
+For cross-domain SRs:
+
+Within each domain:
+    Compute best path segment within domain.
+    Expose "border nodes" (nodes that can connect to other domains).
+
+Between domains:
+    Find border node pairs that can connect.
+    Coordinate with other domain's scheduler (via federation endpoint).
+    Combine path segments.
+
+Implement:
+    func FindFederatedPath(sr *ServiceRequest) (*FederatedPath, error)
+
+    type FederatedPath struct {
+        Segments []PathSegment
+        DomainHops []string // [domain1, domain2, domain3]
+    }
+
+9.4 – Federation protocol (stub)
+
+Define inter-domain coordination protocol:
+
+type FederationRequest struct {
+    RequestID    string
+    SourceDomain string
+    DestDomain   string
+    Requirements FlowRequirements
+    Token        string
+}
+
+type FederationResponse struct {
+    RequestID string
+    PathSegment *PathSegment // path within responding domain
+    Status    string
+}
+
+For Scope 5, this can be stubbed (in-memory coordination) but protocol defined.
+
+9.5 – Tests
+
+In scheduler_federation_test.go:
+
+Test single-domain: SR within one domain → normal pathfinding.
+
+Test cross-domain: SR spans 2 domains → federated path computed.
+
+Test domain boundaries: border nodes correctly identified.
+
+Test federation failure: other domain unavailable → graceful degradation.
+
+Output:
+Scheduler supports multi-domain scenarios with inter-domain path computation and federation protocol (stubbed for Scope 5).
+
+Chunk 10 – Scheduler Performance & Optimization
+
+Goal: Optimize scheduler performance for large-scale scenarios (1000+ nodes, 100+ ServiceRequests) and add performance monitoring.
+
+10.1 – Contact window caching
+
+Pre-compute and cache contact windows:
+
+type ContactWindowCache struct {
+    mu sync.RWMutex
+    windows map[string][]ContactWindow // linkID -> windows
+    lastUpdate map[string]time.Time
+    ttl time.Duration
+}
+
+Implement:
+    func (c *ContactWindowCache) GetWindows(linkID string, horizon time.Duration) []ContactWindow
+    func (c *ContactWindowCache) Invalidate(linkID string)
+
+Cache invalidation:
+    When platform motion changes significantly.
+    When link parameters change.
+    Periodic refresh (every N simulation seconds).
+
+10.2 – Incremental path updates
+
+Avoid full re-computation when possible:
+
+When re-planning:
+    If only one link changed → update affected paths only.
+    If new link added → check if any SRs can use it.
+    If link removed → only re-plan SRs using that link.
+
+Implement:
+    func (s *Scheduler) IncrementalUpdate(linkID string, changeType string) error
+
+10.3 – Parallel path computation
+
+For multiple ServiceRequests:
+
+Compute paths in parallel (goroutines).
+
+Resolve conflicts after all paths computed.
+
+Implement:
+    func (s *Scheduler) ComputePathsParallel(srs []*ServiceRequest) []*Path
+
+10.4 – Performance metrics
+
+Track scheduler performance:
+
+type SchedulerMetrics struct {
+    PathComputationsTotal int64
+    PathComputationDuration time.Duration
+    AveragePathComputationTime time.Duration
+    ReplansTotal int64
+    ConflictsDetected int64
+    ConflictsResolved int64
+}
+
+Expose via observability/metrics package.
+
+10.5 – Tests
+
+In scheduler_performance_test.go:
+
+Test caching: contact windows cached → faster subsequent queries.
+
+Test incremental: single link change → only affected paths recomputed.
+
+Test parallel: 10 SRs → paths computed in parallel.
+
+Test scale: 1000 nodes, 100 SRs → scheduler completes in reasonable time.
+
+Output:
+Scheduler is optimized for large-scale scenarios with caching, incremental updates, and parallel computation.
+
+Chunk 11 – SrPolicy Implementation (Unstub)
+
+Goal: Implement actual SrPolicy (Segment Routing Policy) functionality that was stubbed in Scope 4.
+
+11.1 – SrPolicy data model
+
+Define SrPolicy structure:
+
+type SrPolicy struct {
+    PolicyID     string
+    Color        int32 // traffic engineering color
+    HeadendNodeID string
+    Endpoints    []string // destination nodes
+    Segments     []Segment // SID (Segment ID) list
+    Preference   int32
+    BindingSID   string
+}
+
+type Segment struct {
+    SID     string
+    Type    string // "node", "adjacency", "prefix"
+    NodeID  string // for node/adjacency segments
+}
+
+Add to ScenarioState:
+    InstallSrPolicy(nodeID string, policy *SrPolicy) error
+    RemoveSrPolicy(nodeID string, policyID string) error
+    GetSrPolicies(nodeID string) []*SrPolicy
+
+11.2 – SrPolicy path computation
+
+When SrPolicy is set:
+
+Compute path through specified segments (SID list).
+
+Install forwarding entries at each node:
+    Match traffic by color/BindingSID.
+    Forward along segment path.
+
+Implement:
+    func ComputeSrPolicyPath(policy *SrPolicy) (*Path, error)
+
+11.3 – Agent SrPolicy handling
+
+Unstub agent's SetSrPolicy/DeleteSrPolicy:
+
+On SetSrPolicy:
+    Store policy in agent/node.
+    Install forwarding entries in node's routing table.
+    Activate policy.
+
+On DeleteSrPolicy:
+    Remove forwarding entries.
+    Deactivate policy.
+
+11.4 – Integration with ServiceRequest
+
+Optionally, ServiceRequests can reference SrPolicy:
+
+type ServiceRequest struct {
+    // existing fields...
+    SrPolicyID string // optional: use this policy for forwarding
+}
+
+If SrPolicyID set:
+    Use policy's path instead of computing new path.
+    Forward traffic according to policy.
+
+11.5 – Tests
+
+In scheduler_srpolicy_test.go:
+
+Test policy installation: SetSrPolicy → forwarding entries installed.
+
+Test policy path: traffic forwarded along segment path.
+
+Test policy deletion: DeleteSrPolicy → entries removed.
+
+Test SR with policy: ServiceRequest with SrPolicyID → uses policy path.
+
+Output:
+SrPolicy is fully implemented with path computation, forwarding, and integration with ServiceRequests.
+
+Chunk 12 – Advanced Observability & Debugging
+
+Goal: Enhance observability for debugging complex scheduling scenarios and provide developer tools.
+
+12.1 – Scheduler state dump
+
+Provide detailed state inspection:
+
+func (s *Scheduler) DumpState() *SchedulerStateDump
+
+Returns:
+    All active ServiceRequests and their paths.
+    All scheduled beam/route actions.
+    All active paths and their health.
+    Conflict information.
+    Bandwidth reservations.
+    DTN storage usage.
+
+12.2 – Scheduling decision logging
+
+Log scheduling decisions with context:
+
+When path computed:
+    Log: SR ID, path, reason (why this path chosen).
+
+When conflict resolved:
+    Log: conflict type, resolution strategy, affected SRs.
+
+When re-planning:
+    Log: trigger, old path, new path, reason for change.
+
+Structured logging with correlation IDs.
+
+12.3 – Visualization helpers
+
+Provide data structures for visualization:
+
+type SchedulingGraph struct {
+    Nodes []GraphNode
+    Edges []GraphEdge
+    Paths []GraphPath
+}
+
+func (s *Scheduler) ExportGraph() *SchedulingGraph
+
+Can be consumed by external visualization tools.
+
+12.4 – Metrics dashboard data
+
+Expose comprehensive metrics:
+
+Scheduler metrics (from Chunk 10).
+ServiceRequest fulfillment rates.
+Path success/failure rates.
+Conflict rates.
+Re-planning frequency.
+DTN storage utilization.
+
+Via Prometheus or similar.
+
+12.5 – Tests
+
+In observability_test.go:
+
+Test state dump: scheduler state → complete dump generated.
+
+Test logging: scheduling decisions → logged with context.
+
+Test graph export: scheduler state → graph structure exported.
+
+Output:
+Comprehensive observability tools for debugging and monitoring scheduler behavior.
+
+Chunk 13 – End-to-End Integration & Example Scenarios
+
+Goal: Provide complete, working examples that demonstrate all Scope 5 features together.
+
+13.1 – Complex multi-hop scenario
+
+Create example scenario:
+
+5 LEO satellites in constellation.
+3 ground stations.
+10 ServiceRequests:
+    3 single-hop (ground-to-satellite).
+    4 multi-hop (ground-to-ground via satellites).
+    2 region-based (region-to-region).
+    1 cross-domain (if federation enabled).
+
+Document step-by-step:
+    How scheduler computes paths.
+    How conflicts are resolved.
+    How re-planning occurs.
+    Expected telemetry output.
+
+13.2 – Priority and preemption scenario
+
+Example with priority contention:
+
+5 ServiceRequests with priorities [10, 8, 5, 3, 1].
+All need same link with limited capacity.
+Demonstrate:
+    Higher priorities scheduled first.
+    Lower priorities preempted when needed.
+    Status updates reflect preemption.
+
+13.3 – DTN store-and-forward scenario
+
+Example with DTN:
+
+Source and destination never have direct path.
+Intermediate node with storage.
+Demonstrate:
+    Message stored at intermediate node.
+    Forwarded when next contact opens.
+    Delivery despite no direct path.
+
+13.4 – Scope 5 completion checklist
+
+Verify all features:
+
+Priority-based scheduling: ✓
+Multi-hop path computation: ✓
+Conflict detection/resolution: ✓
+Reactive re-planning: ✓
+DTN storage/forwarding: ✓
+ServiceRequest status tracking: ✓
+Enhanced telemetry: ✓
+Region-based SRs: ✓
+Federation support: ✓
+SrPolicy implementation: ✓
+Performance optimizations: ✓
+Observability: ✓
+
+Output:
+Complete examples and checklist demonstrating all Scope 5 capabilities working together.
+
