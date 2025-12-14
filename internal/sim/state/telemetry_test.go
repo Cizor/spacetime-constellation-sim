@@ -2,6 +2,7 @@ package state
 
 import (
 	"testing"
+	"time"
 )
 
 func TestTelemetryState_UpdateMetrics_NewEntry(t *testing.T) {
@@ -14,7 +15,7 @@ func TestTelemetryState_UpdateMetrics_NewEntry(t *testing.T) {
 		BytesTx:     100,
 		BytesRx:     50,
 		SNRdB:       25.5,
-		Modulation:   "QPSK",
+		Modulation:  "QPSK",
 	}
 
 	ts.UpdateMetrics(metrics)
@@ -206,3 +207,50 @@ func TestTelemetryState_ListAll_ReturnsCopies(t *testing.T) {
 	}
 }
 
+func TestTelemetryState_ModemMetricsLifecycle(t *testing.T) {
+	ts := NewTelemetryState()
+
+	m := &ModemMetrics{
+		NodeID:        "node1",
+		InterfaceID:   "if1",
+		SNRdB:         18.3,
+		Modulation:    "16QAM",
+		CodingRate:    "3/4",
+		BER:           1e-6,
+		ThroughputBps: 1_000_000,
+		Timestamp:     time.Unix(100, 0),
+	}
+
+	if err := ts.UpdateModemMetrics(m); err != nil {
+		t.Fatalf("UpdateModemMetrics failed: %v", err)
+	}
+
+	got, err := ts.GetModemMetrics("node1", "if1")
+	if err != nil {
+		t.Fatalf("GetModemMetrics returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected modem metrics, got nil")
+	}
+	if got.SNRdB != m.SNRdB {
+		t.Fatalf("SNR mismatch: got %f want %f", got.SNRdB, m.SNRdB)
+	}
+	if got.Modulation != m.Modulation {
+		t.Fatalf("modulation mismatch: got %s want %s", got.Modulation, m.Modulation)
+	}
+
+	// Ensure copy semantics
+	got.Modulation = "QPSK"
+	got2, _ := ts.GetModemMetrics("node1", "if1")
+	if got2.Modulation != "16QAM" {
+		t.Errorf("expected stored modulation to remain 16QAM, got %s", got2.Modulation)
+	}
+
+	if err := ts.UpdateModemMetrics(nil); err == nil {
+		t.Fatalf("expected error when updating nil modem metrics")
+	}
+
+	if err := ts.UpdateModemMetrics(&ModemMetrics{InterfaceID: ""}); err == nil {
+		t.Fatalf("expected error when interface ID is empty")
+	}
+}

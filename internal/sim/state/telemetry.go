@@ -2,7 +2,9 @@
 package state
 
 import (
+	"errors"
 	"sync"
+	"time"
 )
 
 // InterfaceMetrics represents per-interface telemetry metrics.
@@ -29,16 +31,38 @@ type InterfaceMetrics struct {
 	Modulation string
 }
 
+// ModemMetrics represents low-level modem stats per interface.
+type ModemMetrics struct {
+	// NodeID is optional but recommended to correlate with interface metrics.
+	NodeID string
+	// InterfaceID identifies the interface this modem data belongs to.
+	InterfaceID string
+	// SNRdB is the estimated signal-to-noise ratio in dB.
+	SNRdB float64
+	// Modulation describes the modulation scheme (e.g. "QPSK").
+	Modulation string
+	// CodingRate holds the forward error correction rate string.
+	CodingRate string
+	// BER is the bit error rate.
+	BER float64
+	// ThroughputBps is the current throughput estimate in bits per second.
+	ThroughputBps uint64
+	// Timestamp indicates when these metrics were captured.
+	Timestamp time.Time
+}
+
 // TelemetryState is a concurrency-safe store for interface metrics.
 type TelemetryState struct {
-	mu   sync.RWMutex
-	byIf map[string]*InterfaceMetrics // key: "nodeID/interfaceID"
+	mu    sync.RWMutex
+	byIf  map[string]*InterfaceMetrics // key: "nodeID/interfaceID"
+	modem map[string]*ModemMetrics     // key: "nodeID/interfaceID"
 }
 
 // NewTelemetryState creates a new TelemetryState instance.
 func NewTelemetryState() *TelemetryState {
 	return &TelemetryState{
-		byIf: make(map[string]*InterfaceMetrics),
+		byIf:  make(map[string]*InterfaceMetrics),
+		modem: make(map[string]*ModemMetrics),
 	}
 }
 
@@ -103,3 +127,36 @@ func (t *TelemetryState) ListAll() []*InterfaceMetrics {
 	return out
 }
 
+// UpdateModemMetrics stores modem metrics for an interface.
+func (t *TelemetryState) UpdateModemMetrics(m *ModemMetrics) error {
+	if m == nil {
+		return errors.New("modem metrics is nil")
+	}
+	if m.InterfaceID == "" {
+		return errors.New("interface ID is required")
+	}
+	key := telemetryKey(m.NodeID, m.InterfaceID)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	copy := *m
+	t.modem[key] = &copy
+	return nil
+}
+
+// GetModemMetrics retrieves modem metrics for an interface.
+func (t *TelemetryState) GetModemMetrics(nodeID, ifaceID string) (*ModemMetrics, error) {
+	key := telemetryKey(nodeID, ifaceID)
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	m, ok := t.modem[key]
+	if !ok || m == nil {
+		return nil, nil
+	}
+
+	copy := *m
+	return &copy, nil
+}
