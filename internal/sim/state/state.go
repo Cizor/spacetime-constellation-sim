@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,18 @@ var (
 	ErrServiceRequestExists = errors.New("service request already exists")
 	// ErrServiceRequestNotFound indicates a service request was not found.
 	ErrServiceRequestNotFound = errors.New("service request not found")
+	// ErrRegionExists indicates a region was already defined.
+	ErrRegionExists = errors.New("region already exists")
+	// ErrRegionNotFound indicates a requested region was not found.
+	ErrRegionNotFound = errors.New("region not found")
+	// ErrRegionInvalid indicates the supplied region definition is invalid.
+	ErrRegionInvalid = errors.New("invalid region")
+	// ErrDomainExists indicates a domain already exists.
+	ErrDomainExists = errors.New("domain already exists")
+	// ErrDomainNotFound indicates a requested domain was not found.
+	ErrDomainNotFound = errors.New("domain not found")
+	// ErrDomainInvalid indicates the supplied domain definition is invalid.
+	ErrDomainInvalid = errors.New("invalid domain")
 	// ErrPlatformInUse indicates a platform is still referenced by nodes.
 	ErrPlatformInUse = errors.New("platform is referenced by nodes")
 	// ErrNodeInUse indicates a node is still referenced by other resources.
@@ -56,7 +69,10 @@ var (
 	ErrInterfaceInUse = errors.New("interface is referenced by links")
 )
 
-const defaultLinkBandwidthBps = 1_000_000_000
+const (
+	defaultLinkBandwidthBps    = 1_000_000_000
+	defaultRegionMembershipTTL = 15 * time.Second
+)
 
 // ScenarioState coordinates the simulator's major knowledge bases and
 // holds transient NBI state like ServiceRequests.
@@ -79,6 +95,18 @@ type ScenarioState struct {
 	dtnStorage             map[string]*DTNStorage
 	// interfacePowerStates tracks allocated power per interface.
 	interfacePowerStates map[string]*InterfacePowerState
+	// regions store defined geographic regions.
+	regions map[string]*model.Region
+	// domains store federation scheduling domains.
+	domains map[string]*model.SchedulingDomain
+	// nodeDomains maps node -> domain ID.
+	nodeDomains map[string]string
+	// regionMembership caches recent membership snapshots, keyed by region ID.
+	regionMembership map[string]*regionMembershipEntry
+	// regionMembershipTTL controls how long cached membership is considered fresh.
+	regionMembershipTTL time.Duration
+	// regionMembershipHook is invoked when membership changes occur.
+	regionMembershipHook RegionMembershipHook
 
 	// motion is an optional motion model used by the simulator; it is
 	// reset alongside scenario clears.
@@ -157,6 +185,14 @@ type StoredMessage struct {
 	State            MessageState
 }
 
+// RegionMembershipHook is invoked when the cached membership set changes for a region.
+type RegionMembershipHook func(regionID string, left, entered []string)
+
+type regionMembershipEntry struct {
+	members   map[string]struct{}
+	updatedAt time.Time
+}
+
 // DTNStorage tracks stored messages and capacity for a single node.
 type DTNStorage struct {
 	NodeID        string
@@ -220,6 +256,11 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		serviceRequestStatuses: make(map[string]*model.ServiceRequestStatus),
 		dtnStorage:             make(map[string]*DTNStorage),
 		interfacePowerStates:   make(map[string]*InterfacePowerState),
+		regions:                make(map[string]*model.Region),
+		domains:                make(map[string]*model.SchedulingDomain),
+		nodeDomains:            make(map[string]string),
+		regionMembership:       make(map[string]*regionMembershipEntry),
+		regionMembershipTTL:    defaultRegionMembershipTTL,
 		expiryEvents:           make(map[string]string),
 		messageStates:          make(map[string]MessageState),
 		messageHistory:         make(map[string][]MessageStateTransition),
@@ -321,7 +362,6 @@ func (s *ScenarioState) CreatePlatform(pd *model.PlatformDefinition) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if err := s.physKB.AddPlatform(pd); err != nil {
 		if errors.Is(err, kb.ErrPlatformExists) {
@@ -360,7 +400,6 @@ func (s *ScenarioState) UpdatePlatform(pd *model.PlatformDefinition) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if err := s.physKB.UpdatePlatform(pd); err != nil {
 		if errors.Is(err, kb.ErrPlatformNotFound) {
@@ -376,7 +415,6 @@ func (s *ScenarioState) UpdatePlatform(pd *model.PlatformDefinition) error {
 // DeletePlatform removes a platform by ID.
 func (s *ScenarioState) DeletePlatform(id string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.physKB.GetPlatform(id) == nil {
 		return ErrPlatformNotFound
@@ -419,19 +457,20 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if node.PlatformID != "" && s.physKB.GetPlatform(node.PlatformID) == nil {
+		s.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrPlatformNotFound, node.PlatformID)
 	}
 	if existing := s.physKB.GetNetworkNode(node.ID); existing != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrNodeExists, node.ID)
 	}
 	if err := s.validateNodeInterfacesLocked(node.ID, interfaces); err != nil {
+		s.mu.Unlock()
 		return err
 	}
-
 	if err := s.physKB.AddNetworkNode(node); err != nil {
+		s.mu.Unlock()
 		if errors.Is(err, kb.ErrPlatformNotFound) {
 			return ErrPlatformNotFound
 		}
@@ -440,6 +479,8 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 		}
 		return err
 	}
+	s.dtnStorage[node.ID] = newDTNStorage(node)
+	s.mu.Unlock()
 
 	added := make([]string, 0, len(interfaces))
 	for _, iface := range interfaces {
@@ -448,6 +489,9 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 				_ = s.netKB.DeleteInterface(id)
 			}
 			_ = s.physKB.DeleteNetworkNode(node.ID)
+			s.mu.Lock()
+			delete(s.dtnStorage, node.ID)
+			s.mu.Unlock()
 			if errors.Is(err, network.ErrInterfaceExists) {
 				return fmt.Errorf("%w: %q", ErrInterfaceExists, iface.ID)
 			}
@@ -459,9 +503,9 @@ func (s *ScenarioState) CreateNode(node *model.NetworkNode, interfaces []*networ
 		added = append(added, iface.ID)
 	}
 
-	s.dtnStorage[node.ID] = newDTNStorage(node)
-
+	s.mu.Lock()
 	s.updateMetricsLocked()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -1196,6 +1240,10 @@ func (s *ScenarioState) CreateServiceRequest(sr *model.ServiceRequest) error {
 	}
 	s.serviceRequests[sr.ID] = sr
 
+	if sr.CreatedAt.IsZero() {
+		sr.CreatedAt = time.Now()
+	}
+
 	s.ensureServiceRequestStatusLocked(sr.ID)
 
 	s.updateMetricsLocked()
@@ -1413,6 +1461,23 @@ func cloneServiceRequestStatus(src *model.ServiceRequestStatus) *model.ServiceRe
 		dst.AllIntervals = append([]model.TimeInterval(nil), src.AllIntervals...)
 	}
 	return &dst
+}
+
+func difference(a, b map[string]struct{}) []string {
+	if len(a) == 0 {
+		return nil
+	}
+	var diff []string
+	for id := range a {
+		if b == nil {
+			diff = append(diff, id)
+			continue
+		}
+		if _, ok := b[id]; !ok {
+			diff = append(diff, id)
+		}
+	}
+	return diff
 }
 
 // AllocatePower reserves power for the given interface/entry combination.
@@ -1919,6 +1984,10 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 	s.serviceRequestStatuses = make(map[string]*model.ServiceRequestStatus)
 	s.interfacePowerStates = make(map[string]*InterfacePowerState)
 	s.dtnStorage = make(map[string]*DTNStorage)
+	s.regions = make(map[string]*model.Region)
+	s.regionMembership = make(map[string]*regionMembershipEntry)
+	s.domains = make(map[string]*model.SchedulingDomain)
+	s.nodeDomains = make(map[string]string)
 
 	if s.motion != nil {
 		s.motion.Reset()
@@ -1940,6 +2009,293 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// CreateRegion registers a geographic region for later membership queries.
+func (s *ScenarioState) CreateRegion(region *model.Region) error {
+	if region == nil {
+		return fmt.Errorf("%w: region is nil", ErrRegionInvalid)
+	}
+	if region.ID == "" {
+		return fmt.Errorf("%w: empty region ID", ErrRegionInvalid)
+	}
+	if err := validateRegion(region); err != nil {
+		return fmt.Errorf("%w: %v", ErrRegionInvalid, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.regions[region.ID]; exists {
+		return fmt.Errorf("%w: %q", ErrRegionExists, region.ID)
+	}
+	s.regions[region.ID] = cloneRegion(region)
+	return nil
+}
+
+// GetRegion returns the region definition for regionID.
+func (s *ScenarioState) GetRegion(regionID string) (*model.Region, error) {
+	if regionID == "" {
+		return nil, fmt.Errorf("%w: empty region ID", ErrRegionNotFound)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	region := s.regions[regionID]
+	if region == nil {
+		return nil, fmt.Errorf("%w: %q", ErrRegionNotFound, regionID)
+	}
+	return cloneRegion(region), nil
+}
+
+// ListRegions returns all configured regions.
+func (s *ScenarioState) ListRegions() []*model.Region {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	res := make([]*model.Region, 0, len(s.regions))
+	for _, region := range s.regions {
+		res = append(res, cloneRegion(region))
+	}
+	return res
+}
+
+// DeleteRegion removes the specified region.
+func (s *ScenarioState) DeleteRegion(regionID string) error {
+	if regionID == "" {
+		return fmt.Errorf("%w: empty region ID", ErrRegionNotFound)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.regions[regionID]; !exists {
+		return fmt.Errorf("%w: %q", ErrRegionNotFound, regionID)
+	}
+	delete(s.regions, regionID)
+	return nil
+}
+
+// CreateDomain registers a federation scheduling domain.
+func (s *ScenarioState) CreateDomain(domain *model.SchedulingDomain) error {
+	if err := validateDomain(domain); err != nil {
+		return fmt.Errorf("%w: %v", ErrDomainInvalid, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	domainID := domain.DomainID
+	if _, exists := s.domains[domainID]; exists {
+		return fmt.Errorf("%w: %q", ErrDomainExists, domainID)
+	}
+
+	uniqueNodes := make([]string, 0, len(domain.Nodes))
+	seen := make(map[string]struct{})
+	for _, nodeID := range domain.Nodes {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID == "" {
+			return fmt.Errorf("%w: domain %q has empty node entry", ErrDomainInvalid, domainID)
+		}
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		node := s.physKB.GetNetworkNode(nodeID)
+		if node == nil {
+			return fmt.Errorf("%w: %q", ErrNodeNotFound, nodeID)
+		}
+		if existing := s.nodeDomains[nodeID]; existing != "" {
+			return fmt.Errorf("%w: node %q already assigned to %q", ErrDomainInvalid, nodeID, existing)
+		}
+		uniqueNodes = append(uniqueNodes, nodeID)
+	}
+
+	cloned := cloneDomain(domain)
+	if len(uniqueNodes) > 0 {
+		cloned.Nodes = append([]string(nil), uniqueNodes...)
+	} else {
+		cloned.Nodes = nil
+	}
+
+	s.domains[domainID] = cloned
+	for _, nodeID := range uniqueNodes {
+		s.nodeDomains[nodeID] = domainID
+	}
+	return nil
+}
+
+// GetDomain returns the domain definition for domainID.
+func (s *ScenarioState) GetDomain(domainID string) (*model.SchedulingDomain, error) {
+	if strings.TrimSpace(domainID) == "" {
+		return nil, fmt.Errorf("%w: empty domain ID", ErrDomainNotFound)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	domain := s.domains[domainID]
+	if domain == nil {
+		return nil, fmt.Errorf("%w: %q", ErrDomainNotFound, domainID)
+	}
+	return cloneDomain(domain), nil
+}
+
+// ListDomains returns all configured domains.
+func (s *ScenarioState) ListDomains() []*model.SchedulingDomain {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*model.SchedulingDomain, 0, len(s.domains))
+	for _, domain := range s.domains {
+		result = append(result, cloneDomain(domain))
+	}
+	return result
+}
+
+// DeleteDomain removes the specified federation domain.
+func (s *ScenarioState) DeleteDomain(domainID string) error {
+	if strings.TrimSpace(domainID) == "" {
+		return fmt.Errorf("%w: empty domain ID", ErrDomainNotFound)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.domains[domainID]; !exists {
+		return fmt.Errorf("%w: %q", ErrDomainNotFound, domainID)
+	}
+	delete(s.domains, domainID)
+	for nodeID, assigned := range s.nodeDomains {
+		if assigned == domainID {
+			delete(s.nodeDomains, nodeID)
+		}
+	}
+	return nil
+}
+
+// SetRegionMembershipTTL configures how long cached membership snapshots remain valid.
+func (s *ScenarioState) SetRegionMembershipTTL(ttl time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.regionMembershipTTL = ttl
+}
+
+// SetRegionMembershipHook registers a callback invoked whenever membership changes.
+func (s *ScenarioState) SetRegionMembershipHook(hook RegionMembershipHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.regionMembershipHook = hook
+}
+
+// UpdateRegionMembership recomputes the nodes currently inside regionID.
+func (s *ScenarioState) UpdateRegionMembership(regionID string) error {
+	region, err := s.GetRegion(regionID)
+	if err != nil {
+		return err
+	}
+	now := s.now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var prevMembers map[string]struct{}
+	entry := s.regionMembership[regionID]
+	if entry != nil && len(entry.members) > 0 {
+		prevMembers = make(map[string]struct{}, len(entry.members))
+		for nodeID := range entry.members {
+			prevMembers[nodeID] = struct{}{}
+		}
+	} else {
+		prevMembers = nil
+	}
+
+	newMembers := make(map[string]struct{})
+	if s.physKB != nil {
+		for _, node := range s.physKB.ListNetworkNodes() {
+			if node == nil {
+				continue
+			}
+			if coords, ok := s.nodeCoordinates(node); ok && regionContains(region, coords) {
+				newMembers[node.ID] = struct{}{}
+			}
+		}
+	}
+
+	left := difference(prevMembers, newMembers)
+	entered := difference(newMembers, prevMembers)
+
+	if entry == nil {
+		entry = &regionMembershipEntry{}
+	}
+	entry.members = newMembers
+	entry.updatedAt = now
+	s.regionMembership[regionID] = entry
+	hook := s.regionMembershipHook
+	s.mu.Unlock()
+	if hook != nil && (len(left) > 0 || len(entered) > 0) {
+		hook(regionID, left, entered)
+	}
+	return nil
+}
+
+// CheckRegionMembership reports whether nodeID currently falls inside regionID.
+func (s *ScenarioState) CheckRegionMembership(nodeID, regionID string) bool {
+	if nodeID == "" || regionID == "" {
+		return false
+	}
+	now := s.now()
+	s.mu.RLock()
+	entry := s.regionMembership[regionID]
+	ttl := s.regionMembershipTTL
+	members := entry != nil && entry.members != nil
+	var member bool
+	if members {
+		_, member = entry.members[nodeID]
+	}
+	stale := entry == nil || ttl <= 0 || now.Sub(entry.updatedAt) > ttl
+	s.mu.RUnlock()
+
+	if !stale {
+		return member
+	}
+	if err := s.UpdateRegionMembership(regionID); err != nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entry = s.regionMembership[regionID]
+	if entry == nil || entry.members == nil {
+		return false
+	}
+	_, member = entry.members[nodeID]
+	return member
+}
+
+// GetDomainForNode returns the domain ID that owns nodeID.
+func (s *ScenarioState) GetDomainForNode(nodeID string) (string, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return "", fmt.Errorf("%w: empty node ID", ErrNodeInvalid)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.physKB.GetNetworkNode(nodeID) == nil {
+		return "", fmt.Errorf("%w: %q", ErrNodeNotFound, nodeID)
+	}
+	domainID := s.nodeDomains[nodeID]
+	if domainID == "" {
+		return "", fmt.Errorf("%w: node %q", ErrDomainNotFound, nodeID)
+	}
+	return domainID, nil
+}
+
+// GetNodesInRegion returns the node IDs that currently fall inside regionID.
+func (s *ScenarioState) GetNodesInRegion(regionID string) ([]string, error) {
+	region, err := s.GetRegion(regionID)
+	if err != nil {
+		return nil, err
+	}
+	if s.physKB == nil {
+		return nil, nil
+	}
+	var ids []string
+	for _, node := range s.physKB.ListNetworkNodes() {
+		if coords, ok := s.nodeCoordinates(node); ok && regionContains(region, coords) {
+			ids = append(ids, node.ID)
+		}
+	}
+	return ids, nil
 }
 
 func (s *ScenarioState) now() time.Time {
@@ -2065,4 +2421,123 @@ func (s *ScenarioState) findStoredMessageLocked(msgID string) *StoredMessage {
 		storage.mu.RUnlock()
 	}
 	return nil
+}
+
+const metresPerKilometre = 1000.0
+
+func validateRegion(region *model.Region) error {
+	switch region.Type {
+	case model.RegionTypeCircle:
+		if region.RadiusKm <= 0 {
+			return errors.New("circle radius must be positive")
+		}
+	case model.RegionTypePolygon:
+		if len(region.Vertices) < 3 {
+			return errors.New("polygon requires at least 3 vertices")
+		}
+	case model.RegionTypeCountry:
+		if strings.TrimSpace(region.CountryCode) == "" {
+			return errors.New("country code required")
+		}
+	default:
+		return fmt.Errorf("unknown region type %q", region.Type)
+	}
+	return nil
+}
+
+func cloneRegion(region *model.Region) *model.Region {
+	if region == nil {
+		return nil
+	}
+	clone := *region
+	if len(region.Vertices) > 0 {
+		clone.Vertices = append([]model.Coordinates(nil), region.Vertices...)
+	}
+	return &clone
+}
+
+func validateDomain(domain *model.SchedulingDomain) error {
+	if domain == nil {
+		return errors.New("domain is nil")
+	}
+	if strings.TrimSpace(domain.DomainID) == "" {
+		return errors.New("domain ID is required")
+	}
+	if domain.FederationEndpoint != "" {
+		if _, err := url.ParseRequestURI(domain.FederationEndpoint); err != nil {
+			return fmt.Errorf("invalid federation endpoint: %w", err)
+		}
+	}
+	return nil
+}
+
+func cloneDomain(domain *model.SchedulingDomain) *model.SchedulingDomain {
+	if domain == nil {
+		return nil
+	}
+	clone := *domain
+	if len(domain.Nodes) > 0 {
+		clone.Nodes = append([]string(nil), domain.Nodes...)
+	}
+	if len(domain.Capabilities) > 0 {
+		clone.Capabilities = make(map[string]interface{}, len(domain.Capabilities))
+		for key, value := range domain.Capabilities {
+			clone.Capabilities[key] = value
+		}
+	} else {
+		clone.Capabilities = nil
+	}
+	return &clone
+}
+
+func (s *ScenarioState) nodeCoordinates(node *model.NetworkNode) (model.Coordinates, bool) {
+	if node == nil || node.PlatformID == "" || s.physKB == nil {
+		return model.Coordinates{}, false
+	}
+	platform := s.physKB.GetPlatform(node.PlatformID)
+	if platform == nil {
+		return model.Coordinates{}, false
+	}
+	return model.Coordinates{
+		X: platform.Coordinates.X,
+		Y: platform.Coordinates.Y,
+		Z: platform.Coordinates.Z,
+	}, true
+}
+
+func regionContains(region *model.Region, point model.Coordinates) bool {
+	if region == nil {
+		return false
+	}
+	switch region.Type {
+	case model.RegionTypeCircle:
+		return distanceMeters(region.Center, point) <= region.RadiusKm*metresPerKilometre
+	case model.RegionTypePolygon:
+		return pointInPolygon(point, region.Vertices)
+	case model.RegionTypeCountry:
+		return false // country membership not yet implemented
+	default:
+		return false
+	}
+}
+
+func distanceMeters(a, b model.Coordinates) float64 {
+	return math.Sqrt((a.X-b.X)*(a.X-b.X) + (a.Y-b.Y)*(a.Y-b.Y) + (a.Z-b.Z)*(a.Z-b.Z))
+}
+
+func pointInPolygon(point model.Coordinates, vertices []model.Coordinates) bool {
+	if len(vertices) < 3 {
+		return false
+	}
+	inside := false
+	for i, j := 0, len(vertices)-1; i < len(vertices); j, i = i, i+1 {
+		vi := vertices[i]
+		vj := vertices[j]
+		intersect := ((vi.Y > point.Y) != (vj.Y > point.Y)) &&
+			(point.X < (vj.X-vi.X)*(point.Y-vi.Y)/(vj.Y-vi.Y)+vi.X)
+		if intersect {
+			inside = !inside
+		}
+	}
+	return inside
 }
