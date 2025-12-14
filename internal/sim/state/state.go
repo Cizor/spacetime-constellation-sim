@@ -93,6 +93,14 @@ type ScenarioState struct {
 
 	// metrics is an optional recorder for Prometheus-friendly gauges.
 	metrics ScenarioMetricsRecorder
+	// scheduler is used to drive DTN message lifecycle events.
+	scheduler sbi.EventScheduler
+	// expiryEvents maps message IDs to scheduled expiry event IDs.
+	expiryEvents map[string]string
+	// messageStates stores the latest MessageState for each message.
+	messageStates map[string]MessageState
+	// messageHistory tracks transitions per message.
+	messageHistory map[string][]MessageStateTransition
 }
 
 // InterfacePowerState tracks the power usage on an interface.
@@ -126,10 +134,17 @@ type MessageState string
 
 const (
 	MessageStatePending   MessageState = "pending"
+	MessageStateInTransit MessageState = "in_transit"
 	MessageStateStored    MessageState = "stored"
-	MessageStateForwarded MessageState = "forwarded"
+	MessageStateDelivered MessageState = "delivered"
 	MessageStateExpired   MessageState = "expired"
 )
+
+// MessageStateTransition records when a message entered a particular state.
+type MessageStateTransition struct {
+	State MessageState
+	Time  time.Time
+}
 
 // StoredMessage captures metadata about a DTN message stored on a node.
 type StoredMessage struct {
@@ -185,6 +200,13 @@ func WithMetricsRecorder(m ScenarioMetricsRecorder) ScenarioStateOption {
 	}
 }
 
+// WithEventScheduler attaches an EventScheduler used to drive DTN lifecycle transitions.
+func WithEventScheduler(es sbi.EventScheduler) ScenarioStateOption {
+	return func(s *ScenarioState) {
+		s.scheduler = es
+	}
+}
+
 // NewScenarioState wires together the scope-1 and scope-2 knowledge bases
 // and prepares an empty ServiceRequest store.
 func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log logging.Logger, opts ...ScenarioStateOption) *ScenarioState {
@@ -198,6 +220,9 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		serviceRequestStatuses: make(map[string]*model.ServiceRequestStatus),
 		dtnStorage:             make(map[string]*DTNStorage),
 		interfacePowerStates:   make(map[string]*InterfacePowerState),
+		expiryEvents:           make(map[string]string),
+		messageStates:          make(map[string]MessageState),
+		messageHistory:         make(map[string][]MessageStateTransition),
 		log:                    log,
 	}
 	for _, opt := range opts {
@@ -1590,14 +1615,24 @@ func (s *ScenarioState) StoreMessage(nodeID string, msg StoredMessage) error {
 		return fmt.Errorf("message %q must specify a positive size", msg.MessageID)
 	}
 	if msg.ArrivalTime.IsZero() {
-		msg.ArrivalTime = time.Now()
+		msg.ArrivalTime = s.now()
 	}
-	msg.State = MessageStateStored
+	state := MessageStateStored
+	if msg.Destination != "" && msg.Destination == nodeID {
+		state = MessageStateDelivered
+	}
+	msg.State = state
 	storage, err := s.getStorage(nodeID)
 	if err != nil {
 		return err
 	}
-	return storage.storeMessage(msg)
+	if err := storage.storeMessage(msg); err != nil {
+		return err
+	}
+	s.recordMessageState(msg.MessageID, msg.State, msg.ArrivalTime)
+	s.cancelExpiryEvent(msg.MessageID)
+	s.scheduleExpiryEvent(nodeID, msg)
+	return nil
 }
 
 // RetrieveMessage returns and removes a stored DTN message from a node.
@@ -1614,7 +1649,13 @@ func (s *ScenarioState) RetrieveMessage(nodeID, msgID string) (*StoredMessage, e
 	if storage == nil {
 		return nil, ErrNodeNotFound
 	}
-	return storage.retrieveMessage(msgID)
+	msg, err := storage.retrieveMessage(msgID)
+	if err != nil {
+		return nil, err
+	}
+	s.recordMessageState(msg.MessageID, MessageStateInTransit, s.now())
+	s.cancelExpiryEvent(msg.MessageID)
+	return msg, nil
 }
 
 // GetStorageUsage returns the bytes used and configured capacity for a node's DTN storage.
@@ -1644,7 +1685,11 @@ func (s *ScenarioState) EvictExpiredMessages(nodeID string, now time.Time) error
 	if storage == nil {
 		return ErrNodeNotFound
 	}
-	storage.evictExpired(now)
+	expired := storage.evictExpired(now)
+	for _, msg := range expired {
+		s.recordMessageState(msg.MessageID, MessageStateExpired, now)
+		s.cancelExpiryEvent(msg.MessageID)
+	}
 	return nil
 }
 
@@ -1746,7 +1791,6 @@ func (d *DTNStorage) storeMessage(msg StoredMessage) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	msg.State = MessageStateStored
 	d.Messages = append(d.Messages, msg)
 	return nil
 }
@@ -1763,17 +1807,18 @@ func (d *DTNStorage) retrieveMessage(msgID string) (*StoredMessage, error) {
 			} else {
 				d.UsedBytes -= stored.SizeBytes
 			}
-			stored.State = MessageStateForwarded
+			stored.State = MessageStateInTransit
 			return &stored, nil
 		}
 	}
 	return nil, fmt.Errorf("message %q not found", msgID)
 }
 
-func (d *DTNStorage) evictExpired(now time.Time) {
+func (d *DTNStorage) evictExpired(now time.Time) []StoredMessage {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	filtered := d.Messages[:0]
+	var expired []StoredMessage
 	for _, msg := range d.Messages {
 		if !msg.ExpiryTime.IsZero() && !msg.ExpiryTime.After(now) {
 			msg.State = MessageStateExpired
@@ -1782,11 +1827,13 @@ func (d *DTNStorage) evictExpired(now time.Time) {
 			} else {
 				d.UsedBytes -= msg.SizeBytes
 			}
+			expired = append(expired, msg)
 			continue
 		}
 		filtered = append(filtered, msg)
 	}
 	d.Messages = filtered
+	return expired
 }
 
 // ClearScenario wipes all in-memory scenario data so a fresh scenario
@@ -1850,5 +1897,130 @@ func (s *ScenarioState) ClearScenario(ctx context.Context) error {
 		logging.Int("service_requests", serviceRequests),
 	)
 
+	return nil
+}
+
+func (s *ScenarioState) now() time.Time {
+	if s.scheduler != nil {
+		return s.scheduler.Now()
+	}
+	return time.Now()
+}
+
+func (s *ScenarioState) recordMessageState(msgID string, state MessageState, at time.Time) {
+	if msgID == "" {
+		return
+	}
+	if at.IsZero() {
+		at = s.now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.messageHistory == nil {
+		s.messageHistory = make(map[string][]MessageStateTransition)
+	}
+	s.messageHistory[msgID] = append(s.messageHistory[msgID], MessageStateTransition{
+		State: state,
+		Time:  at,
+	})
+	s.messageStates[msgID] = state
+}
+
+func (s *ScenarioState) cancelExpiryEvent(msgID string) {
+	if s.scheduler == nil || msgID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.expiryEvents == nil {
+		return
+	}
+	id, ok := s.expiryEvents[msgID]
+	if !ok {
+		return
+	}
+	delete(s.expiryEvents, msgID)
+	s.scheduler.Cancel(id)
+}
+
+func (s *ScenarioState) scheduleExpiryEvent(nodeID string, msg StoredMessage) {
+	if s.scheduler == nil || msg.MessageID == "" || msg.ExpiryTime.IsZero() {
+		return
+	}
+	when := msg.ExpiryTime
+	if when.Before(s.now()) {
+		go s.handleMessageExpiry(nodeID, msg.MessageID, when)
+		return
+	}
+	msgID := msg.MessageID
+	eventID := s.scheduler.Schedule(when, func() {
+		s.handleMessageExpiry(nodeID, msgID, when)
+	})
+	s.mu.Lock()
+	if s.expiryEvents == nil {
+		s.expiryEvents = make(map[string]string)
+	}
+	s.expiryEvents[msgID] = eventID
+	s.mu.Unlock()
+}
+
+func (s *ScenarioState) handleMessageExpiry(nodeID, msgID string, when time.Time) {
+	if nodeID == "" || msgID == "" {
+		return
+	}
+	_ = s.EvictExpiredMessages(nodeID, when)
+	s.cancelExpiryEvent(msgID)
+	s.recordMessageState(msgID, MessageStateExpired, when)
+}
+
+// GetMessageState returns the latest state and history for the given message.
+// The bool return indicates whether the message is known to the state tracker.
+func (s *ScenarioState) GetMessageState(msgID string) (MessageState, []MessageStateTransition, bool) {
+	if msgID == "" {
+		return "", nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, ok := s.messageStates[msgID]
+	history := append([]MessageStateTransition(nil), s.messageHistory[msgID]...)
+	return state, history, ok
+}
+
+// MessagesInState returns the stored messages currently tracked in the specified state.
+func (s *ScenarioState) MessagesInState(state MessageState) []StoredMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var results []StoredMessage
+	for msgID, msgState := range s.messageStates {
+		if msgState != state {
+			continue
+		}
+		if stored := s.findStoredMessageLocked(msgID); stored != nil {
+			results = append(results, *stored)
+			continue
+		}
+		results = append(results, StoredMessage{
+			MessageID: msgID,
+			State:     msgState,
+		})
+	}
+	return results
+}
+
+func (s *ScenarioState) findStoredMessageLocked(msgID string) *StoredMessage {
+	for _, storage := range s.dtnStorage {
+		if storage == nil {
+			continue
+		}
+		storage.mu.RLock()
+		for _, msg := range storage.Messages {
+			if msg.MessageID == msgID {
+				copy := msg
+				storage.mu.RUnlock()
+				return &copy
+			}
+		}
+		storage.mu.RUnlock()
+	}
 	return nil
 }
