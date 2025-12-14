@@ -3,6 +3,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
@@ -56,6 +57,7 @@ func (s *TelemetryServer) ExportMetrics(
 	nodeID := extractNodeIDFromContext(ctx)
 
 	processed := 0
+	processedModem := 0
 	for _, protoMetrics := range req.GetInterfaceMetrics() {
 		if protoMetrics == nil {
 			continue
@@ -110,6 +112,57 @@ func (s *TelemetryServer) ExportMetrics(
 			logging.Int("count", processed),
 		)
 	}
+	for _, protoModem := range req.GetModemMetrics() {
+		if protoModem == nil {
+			continue
+		}
+
+		demodID := protoModem.GetDemodulatorId()
+		if demodID == "" {
+			continue
+		}
+
+		var sinr float64
+		var modulation string
+		var timestamp time.Time
+		if points := protoModem.GetSinrDataPoints(); len(points) > 0 {
+			if latest := points[len(points)-1]; latest != nil {
+				if latest.SinrDb != nil {
+					sinr = *latest.SinrDb
+				}
+				if latest.ModulatorId != nil {
+					modulation = *latest.ModulatorId
+				}
+				if latest.Time != nil {
+					timestamp = latest.Time.AsTime()
+				}
+			}
+		}
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
+
+		metrics := &state.ModemMetrics{
+			NodeID:      nodeID,
+			InterfaceID: demodID,
+			SNRdB:       sinr,
+			Modulation:  modulation,
+			Timestamp:   timestamp,
+		}
+		if err := s.Telemetry.UpdateModemMetrics(metrics); err != nil {
+			s.log.Error(ctx, "telemetry: failed to store modem metrics",
+				logging.String("interface", demodID),
+				logging.Any("error", err),
+			)
+			continue
+		}
+		processedModem++
+	}
+	if processedModem > 0 {
+		s.log.Debug(ctx, "exported modem metrics",
+			logging.Int("count", processedModem),
+		)
+	}
 
 	// Increment metrics counter for each ExportMetrics call
 	if s.Metrics != nil {
@@ -133,4 +186,3 @@ func extractNodeIDFromContext(ctx context.Context) string {
 	}
 	return ""
 }
-

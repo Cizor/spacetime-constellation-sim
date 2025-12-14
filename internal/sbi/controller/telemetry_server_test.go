@@ -180,7 +180,49 @@ func TestTelemetryServer_ExportMetrics_NilTelemetryState(t *testing.T) {
 	}
 }
 
+func TestTelemetryServer_ExportMetrics_ModemMetrics(t *testing.T) {
+	telemetryState := state.NewTelemetryState()
+	log := logging.Noop()
+	server := NewTelemetryServer(telemetryState, log)
+
+	now := timestamppb.Now()
+	sinrVal := 15.5
+	req := &telemetrypb.ExportMetricsRequest{
+		ModemMetrics: []*telemetrypb.ModemMetrics{
+			{
+				DemodulatorId: stringPtr("if1"),
+				SinrDataPoints: []*telemetrypb.SinrDataPoint{
+					{
+						Time:        now,
+						ModulatorId: stringPtr("QPSK"),
+						SinrDb:      &sinrVal,
+					},
+				},
+			},
+		},
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("x-node-id", "node1"))
+
+	if _, err := server.ExportMetrics(ctx, req); err != nil {
+		t.Fatalf("ExportMetrics failed: %v", err)
+	}
+
+	modemMetrics, err := telemetryState.GetModemMetrics("node1", "if1")
+	if err != nil {
+		t.Fatalf("GetModemMetrics failed: %v", err)
+	}
+	if modemMetrics == nil {
+		t.Fatalf("expected modem metrics to be stored")
+	}
+	if modemMetrics.SNRdB != sinrVal {
+		t.Fatalf("expected SNR %f got %f", sinrVal, modemMetrics.SNRdB)
+	}
+	if modemMetrics.Modulation != "QPSK" {
+		t.Fatalf("expected modulation QPSK, got %s", modemMetrics.Modulation)
+	}
+}
+
 func stringPtr(s string) *string {
 	return &s
 }
-

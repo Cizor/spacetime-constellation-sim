@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -1005,9 +1006,9 @@ func (a *SimAgent) telemetryTick() {
 
 	// Build interface metrics
 	deltaSec := delta.Seconds()
-	metrics := a.buildInterfaceMetrics(deltaSec)
+	metrics, modemMetrics := a.buildInterfaceMetrics(deltaSec)
 
-	if len(metrics) == 0 {
+	if len(metrics) == 0 && len(modemMetrics) == 0 {
 		// No interfaces to report - reschedule anyway
 		a.rescheduleTelemetry()
 		return
@@ -1016,6 +1017,7 @@ func (a *SimAgent) telemetryTick() {
 	// Build ExportMetricsRequest
 	req := &telemetrypb.ExportMetricsRequest{
 		InterfaceMetrics: metrics,
+		ModemMetrics:     modemMetrics,
 	}
 
 	// Send metrics to controller (with node_id in metadata)
@@ -1053,22 +1055,24 @@ func (a *SimAgent) rescheduleTelemetry() {
 }
 
 // buildInterfaceMetrics builds telemetry metrics for all interfaces on this agent's node.
-// It uses deriveInterfaceState to determine up/down status and bandwidth.
-func (a *SimAgent) buildInterfaceMetrics(deltaSec float64) []*telemetrypb.InterfaceMetrics {
+// It uses deriveInterfaceState to determine up/down state and bandwidth, and
+// additionally includes modem metrics for each interface.
+func (a *SimAgent) buildInterfaceMetrics(deltaSec float64) ([]*telemetrypb.InterfaceMetrics, []*telemetrypb.ModemMetrics) {
 	if a.State == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Get all interfaces for this node
 	interfaces := a.State.ListInterfacesForNode(a.NodeID)
 	if len(interfaces) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	now := a.Scheduler.Now()
 	nowProto := timestamppb.New(now)
 
 	var result []*telemetrypb.InterfaceMetrics
+	var modemResult []*telemetrypb.ModemMetrics
 
 	for _, iface := range interfaces {
 		// Derive interface state (up/down, bandwidth)
@@ -1115,9 +1119,15 @@ func (a *SimAgent) buildInterfaceMetrics(deltaSec float64) []*telemetrypb.Interf
 		}
 
 		result = append(result, metrics)
+
+		if modem := a.CollectModemMetrics(a.NodeID, iface); modem != nil {
+			if proto := a.modemMetricsToProto(modem); proto != nil {
+				modemResult = append(modemResult, proto)
+			}
+		}
 	}
 
-	return result
+	return result, modemResult
 }
 
 // deriveInterfaceState determines the operational state and bandwidth for an interface.
@@ -1129,54 +1139,133 @@ func (a *SimAgent) deriveInterfaceState(nodeID, ifaceID string) (bool, float64) 
 	if a.State == nil {
 		return false, 0
 	}
+	up, bandwidth, _ := a.interfaceStats(nodeID, ifaceID)
+	return up, bandwidth
+}
 
-	// Get all links - we'll filter by interface
+func (a *SimAgent) interfaceStats(nodeID, ifaceID string) (bool, float64, float64) {
+	if a.State == nil {
+		return false, 0, 0
+	}
+
 	allLinks := a.State.ListLinks()
-
-	// Build possible interface references (with and without nodeID prefix)
 	ifaceRef := nodeID + "/" + ifaceID
 
-	// Filter links that connect to this interface
-	var links []*core.NetworkLink
+	var maxBandwidthMbps float64
+	bestSNR := math.Inf(-1)
+	hasActiveLink := false
+
 	for _, link := range allLinks {
 		if link == nil {
 			continue
 		}
-		// Check if this link connects to our interface (either direction)
-		if link.InterfaceA == ifaceID || link.InterfaceA == ifaceRef ||
-			link.InterfaceB == ifaceID || link.InterfaceB == ifaceRef {
-			links = append(links, link)
+		if !linkConnectsInterface(link, ifaceID, ifaceRef) {
+			continue
 		}
-	}
-
-	if len(links) == 0 {
-		return false, 0
-	}
-
-	// Check if any link is active and up
-	var maxBandwidthMbps float64
-	hasActiveLink := false
-
-	for _, link := range links {
-		// Link is considered "up" if it's Active and IsUp
 		if link.Status == core.LinkStatusActive && link.IsUp {
 			hasActiveLink = true
-			// Track maximum bandwidth across all active links
 			if link.MaxDataRateMbps > maxBandwidthMbps {
 				maxBandwidthMbps = link.MaxDataRateMbps
+			}
+			if link.SNRdB > bestSNR {
+				bestSNR = link.SNRdB
 			}
 		}
 	}
 
-	// Convert Mbps to bps (bits per second)
-	bandwidthBps := maxBandwidthMbps * 1e6
+	if !hasActiveLink {
+		return false, 0, 0
+	}
 
-	return hasActiveLink, bandwidthBps
+	bandwidthBps := maxBandwidthMbps * 1e6
+	return hasActiveLink, bandwidthBps, bestSNR
+}
+
+func linkConnectsInterface(link *core.NetworkLink, ifaceID, ifaceRef string) bool {
+	return link.InterfaceA == ifaceID || link.InterfaceA == ifaceRef || link.InterfaceB == ifaceID || link.InterfaceB == ifaceRef
+}
+
+// CollectModemMetrics builds modem-level metrics for the given interface.
+func (a *SimAgent) CollectModemMetrics(nodeID string, iface *core.NetworkInterface) *state.ModemMetrics {
+	if a.State == nil || iface == nil {
+		return nil
+	}
+
+	_, bandwidthBps, snr := a.interfaceStats(nodeID, iface.ID)
+	trx := a.State.NetworkKB().GetTransceiverModel(iface.TransceiverID)
+
+	modulation := "unknown"
+	if trx != nil {
+		if trx.Name != "" {
+			modulation = trx.Name
+		} else if trx.ID != "" {
+			modulation = trx.ID
+		}
+	}
+
+	timestamp := a.Scheduler.Now()
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+
+	return &state.ModemMetrics{
+		NodeID:        nodeID,
+		InterfaceID:   iface.ID,
+		SNRdB:         snr,
+		Modulation:    modulation,
+		CodingRate:    "1/2",
+		BER:           a.estimateBER(snr),
+		ThroughputBps: uint64(bandwidthBps),
+		Timestamp:     timestamp,
+	}
+}
+
+func (a *SimAgent) estimateBER(snr float64) float64 {
+	if snr <= 0 {
+		return 1e-3
+	}
+	linear := math.Pow(10, snr/10)
+	if linear <= 0 {
+		return 1e-3
+	}
+	return 0.5 * math.Erfc(math.Sqrt(linear)/math.Sqrt2)
+}
+
+func (a *SimAgent) modemMetricsToProto(m *state.ModemMetrics) *telemetrypb.ModemMetrics {
+	if m == nil || m.InterfaceID == "" {
+		return nil
+	}
+	ts := m.Timestamp
+	if ts.IsZero() {
+		ts = a.Scheduler.Now()
+	}
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	modulator := m.Modulation
+	if modulator == "" {
+		modulator = "unknown"
+	}
+	sinrVal := m.SNRdB
+	return &telemetrypb.ModemMetrics{
+		DemodulatorId: stringPtr(m.InterfaceID),
+		SinrDataPoints: []*telemetrypb.SinrDataPoint{
+			{
+				Time:        timestamppb.New(ts),
+				ModulatorId: stringPtr(modulator),
+				SinrDb:      float64Ptr(sinrVal),
+			},
+		},
+	}
 }
 
 // stringPtr returns a pointer to the given string.
 func stringPtr(s string) *string {
 	return &s
+}
+
+func float64Ptr(f float64) *float64 {
+	return &f
 }
 
 // getNodeIDFromInterfaceRef extracts the node ID from an interface reference.

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +32,8 @@ func TestSimAgent_DumpAgentState_Basic(t *testing.T) {
 		When:    time.Now(),
 		Type:    sbi.ScheduledUpdateBeam,
 		Beam: &sbi.BeamSpec{
-			NodeID:      "node1",
-			InterfaceID: "if1",
+			NodeID:       "node1",
+			InterfaceID:  "if1",
 			TargetNodeID: "node2",
 			TargetIfID:   "if2",
 		},
@@ -82,13 +83,13 @@ func TestSimAgent_DumpAgentState_WithTelemetry(t *testing.T) {
 	// Create telemetry state with metrics
 	telemetryState := state.NewTelemetryState()
 	telemetryState.UpdateMetrics(&state.InterfaceMetrics{
-		NodeID:     "node1",
+		NodeID:      "node1",
 		InterfaceID: "if1",
-		Up:         true,
-		BytesTx:    1000,
-		BytesRx:    500,
-		SNRdB:      25.5,
-		Modulation: "QPSK",
+		Up:          true,
+		BytesTx:     1000,
+		BytesRx:     500,
+		SNRdB:       25.5,
+		Modulation:  "QPSK",
 	})
 
 	dump := agent.DumpAgentState(telemetryState)
@@ -157,3 +158,64 @@ func TestSimAgent_DumpAgentState_WithMetrics(t *testing.T) {
 	}
 }
 
+func TestSimAgent_CollectModemMetrics(t *testing.T) {
+	physKB := kb.NewKnowledgeBase()
+	netKB := core.NewKnowledgeBase()
+	log := logging.Noop()
+	scenarioState := state.NewScenarioState(physKB, netKB, log)
+
+	node1 := &model.NetworkNode{ID: "node1"}
+	if err := scenarioState.CreateNode(node1, []*core.NetworkInterface{
+		{ID: "if1", ParentNodeID: "node1", IsOperational: true, TransceiverID: "trx1"},
+	}); err != nil {
+		t.Fatalf("CreateNode node1 failed: %v", err)
+	}
+	if err := scenarioState.CreateNode(&model.NetworkNode{ID: "node2"}, []*core.NetworkInterface{
+		{ID: "if2", ParentNodeID: "node2", IsOperational: true, TransceiverID: "trx1"},
+	}); err != nil {
+		t.Fatalf("CreateNode node2 failed: %v", err)
+	}
+
+	trx := &core.TransceiverModel{ID: "trx1", Name: "QPSK"}
+	if err := netKB.AddTransceiverModel(trx); err != nil {
+		t.Fatalf("AddTransceiverModel failed: %v", err)
+	}
+
+	link := &core.NetworkLink{
+		ID:              "link1",
+		InterfaceA:      "if1",
+		InterfaceB:      "if2",
+		Status:          core.LinkStatusActive,
+		IsUp:            true,
+		MaxDataRateMbps: 25,
+		SNRdB:           12.3,
+	}
+	if err := scenarioState.CreateLink(link); err != nil {
+		t.Fatalf("CreateLink failed: %v", err)
+	}
+
+	scheduler := sbi.NewFakeEventScheduler(time.Now())
+	agent := NewSimAgent("agent-1", "node1", scenarioState, scheduler, nil, nil, log)
+
+	ifaces := scenarioState.ListInterfacesForNode("node1")
+	if len(ifaces) == 0 {
+		t.Fatalf("expected at least one interface")
+	}
+
+	modem := agent.CollectModemMetrics("node1", ifaces[0])
+	if modem == nil {
+		t.Fatalf("expected modem metrics, got nil")
+	}
+	if modem.InterfaceID != "if1" {
+		t.Fatalf("unexpected interface: %s", modem.InterfaceID)
+	}
+	if math.Abs(modem.SNRdB-12.3) > 1e-7 {
+		t.Fatalf("unexpected SNR: %f", modem.SNRdB)
+	}
+	if modem.Modulation != "QPSK" {
+		t.Fatalf("unexpected modulation: %s", modem.Modulation)
+	}
+	if modem.ThroughputBps == 0 {
+		t.Fatalf("expected non-zero throughput")
+	}
+}
