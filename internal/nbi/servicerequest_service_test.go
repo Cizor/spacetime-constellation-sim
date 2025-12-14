@@ -4,10 +4,12 @@ package nbi
 import (
 	"context"
 	"testing"
+	"time"
 
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
+	"github.com/signalsfoundry/constellation-simulator/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -217,6 +219,63 @@ func TestServiceRequestServiceGetNotFound(t *testing.T) {
 	})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("GetServiceRequest missing code = %v, want NotFound (err=%v)", status.Code(err), err)
+	}
+}
+
+func TestServiceRequestServiceGetStatus(t *testing.T) {
+	svc, state := newServiceRequestServiceForTest()
+	addNodeWithInterface(t, state, "node-1")
+	addNodeWithInterface(t, state, "node-2")
+
+	id := "sr-status"
+	req := &resources.ServiceRequest{
+		Type:    &id,
+		SrcType: &resources.ServiceRequest_SrcNodeId{SrcNodeId: "node-1"},
+		DstType: &resources.ServiceRequest_DstNodeId{DstNodeId: "node-2"},
+		Requirements: []*resources.ServiceRequest_FlowRequirements{
+			flowReq(500_000),
+		},
+	}
+	if _, err := svc.CreateServiceRequest(context.Background(), req); err != nil {
+		t.Fatalf("CreateServiceRequest error: %v", err)
+	}
+
+	interval := &model.TimeInterval{
+		StartTime: time.Unix(10, 0),
+		EndTime:   time.Unix(20, 0),
+	}
+	if err := state.UpdateServiceRequestStatus(id, true, interval); err != nil {
+		t.Fatalf("UpdateServiceRequestStatus error: %v", err)
+	}
+
+	resp, err := svc.GetServiceRequestStatus(context.Background(), &v1alpha.GetServiceRequestStatusRequest{
+		ServiceRequestId: &id,
+	})
+	if err != nil {
+		t.Fatalf("GetServiceRequestStatus error: %v", err)
+	}
+	if !resp.GetIsProvisionedNow() {
+		t.Fatalf("expected IsProvisionedNow true")
+	}
+	if resp.GetCurrentProvisionedInterval() == nil {
+		t.Fatalf("expected current interval to be set")
+	}
+	if len(resp.GetAllProvisionedIntervals()) == 0 {
+		t.Fatalf("expected history to include interval")
+	}
+	if resp.GetLastProvisionedAt() == nil {
+		t.Fatalf("expected last provisioned timestamp to be set")
+	}
+}
+
+func TestServiceRequestServiceGetStatusNotFound(t *testing.T) {
+	svc, _ := newServiceRequestServiceForTest()
+	id := "missing-status"
+	_, err := svc.GetServiceRequestStatus(context.Background(), &v1alpha.GetServiceRequestStatusRequest{
+		ServiceRequestId: &id,
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("code = %v, want NotFound (err=%v)", status.Code(err), err)
 	}
 }
 

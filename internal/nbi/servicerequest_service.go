@@ -117,6 +117,25 @@ func (s *ServiceRequestService) GetServiceRequest(
 	return attachServiceRequestID(types.ServiceRequestToProto(sr), sr.ID), nil
 }
 
+// GetServiceRequestStatus returns provisioning status for a ServiceRequest.
+func (s *ServiceRequestService) GetServiceRequestStatus(
+	ctx context.Context,
+	req *v1alpha.GetServiceRequestStatusRequest,
+) (*v1alpha.ServiceRequestStatus, error) {
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	if req == nil || req.GetServiceRequestId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "service_request_id is required")
+	}
+
+	statusData, err := s.state.GetServiceRequestStatus(req.GetServiceRequestId())
+	if err != nil {
+		return nil, ToStatusError(err)
+	}
+	return types.ServiceRequestStatusToProto(statusData), nil
+}
+
 // ListServiceRequests returns all stored ServiceRequests.
 func (s *ServiceRequestService) ListServiceRequests(
 	ctx context.Context,

@@ -16,8 +16,10 @@ syntax = "proto2";
 
 package aalyria.spacetime.api.nbi.v1alpha;
 
+import "api/common/time.proto";
 import "api/nbi/v1alpha/resources/service_request.proto";
 import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
 
 option java_package = "com.aalyria.spacetime.api.nbi.v1alpha";
 option go_package = "aalyria.com/spacetime/api/nbi/v1alpha";
@@ -47,6 +49,10 @@ service ServiceRequestService {
   // Delete a ServiceRequest by ID.
   rpc DeleteServiceRequest(DeleteServiceRequestRequest)
       returns (google.protobuf.Empty);
+
+  // Get status for a ServiceRequest.
+  rpc GetServiceRequestStatus(GetServiceRequestStatusRequest)
+      returns (ServiceRequestStatus);
 }
 
 // Request to get a single ServiceRequest.
@@ -75,4 +81,16 @@ message UpdateServiceRequestRequest {
 // Request to delete a ServiceRequest by ID.
 message DeleteServiceRequestRequest {
   optional string service_request_id = 1;
+}
+
+message GetServiceRequestStatusRequest {
+  optional string service_request_id = 1;
+}
+
+message ServiceRequestStatus {
+  optional bool is_provisioned_now = 1;
+  optional aalyria.spacetime.api.common.TimeInterval current_provisioned_interval = 2;
+  repeated aalyria.spacetime.api.common.TimeInterval all_provisioned_intervals = 3;
+  optional google.protobuf.Timestamp last_provisioned_at = 4;
+  optional google.protobuf.Timestamp last_unprovisioned_at = 5;
 }

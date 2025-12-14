@@ -21,10 +21,12 @@
 package v1alpha
 
 import (
+	common "aalyria.com/spacetime/api/common"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -255,11 +257,131 @@ func (x *DeleteServiceRequestRequest) GetServiceRequestId() string {
 	return ""
 }
 
+type GetServiceRequestStatusRequest struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ServiceRequestId *string                `protobuf:"bytes,1,opt,name=service_request_id,json=serviceRequestId" json:"service_request_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *GetServiceRequestStatusRequest) Reset() {
+	*x = GetServiceRequestStatusRequest{}
+	mi := &file_api_nbi_v1alpha_service_request_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetServiceRequestStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetServiceRequestStatusRequest) ProtoMessage() {}
+
+func (x *GetServiceRequestStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_api_nbi_v1alpha_service_request_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetServiceRequestStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetServiceRequestStatusRequest) Descriptor() ([]byte, []int) {
+	return file_api_nbi_v1alpha_service_request_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetServiceRequestStatusRequest) GetServiceRequestId() string {
+	if x != nil && x.ServiceRequestId != nil {
+		return *x.ServiceRequestId
+	}
+	return ""
+}
+
+type ServiceRequestStatus struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	IsProvisionedNow           *bool                  `protobuf:"varint,1,opt,name=is_provisioned_now,json=isProvisionedNow" json:"is_provisioned_now,omitempty"`
+	CurrentProvisionedInterval *common.TimeInterval   `protobuf:"bytes,2,opt,name=current_provisioned_interval,json=currentProvisionedInterval" json:"current_provisioned_interval,omitempty"`
+	AllProvisionedIntervals    []*common.TimeInterval `protobuf:"bytes,3,rep,name=all_provisioned_intervals,json=allProvisionedIntervals" json:"all_provisioned_intervals,omitempty"`
+	LastProvisionedAt          *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_provisioned_at,json=lastProvisionedAt" json:"last_provisioned_at,omitempty"`
+	LastUnprovisionedAt        *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=last_unprovisioned_at,json=lastUnprovisionedAt" json:"last_unprovisioned_at,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *ServiceRequestStatus) Reset() {
+	*x = ServiceRequestStatus{}
+	mi := &file_api_nbi_v1alpha_service_request_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServiceRequestStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServiceRequestStatus) ProtoMessage() {}
+
+func (x *ServiceRequestStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_api_nbi_v1alpha_service_request_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServiceRequestStatus.ProtoReflect.Descriptor instead.
+func (*ServiceRequestStatus) Descriptor() ([]byte, []int) {
+	return file_api_nbi_v1alpha_service_request_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ServiceRequestStatus) GetIsProvisionedNow() bool {
+	if x != nil && x.IsProvisionedNow != nil {
+		return *x.IsProvisionedNow
+	}
+	return false
+}
+
+func (x *ServiceRequestStatus) GetCurrentProvisionedInterval() *common.TimeInterval {
+	if x != nil {
+		return x.CurrentProvisionedInterval
+	}
+	return nil
+}
+
+func (x *ServiceRequestStatus) GetAllProvisionedIntervals() []*common.TimeInterval {
+	if x != nil {
+		return x.AllProvisionedIntervals
+	}
+	return nil
+}
+
+func (x *ServiceRequestStatus) GetLastProvisionedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastProvisionedAt
+	}
+	return nil
+}
+
+func (x *ServiceRequestStatus) GetLastUnprovisionedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastUnprovisionedAt
+	}
+	return nil
+}
+
 var File_api_nbi_v1alpha_service_request_service_proto protoreflect.FileDescriptor
 
 const file_api_nbi_v1alpha_service_request_service_proto_rawDesc = "" +
 	"\n" +
-	"-api/nbi/v1alpha/service_request_service.proto\x12!aalyria.spacetime.api.nbi.v1alpha\x1a/api/nbi/v1alpha/resources/service_request.proto\x1a\x1bgoogle/protobuf/empty.proto\"H\n" +
+	"-api/nbi/v1alpha/service_request_service.proto\x12!aalyria.spacetime.api.nbi.v1alpha\x1a\x15api/common/time.proto\x1a/api/nbi/v1alpha/resources/service_request.proto\x1a\x1bgoogle/protobuf/empty.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"H\n" +
 	"\x18GetServiceRequestRequest\x12,\n" +
 	"\x12service_request_id\x18\x01 \x01(\tR\x10serviceRequestId\"\x1c\n" +
 	"\x1aListServiceRequestsRequest\"\x85\x01\n" +
@@ -268,13 +390,22 @@ const file_api_nbi_v1alpha_service_request_service_proto_rawDesc = "" +
 	"\x1bUpdateServiceRequestRequest\x12d\n" +
 	"\x0fservice_request\x18\x01 \x01(\v2;.aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequestR\x0eserviceRequest\"K\n" +
 	"\x1bDeleteServiceRequestRequest\x12,\n" +
-	"\x12service_request_id\x18\x01 \x01(\tR\x10serviceRequestId2\xd7\x05\n" +
+	"\x12service_request_id\x18\x01 \x01(\tR\x10serviceRequestId\"N\n" +
+	"\x1eGetServiceRequestStatusRequest\x12,\n" +
+	"\x12service_request_id\x18\x01 \x01(\tR\x10serviceRequestId\"\xb6\x03\n" +
+	"\x14ServiceRequestStatus\x12,\n" +
+	"\x12is_provisioned_now\x18\x01 \x01(\bR\x10isProvisionedNow\x12l\n" +
+	"\x1ccurrent_provisioned_interval\x18\x02 \x01(\v2*.aalyria.spacetime.api.common.TimeIntervalR\x1acurrentProvisionedInterval\x12f\n" +
+	"\x19all_provisioned_intervals\x18\x03 \x03(\v2*.aalyria.spacetime.api.common.TimeIntervalR\x17allProvisionedIntervals\x12J\n" +
+	"\x13last_provisioned_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x11lastProvisionedAt\x12N\n" +
+	"\x15last_unprovisioned_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x13lastUnprovisionedAt2\xef\x06\n" +
 	"\x15ServiceRequestService\x12\x90\x01\n" +
 	"\x14CreateServiceRequest\x12;.aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest\x1a;.aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest\x12\x8d\x01\n" +
 	"\x11GetServiceRequest\x12;.aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestRequest\x1a;.aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest\x12\x94\x01\n" +
 	"\x13ListServiceRequests\x12=.aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsRequest\x1a>.aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse\x12\x93\x01\n" +
 	"\x14UpdateServiceRequest\x12>.aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest\x1a;.aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest\x12n\n" +
-	"\x14DeleteServiceRequest\x12>.aalyria.spacetime.api.nbi.v1alpha.DeleteServiceRequestRequest\x1a\x16.google.protobuf.EmptyBN\n" +
+	"\x14DeleteServiceRequest\x12>.aalyria.spacetime.api.nbi.v1alpha.DeleteServiceRequestRequest\x1a\x16.google.protobuf.Empty\x12\x95\x01\n" +
+	"\x17GetServiceRequestStatus\x12A.aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestStatusRequest\x1a7.aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatusBN\n" +
 	"%com.aalyria.spacetime.api.nbi.v1alphaZ%aalyria.com/spacetime/api/nbi/v1alpha"
 
 var (
@@ -289,34 +420,44 @@ func file_api_nbi_v1alpha_service_request_service_proto_rawDescGZIP() []byte {
 	return file_api_nbi_v1alpha_service_request_service_proto_rawDescData
 }
 
-var file_api_nbi_v1alpha_service_request_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_api_nbi_v1alpha_service_request_service_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_api_nbi_v1alpha_service_request_service_proto_goTypes = []any{
-	(*GetServiceRequestRequest)(nil),    // 0: aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestRequest
-	(*ListServiceRequestsRequest)(nil),  // 1: aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsRequest
-	(*ListServiceRequestsResponse)(nil), // 2: aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse
-	(*UpdateServiceRequestRequest)(nil), // 3: aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest
-	(*DeleteServiceRequestRequest)(nil), // 4: aalyria.spacetime.api.nbi.v1alpha.DeleteServiceRequestRequest
-	(*resources.ServiceRequest)(nil),    // 5: aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	(*emptypb.Empty)(nil),               // 6: google.protobuf.Empty
+	(*GetServiceRequestRequest)(nil),       // 0: aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestRequest
+	(*ListServiceRequestsRequest)(nil),     // 1: aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsRequest
+	(*ListServiceRequestsResponse)(nil),    // 2: aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse
+	(*UpdateServiceRequestRequest)(nil),    // 3: aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest
+	(*DeleteServiceRequestRequest)(nil),    // 4: aalyria.spacetime.api.nbi.v1alpha.DeleteServiceRequestRequest
+	(*GetServiceRequestStatusRequest)(nil), // 5: aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestStatusRequest
+	(*ServiceRequestStatus)(nil),           // 6: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatus
+	(*resources.ServiceRequest)(nil),       // 7: aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	(*common.TimeInterval)(nil),            // 8: aalyria.spacetime.api.common.TimeInterval
+	(*timestamppb.Timestamp)(nil),          // 9: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),                  // 10: google.protobuf.Empty
 }
 var file_api_nbi_v1alpha_service_request_service_proto_depIdxs = []int32{
-	5, // 0: aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse.service_requests:type_name -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	5, // 1: aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest.service_request:type_name -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	5, // 2: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.CreateServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	0, // 3: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.GetServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestRequest
-	1, // 4: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.ListServiceRequests:input_type -> aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsRequest
-	3, // 5: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.UpdateServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest
-	4, // 6: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.DeleteServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.DeleteServiceRequestRequest
-	5, // 7: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.CreateServiceRequest:output_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	5, // 8: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.GetServiceRequest:output_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	2, // 9: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.ListServiceRequests:output_type -> aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse
-	5, // 10: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.UpdateServiceRequest:output_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
-	6, // 11: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.DeleteServiceRequest:output_type -> google.protobuf.Empty
-	7, // [7:12] is the sub-list for method output_type
-	2, // [2:7] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	7,  // 0: aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse.service_requests:type_name -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	7,  // 1: aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest.service_request:type_name -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	8,  // 2: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatus.current_provisioned_interval:type_name -> aalyria.spacetime.api.common.TimeInterval
+	8,  // 3: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatus.all_provisioned_intervals:type_name -> aalyria.spacetime.api.common.TimeInterval
+	9,  // 4: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatus.last_provisioned_at:type_name -> google.protobuf.Timestamp
+	9,  // 5: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatus.last_unprovisioned_at:type_name -> google.protobuf.Timestamp
+	7,  // 6: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.CreateServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	0,  // 7: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.GetServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestRequest
+	1,  // 8: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.ListServiceRequests:input_type -> aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsRequest
+	3,  // 9: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.UpdateServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.UpdateServiceRequestRequest
+	4,  // 10: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.DeleteServiceRequest:input_type -> aalyria.spacetime.api.nbi.v1alpha.DeleteServiceRequestRequest
+	5,  // 11: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.GetServiceRequestStatus:input_type -> aalyria.spacetime.api.nbi.v1alpha.GetServiceRequestStatusRequest
+	7,  // 12: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.CreateServiceRequest:output_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	7,  // 13: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.GetServiceRequest:output_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	2,  // 14: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.ListServiceRequests:output_type -> aalyria.spacetime.api.nbi.v1alpha.ListServiceRequestsResponse
+	7,  // 15: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.UpdateServiceRequest:output_type -> aalyria.spacetime.api.nbi.v1alpha.resources.ServiceRequest
+	10, // 16: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.DeleteServiceRequest:output_type -> google.protobuf.Empty
+	6,  // 17: aalyria.spacetime.api.nbi.v1alpha.ServiceRequestService.GetServiceRequestStatus:output_type -> aalyria.spacetime.api.nbi.v1alpha.ServiceRequestStatus
+	12, // [12:18] is the sub-list for method output_type
+	6,  // [6:12] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_api_nbi_v1alpha_service_request_service_proto_init() }
@@ -330,7 +471,7 @@ func file_api_nbi_v1alpha_service_request_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_nbi_v1alpha_service_request_service_proto_rawDesc), len(file_api_nbi_v1alpha_service_request_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

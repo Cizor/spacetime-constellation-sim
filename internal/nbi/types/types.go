@@ -10,8 +10,10 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/model"
 
 	common "aalyria.com/spacetime/api/common"
+	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	resources "aalyria.com/spacetime/api/nbi/v1alpha/resources"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 //
@@ -646,6 +648,45 @@ func ServiceRequestToProto(sr *model.ServiceRequest) *ServiceRequest {
 	}
 
 	return p
+}
+
+func modelTimeIntervalToProto(interval *model.TimeInterval) *common.TimeInterval {
+	if interval == nil {
+		return nil
+	}
+	return &common.TimeInterval{
+		StartTime: timeToDateTime(interval.StartTime),
+		EndTime:   timeToDateTime(interval.EndTime),
+	}
+}
+
+func timeToTimestamp(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	return timestamppb.New(t)
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func ServiceRequestStatusToProto(status *model.ServiceRequestStatus) *v1alpha.ServiceRequestStatus {
+	if status == nil {
+		return nil
+	}
+	resp := &v1alpha.ServiceRequestStatus{
+		IsProvisionedNow:           boolPtr(status.IsProvisionedNow),
+		CurrentProvisionedInterval: modelTimeIntervalToProto(status.CurrentInterval),
+		LastProvisionedAt:          timeToTimestamp(status.LastProvisionedAt),
+		LastUnprovisionedAt:        timeToTimestamp(status.LastUnprovisionedAt),
+	}
+	for _, interval := range status.AllIntervals {
+		if protoInterval := modelTimeIntervalToProto(&interval); protoInterval != nil {
+			resp.AllProvisionedIntervals = append(resp.AllProvisionedIntervals, protoInterval)
+		}
+	}
+	return resp
 }
 
 func combineInterfaceRef(nodeID, ifaceID string) string {
