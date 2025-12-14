@@ -71,3 +71,8 @@ Extend connectivity evaluation to maintain contact windows - time intervals when
 
 Contact windows are the time-varying connectivity information needed for multi-hop pathfinding. This is a foundational data structure for time-aware routing.
 
+## Federation / NBI Exposure
+
+- Scheduler already exposes the computed windows via `GetContactPlan(linkID, horizon)` and `GetContactPlansForNode(nodeID, horizon)` (see `internal/sbi/controller/contact_windows.go`).  
+- The federation/NBI layer should call these helpers to back the `/contactWindows` endpoints so that external clients receive the same per-link windows and quality metadata that drives the controller decisions.  
+- Start by wiring the NBI handler that previously sampled windows directly to this scheduler API, honoring `horizon`/`nodeID` query parameters, and reusing the `Quality` field (SNR) as part of the response payload.  

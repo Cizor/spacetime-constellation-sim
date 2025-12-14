@@ -18,7 +18,7 @@ type samplingClone struct {
 	connectivity *core.ConnectivityService
 }
 
-func (s *Scheduler) sampleLinkWindows(ctx context.Context, now, horizon time.Time) (map[string][]contactWindow, error) {
+func (s *Scheduler) sampleLinkWindows(ctx context.Context, now, horizon time.Time) (map[string][]ContactWindow, error) {
 	if horizon.Before(now) {
 		return nil, fmt.Errorf("horizon must be >= now")
 	}
@@ -35,7 +35,7 @@ func (s *Scheduler) sampleLinkWindows(ctx context.Context, now, horizon time.Tim
 
 	sampleInterval := 30 * time.Second
 
-	windows := make(map[string][]contactWindow)
+	windows := make(map[string][]ContactWindow)
 	openWindows := make(map[string]time.Time)
 
 	for t := now; !t.After(horizon); t = t.Add(sampleInterval) {
@@ -55,9 +55,10 @@ func (s *Scheduler) sampleLinkWindows(ctx context.Context, now, horizon time.Tim
 				continue
 			}
 			if start, open := openWindows[link.ID]; open {
-				windows[link.ID] = append(windows[link.ID], contactWindow{
-					start: start,
-					end:   t,
+				windows[link.ID] = append(windows[link.ID], ContactWindow{
+					StartTime: start,
+					EndTime:   t,
+					Quality:   s.linkSNR(link.ID),
 				})
 				delete(openWindows, link.ID)
 			}
@@ -66,9 +67,10 @@ func (s *Scheduler) sampleLinkWindows(ctx context.Context, now, horizon time.Tim
 
 	for linkID, start := range openWindows {
 		if !start.IsZero() && start.Before(horizon) {
-			windows[linkID] = append(windows[linkID], contactWindow{
-				start: start,
-				end:   horizon,
+			windows[linkID] = append(windows[linkID], ContactWindow{
+				StartTime: start,
+				EndTime:   horizon,
+				Quality:   s.linkSNR(linkID),
 			})
 		}
 	}

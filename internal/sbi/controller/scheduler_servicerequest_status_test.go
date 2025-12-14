@@ -70,7 +70,6 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	if err := scenarioState.CreateLink(link); err != nil {
 		t.Fatalf("CreateLink failed: %v", err)
 	}
-
 	// Create a ServiceRequest
 	sr := &model.ServiceRequest{
 		ID:        "sr-1",
@@ -113,7 +112,7 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 		AgentID:  "nodeA",
 		NodeID:   "nodeA",
 		Stream:   &fakeStream{},
-		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 10),
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 1024),
 		token:    "test-token",
 		seqNo:    0,
 	}
@@ -121,7 +120,7 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 		AgentID:  "nodeB",
 		NodeID:   "nodeB",
 		Stream:   &fakeStream{},
-		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 10),
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 1024),
 		token:    "test-token",
 		seqNo:    0,
 	}
@@ -129,13 +128,22 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	fakeCDPI.agents["nodeA"] = agentHandleA
 	fakeCDPI.agents["nodeB"] = agentHandleB
 	fakeCDPI.agentsMu.Unlock()
+	go func() {
+		for range agentHandleA.outgoing {
+		}
+	}()
+	go func() {
+		for range agentHandleB.outgoing {
+		}
+	}()
 
 	// Seed contact windows so the path looks available
-	scheduler.contactWindows = map[string][]contactWindow{
+	scheduler.contactWindows = map[string][]ContactWindow{
 		"linkAB": {
 			{
-				start: T0,
-				end:   T0.Add(defaultPotentialWindow),
+				StartTime: T0,
+				EndTime:   T0.Add(defaultPotentialWindow),
+				Quality:   0,
 			},
 		},
 	}
@@ -219,5 +227,167 @@ func TestScheduler_ServiceRequestStatusNoPath(t *testing.T) {
 	}
 	if len(sr.ProvisionedIntervals) != 0 {
 		t.Errorf("ProvisionedIntervals = %d when no path found, want 0", len(sr.ProvisionedIntervals))
+	}
+}
+
+func TestScheduler_PreemptsLowerPriorityServiceRequests(t *testing.T) {
+	physKB := kb.NewKnowledgeBase()
+	netKB := core.NewKnowledgeBase()
+	log := logging.Noop()
+	scenarioState := state.NewScenarioState(physKB, netKB, log)
+
+	trx := &core.TransceiverModel{
+		ID: "trx-ku",
+		Band: core.FrequencyBand{
+			MinGHz: 12.0,
+			MaxGHz: 18.0,
+		},
+		MaxRangeKm: 10000,
+	}
+	if err := netKB.AddTransceiverModel(trx); err != nil {
+		t.Fatalf("AddTransceiverModel failed: %v", err)
+	}
+
+	nodeA := &model.NetworkNode{ID: "nodeA"}
+	ifaceA := &core.NetworkInterface{
+		ID:            "ifA",
+		ParentNodeID:  "nodeA",
+		Medium:        core.MediumWireless,
+		TransceiverID: "trx-ku",
+		IsOperational: true,
+	}
+	if err := scenarioState.CreateNode(nodeA, []*core.NetworkInterface{ifaceA}); err != nil {
+		t.Fatalf("CreateNode(nodeA) failed: %v", err)
+	}
+
+	nodeB := &model.NetworkNode{ID: "nodeB"}
+	ifaceB := &core.NetworkInterface{
+		ID:            "ifB",
+		ParentNodeID:  "nodeB",
+		Medium:        core.MediumWireless,
+		TransceiverID: "trx-ku",
+		IsOperational: true,
+	}
+	if err := scenarioState.CreateNode(nodeB, []*core.NetworkInterface{ifaceB}); err != nil {
+		t.Fatalf("CreateNode(nodeB) failed: %v", err)
+	}
+
+	link := &core.NetworkLink{
+		ID:              "linkAB",
+		InterfaceA:      "ifA",
+		InterfaceB:      "ifB",
+		Medium:          core.MediumWireless,
+		Status:          core.LinkStatusPotential,
+		MaxBandwidthBps: 1_000_000,
+	}
+	if err := scenarioState.CreateLink(link); err != nil {
+		t.Fatalf("CreateLink failed: %v", err)
+	}
+
+	T0 := time.Unix(1000, 0)
+	fakeClock := &fakeClockForTest{now: T0}
+	clock := sbi.NewEventScheduler(fakeClock)
+	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, clock)
+	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log)
+
+	agentA := &AgentHandle{
+		AgentID:  "nodeA",
+		NodeID:   "nodeA",
+		Stream:   &fakeStream{},
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 1024),
+		token:    "test",
+	}
+	agentB := &AgentHandle{
+		AgentID:  "nodeB",
+		NodeID:   "nodeB",
+		Stream:   &fakeStream{},
+		outgoing: make(chan *schedulingpb.ReceiveRequestsMessageFromController, 1024),
+		token:    "test",
+	}
+	fakeCDPI.agentsMu.Lock()
+	fakeCDPI.agents["nodeA"] = agentA
+	fakeCDPI.agents["nodeB"] = agentB
+	fakeCDPI.agentsMu.Unlock()
+
+	scheduler.contactWindows = map[string][]ContactWindow{
+		"linkAB": {
+			{
+				StartTime: T0,
+				EndTime:   T0.Add(defaultPotentialWindow),
+				Quality:   0,
+			},
+		},
+	}
+
+	lowSR := &model.ServiceRequest{
+		ID:        "sr-low",
+		SrcNodeID: "nodeA",
+		DstNodeID: "nodeB",
+		Priority:  1,
+		FlowRequirements: []model.FlowRequirement{
+			{RequestedBandwidth: 1e6},
+		},
+	}
+	if err := scenarioState.CreateServiceRequest(lowSR); err != nil {
+		t.Fatalf("CreateServiceRequest lowSR failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := scheduler.ScheduleServiceRequests(ctx); err != nil {
+		t.Fatalf("initial ScheduleServiceRequests failed: %v", err)
+	}
+	if len(scheduler.bandwidthReservations) == 0 {
+		t.Fatalf("expected bandwidth reservations after initial scheduling")
+	}
+
+	highSR := &model.ServiceRequest{
+		ID:        "sr-high",
+		SrcNodeID: "nodeA",
+		DstNodeID: "nodeB",
+		Priority:  10,
+		FlowRequirements: []model.FlowRequirement{
+			{RequestedBandwidth: 1e6},
+		},
+	}
+	if err := scenarioState.CreateServiceRequest(highSR); err != nil {
+		t.Fatalf("CreateServiceRequest highSR failed: %v", err)
+	}
+	// re-seed windows so high SR sees the link again
+	scheduler.contactWindows = map[string][]ContactWindow{
+		"linkAB": {
+			{
+				StartTime: T0,
+				EndTime:   T0.Add(defaultPotentialWindow),
+				Quality:   0,
+			},
+		},
+	}
+
+	if err := scheduler.ScheduleServiceRequests(ctx); err != nil {
+		t.Fatalf("second ScheduleServiceRequests failed: %v", err)
+	}
+
+	low, err := scenarioState.GetServiceRequest("sr-low")
+	if err != nil {
+		t.Fatalf("GetServiceRequest(low) failed: %v", err)
+	}
+	if low.IsProvisionedNow {
+		t.Errorf("low priority SR still provisioned after preemption")
+	}
+
+	record, ok := scheduler.preemptionRecords["sr-low"]
+	if !ok {
+		t.Fatalf("preemption record missing for low priority SR")
+	}
+	if record.PreemptedBy != "sr-high" {
+		t.Errorf("expected preempting SR sr-high, got %s", record.PreemptedBy)
+	}
+
+	high, err := scenarioState.GetServiceRequest("sr-high")
+	if err != nil {
+		t.Fatalf("GetServiceRequest(high) failed: %v", err)
+	}
+	if !high.IsProvisionedNow {
+		t.Errorf("high priority SR not provisioned after preemption")
 	}
 }

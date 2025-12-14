@@ -276,11 +276,12 @@ func TestScheduler_ServiceRequestReplanCleansEntries(t *testing.T) {
 func TestScheduler_findAnyPath(t *testing.T) {
 	scheduler, _, T0 := setupSchedulerTest(t)
 
-	scheduler.contactWindows = map[string][]contactWindow{
+	scheduler.contactWindows = map[string][]ContactWindow{
 		"link-ab": {
 			{
-				start: T0,
-				end:   T0.Add(defaultPotentialWindow),
+				StartTime: T0,
+				EndTime:   T0.Add(defaultPotentialWindow),
+				Quality:   0,
 			},
 		},
 	}

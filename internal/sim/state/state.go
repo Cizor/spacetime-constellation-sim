@@ -53,6 +53,8 @@ var (
 	ErrInterfaceInUse = errors.New("interface is referenced by links")
 )
 
+const defaultLinkBandwidthBps = 1_000_000_000
+
 // ScenarioState coordinates the simulator's major knowledge bases and
 // holds transient NBI state like ServiceRequests.
 type ScenarioState struct {
@@ -698,7 +700,10 @@ func (s *ScenarioState) GetAvailableBandwidth(linkID string) (uint64, error) {
 }
 
 func (s *ScenarioState) initLinkBandwidthLocked(link *network.NetworkLink) {
-	if link.MaxBandwidthBps > 0 && link.AvailableBandwidthBps == 0 {
+	if link.MaxBandwidthBps == 0 {
+		link.MaxBandwidthBps = defaultLinkBandwidthBps
+	}
+	if link.AvailableBandwidthBps == 0 {
 		link.AvailableBandwidthBps = link.MaxBandwidthBps
 	}
 	if link.ReservedBandwidthBps > link.MaxBandwidthBps {

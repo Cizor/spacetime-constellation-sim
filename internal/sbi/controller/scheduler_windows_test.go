@@ -22,11 +22,11 @@ func TestScheduler_PrecomputeContactWindowsPotentialLink(t *testing.T) {
 	if len(linkWindows) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(linkWindows))
 	}
-	if !linkWindows[0].start.Equal(now) {
-		t.Fatalf("expected window start %v, got %v", now, linkWindows[0].start)
+	if !linkWindows[0].StartTime.Equal(now) {
+		t.Fatalf("expected window start %v, got %v", now, linkWindows[0].StartTime)
 	}
-	if !linkWindows[0].end.Equal(horizon) {
-		t.Fatalf("expected window end %v, got %v", horizon, linkWindows[0].end)
+	if !linkWindows[0].EndTime.Equal(horizon) {
+		t.Fatalf("expected window end %v, got %v", horizon, linkWindows[0].EndTime)
 	}
 }
 
@@ -52,11 +52,11 @@ func TestScheduler_PrecomputeContactWindowsActiveLink(t *testing.T) {
 	if len(linkWindows) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(linkWindows))
 	}
-	if !linkWindows[0].start.Equal(now) {
-		t.Fatalf("expected window start %v, got %v", now, linkWindows[0].start)
+	if !linkWindows[0].StartTime.Equal(now) {
+		t.Fatalf("expected window start %v, got %v", now, linkWindows[0].StartTime)
 	}
-	if !linkWindows[0].end.Equal(horizon) {
-		t.Fatalf("expected window end %v, got %v", horizon, linkWindows[0].end)
+	if !linkWindows[0].EndTime.Equal(horizon) {
+		t.Fatalf("expected window end %v, got %v", horizon, linkWindows[0].EndTime)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestScheduler_PrecomputeContactWindowsClipsAtHorizon(t *testing.T) {
 	if len(linkWindows) != 1 {
 		t.Fatalf("expected 1 window, got %d", len(linkWindows))
 	}
-	if !linkWindows[0].end.Equal(horizon) {
-		t.Fatalf("expected end == horizon %v, got %v", horizon, linkWindows[0].end)
+	if !linkWindows[0].EndTime.Equal(horizon) {
+		t.Fatalf("expected end == horizon %v, got %v", horizon, linkWindows[0].EndTime)
 	}
 }

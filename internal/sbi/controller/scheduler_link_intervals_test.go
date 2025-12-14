@@ -262,8 +262,8 @@ doneBeams:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(linkWindow.start) {
-					t.Errorf("UpdateBeam When = %v, expected %v", whenTime, linkWindow.start)
+				if !whenTime.Equal(linkWindow.StartTime) {
+					t.Errorf("UpdateBeam When = %v, expected %v", whenTime, linkWindow.StartTime)
 				}
 			}
 		}
@@ -272,10 +272,10 @@ doneBeams:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(linkWindow.end) {
-					fallbackEnd := linkWindow.start.Add(defaultPotentialWindow)
+				if !whenTime.Equal(linkWindow.EndTime) {
+					fallbackEnd := linkWindow.StartTime.Add(defaultPotentialWindow)
 					if !whenTime.Equal(fallbackEnd) {
-						t.Errorf("DeleteBeam When = %v, expected %v or %v", whenTime, linkWindow.end, fallbackEnd)
+						t.Errorf("DeleteBeam When = %v, expected %v or %v", whenTime, linkWindow.EndTime, fallbackEnd)
 					}
 				}
 			}
@@ -340,8 +340,8 @@ doneRoutesB:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(linkWindow.start) {
-					t.Errorf("SetRoute When = %v, expected %v", whenTime, linkWindow.start)
+				if !whenTime.Equal(linkWindow.StartTime) {
+					t.Errorf("SetRoute When = %v, expected %v", whenTime, linkWindow.StartTime)
 				}
 			}
 		}
@@ -350,10 +350,10 @@ doneRoutesB:
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(linkWindow.end) {
-					fallbackEnd := linkWindow.start.Add(defaultPotentialWindow)
+				if !whenTime.Equal(linkWindow.EndTime) {
+					fallbackEnd := linkWindow.StartTime.Add(defaultPotentialWindow)
 					if !whenTime.Equal(fallbackEnd) {
-						t.Errorf("DeleteRoute When = %v, expected %v or %v", whenTime, linkWindow.end, fallbackEnd)
+						t.Errorf("DeleteRoute When = %v, expected %v or %v", whenTime, linkWindow.EndTime, fallbackEnd)
 					}
 				}
 			}

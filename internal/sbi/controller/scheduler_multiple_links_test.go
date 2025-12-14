@@ -229,12 +229,12 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 	}
 
 	// Verify SetRoute and DeleteRoute actions
-	routeWindowsAB := map[string]contactWindow{"node-B": windowAB}
-	routeWindowsBA := map[string]contactWindow{
+	routeWindowsAB := map[string]ContactWindow{"node-B": windowAB}
+	routeWindowsBA := map[string]ContactWindow{
 		"node-A": windowAB,
 		"node-C": windowBC,
 	}
-	routeWindowsCB := map[string]contactWindow{"node-B": windowBC}
+	routeWindowsCB := map[string]ContactWindow{"node-B": windowBC}
 
 	verifyRouteActionsForNode(t, allRouteMessages["node-A"], []string{"node-B"}, routeWindowsAB, T0)
 	verifyRouteActionsForNode(t, allRouteMessages["node-B"], []string{"node-A", "node-C"}, routeWindowsBA, T0)
@@ -242,7 +242,7 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 }
 
 // verifyBeamActions verifies that beam messages contain UpdateBeam and DeleteBeam actions.
-func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, window contactWindow, T0 time.Time) {
+func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, window ContactWindow, T0 time.Time) {
 	updateBeamFound := false
 	deleteBeamFound := false
 
@@ -260,8 +260,8 @@ func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMes
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(window.start) {
-					t.Errorf("UpdateBeam When = %v, expected %v", whenTime, window.start)
+				if !whenTime.Equal(window.StartTime) {
+					t.Errorf("UpdateBeam When = %v, expected %v", whenTime, window.StartTime)
 				}
 			}
 		}
@@ -271,8 +271,8 @@ func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMes
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(window.end) {
-					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, window.end)
+				if !whenTime.Equal(window.EndTime) {
+					t.Errorf("DeleteBeam When = %v, expected %v", whenTime, window.EndTime)
 				}
 			}
 		}
@@ -288,7 +288,7 @@ func verifyBeamActions(t *testing.T, messages []*schedulingpb.ReceiveRequestsMes
 
 // verifyRouteActionsForNode verifies that route messages contain SetRoute and DeleteRoute actions
 // for at least one of the expected destination nodes.
-func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, expectedDestNodeIDs []string, windows map[string]contactWindow, T0 time.Time) {
+func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveRequestsMessageFromController, expectedDestNodeIDs []string, windows map[string]ContactWindow, T0 time.Time) {
 	setRouteFound := false
 	deleteRouteFound := false
 
@@ -318,8 +318,8 @@ func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveReq
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(window.start) {
-					t.Errorf("SetRoute When = %v, expected %v", whenTime, window.start)
+				if !whenTime.Equal(window.StartTime) {
+					t.Errorf("SetRoute When = %v, expected %v", whenTime, window.StartTime)
 				}
 			}
 		}
@@ -335,8 +335,8 @@ func verifyRouteActionsForNode(t *testing.T, messages []*schedulingpb.ReceiveReq
 			when := createEntry.GetTime()
 			if when != nil {
 				whenTime := when.AsTime()
-				if !whenTime.Equal(window.end) {
-					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, window.end)
+				if !whenTime.Equal(window.EndTime) {
+					t.Errorf("DeleteRoute When = %v, expected %v", whenTime, window.EndTime)
 				}
 			}
 		}

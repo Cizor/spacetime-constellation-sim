@@ -37,11 +37,22 @@ type Scheduler struct {
 	// storageReservations tracks DTN storage allocations per service request.
 	storageReservations map[string]float64
 	// contactWindows stores sampled visibility windows per link.
-	contactWindows map[string][]contactWindow
+	contactWindows map[string][]ContactWindow
 	// srEntries tracks the entries created for each ServiceRequest to support cleanup.
 	srEntries map[string][]scheduledEntryRef
 	// linkEntries tracks entries created per link for cleanup.
 	linkEntries map[string][]scheduledEntryRef
+	// bandwidthReservations tracks how much bandwidth each SR reserved per link.
+	bandwidthReservations map[string]map[string]uint64
+	// preemptionRecords stores which SRs were preempted, why, and when.
+	preemptionRecords map[string]preemptionRecord
+}
+
+type preemptionRecord struct {
+	PreemptedAt time.Time
+	PreemptedBy string
+	LinkIDs     []string
+	Reason      string
 }
 
 type PriorityQueue struct {
@@ -114,15 +125,17 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		log = logging.Noop()
 	}
 	return &Scheduler{
-		State:               state,
-		Clock:               clock,
-		CDPI:                cdpi,
-		log:                 log,
-		scheduledEntryIDs:   make(map[string]bool),
-		storageReservations: make(map[string]float64),
-		contactWindows:      make(map[string][]contactWindow),
-		srEntries:           make(map[string][]scheduledEntryRef),
-		linkEntries:         make(map[string][]scheduledEntryRef),
+		State:                 state,
+		Clock:                 clock,
+		CDPI:                  cdpi,
+		log:                   log,
+		scheduledEntryIDs:     make(map[string]bool),
+		storageReservations:   make(map[string]float64),
+		contactWindows:        make(map[string][]ContactWindow),
+		srEntries:             make(map[string][]scheduledEntryRef),
+		linkEntries:           make(map[string][]scheduledEntryRef),
+		bandwidthReservations: make(map[string]map[string]uint64),
+		preemptionRecords:     make(map[string]preemptionRecord),
 	}
 }
 
@@ -205,8 +218,8 @@ func (s *Scheduler) getPotentialLinks() []*core.NetworkLink {
 	return potential
 }
 
-func (s *Scheduler) computeContactWindows(now, horizon time.Time) map[string][]contactWindow {
-	windows := make(map[string][]contactWindow)
+func (s *Scheduler) computeContactWindows(now, horizon time.Time) map[string][]ContactWindow {
+	windows := make(map[string][]ContactWindow)
 	for _, link := range s.State.ListLinks() {
 		if link == nil {
 			continue
@@ -223,16 +236,17 @@ func (s *Scheduler) computeContactWindows(now, horizon time.Time) map[string][]c
 			continue
 		}
 
-		windows[link.ID] = append(windows[link.ID], contactWindow{
-			start: now,
-			end:   end,
+		windows[link.ID] = append(windows[link.ID], ContactWindow{
+			StartTime: now,
+			EndTime:   end,
+			Quality:   s.linkSNR(link.ID),
 		})
 	}
 	return windows
 }
 
 // PrecomputeContactWindows samples connectivity windows over the planning horizon.
-func (s *Scheduler) PrecomputeContactWindows(ctx context.Context, now, horizon time.Time) (map[string][]contactWindow, error) {
+func (s *Scheduler) PrecomputeContactWindows(ctx context.Context, now, horizon time.Time) (map[string][]ContactWindow, error) {
 	windows, err := s.sampleLinkWindows(ctx, now, horizon)
 	if err != nil {
 		s.log.Warn(ctx, "Contact window sampling failed, falling back to heuristic windows",
@@ -255,7 +269,7 @@ func (s *Scheduler) RecomputeContactWindows(ctx context.Context, now, horizon ti
 	}
 }
 
-func (s *Scheduler) contactWindowsForLink(linkID string) []contactWindow {
+func (s *Scheduler) contactWindowsForLink(linkID string) []ContactWindow {
 	if s == nil || linkID == "" {
 		return nil
 	}
@@ -270,7 +284,7 @@ func (s *Scheduler) linkWindowDuration(link *core.NetworkLink) time.Duration {
 }
 
 // scheduleBeamForLink schedules UpdateBeam and DeleteBeam actions for a single link.
-func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkLink, windows []contactWindow) error {
+func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkLink, windows []ContactWindow) error {
 	if len(windows) == 0 {
 		return nil
 	}
@@ -289,28 +303,28 @@ func (s *Scheduler) scheduleBeamForLink(ctx context.Context, link *core.NetworkL
 
 	const defaultBeamLeadTime = 0
 	for _, window := range windows {
-		if !window.end.After(window.start) {
+		if !window.EndTime.After(window.StartTime) {
 			continue
 		}
 
-		onTime := window.start.Add(-defaultBeamLeadTime)
+		onTime := window.StartTime.Add(-defaultBeamLeadTime)
 		if onTime.Before(s.Clock.Now()) {
 			onTime = s.Clock.Now()
 		}
 
-		entryIDOn := fmt.Sprintf("link:%s:on:%d", link.ID, window.start.UnixNano())
+		entryIDOn := fmt.Sprintf("link:%s:on:%d", link.ID, window.StartTime.UnixNano())
 		if err := s.sendBeamEntry(link.ID, agentID, entryIDOn, sbi.ScheduledUpdateBeam, onTime, beamSpec); err != nil {
 			return err
 		}
 
-		entryIDOff := fmt.Sprintf("link:%s:off:%d", link.ID, window.end.UnixNano())
-		if err := s.sendBeamEntry(link.ID, agentID, entryIDOff, sbi.ScheduledDeleteBeam, window.end, beamSpec); err != nil {
+		entryIDOff := fmt.Sprintf("link:%s:off:%d", link.ID, window.EndTime.UnixNano())
+		if err := s.sendBeamEntry(link.ID, agentID, entryIDOff, sbi.ScheduledDeleteBeam, window.EndTime, beamSpec); err != nil {
 			return err
 		}
 	}
 
-	start := windows[0].start
-	end := windows[len(windows)-1].end
+	start := windows[0].StartTime
+	end := windows[len(windows)-1].EndTime
 	s.log.Debug(ctx, "Scheduled beam actions for link",
 		logging.String("link_id", link.ID),
 		logging.String("agent_id", agentID),
@@ -353,11 +367,6 @@ func (s *Scheduler) sendBeamEntry(linkID, agentID, entryID string, actionType sb
 	return nil
 }
 
-type contactWindow struct {
-	start time.Time
-	end   time.Time
-}
-
 func (s *Scheduler) ensureContactWindows(ctx context.Context) {
 	if len(s.contactWindows) > 0 {
 		return
@@ -381,12 +390,12 @@ func (s *Scheduler) linkHasWindow(linkID string, now time.Time, requireCurrent b
 	}
 	for _, window := range windows {
 		if requireCurrent {
-			if !window.start.After(now) && window.end.After(now) {
+			if !window.StartTime.After(now) && window.EndTime.After(now) {
 				return true
 			}
 			continue
 		}
-		if window.end.After(now) {
+		if window.EndTime.After(now) {
 			return true
 		}
 	}
@@ -402,7 +411,7 @@ func (s *Scheduler) linkHasWindowBetween(nodeA, nodeB string, requireCurrent boo
 	return s.linkHasWindow(link.ID, now, requireCurrent)
 }
 
-func (s *Scheduler) pickContactWindow(now time.Time, windows []contactWindow) (time.Time, time.Time) {
+func (s *Scheduler) pickContactWindow(now time.Time, windows []ContactWindow) (time.Time, time.Time) {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -410,28 +419,28 @@ func (s *Scheduler) pickContactWindow(now time.Time, windows []contactWindow) (t
 		return now, now.Add(ContactHorizon)
 	}
 
-	sorted := append([]contactWindow(nil), windows...)
+	sorted := append([]ContactWindow(nil), windows...)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].start.Before(sorted[j].start)
+		return sorted[i].StartTime.Before(sorted[j].StartTime)
 	})
 
 	for _, window := range sorted {
-		if !window.end.After(now) {
+		if !window.EndTime.After(now) {
 			continue
 		}
-		start := window.start
+		start := window.StartTime
 		if start.Before(now) {
 			start = now
 		}
-		return start, window.end
+		return start, window.EndTime
 	}
 
 	last := sorted[len(sorted)-1]
 	start := now
-	if last.start.After(now) {
-		start = last.start
+	if last.StartTime.After(now) {
+		start = last.StartTime
 	}
-	end := last.end
+	end := last.EndTime
 	if !end.After(start) {
 		end = start.Add(ContactHorizon)
 	}
@@ -549,7 +558,7 @@ func (s *Scheduler) ScheduleLinkRoutes(ctx context.Context) error {
 // For each visibility interval [T_on, T_off]:
 // - At T_on: schedule SetRoute on both endpoints (node A -> node B, node B -> node A)
 // - At T_off: schedule DeleteRoute on both endpoints
-func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.NetworkLink, windows []contactWindow) error {
+func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.NetworkLink, windows []ContactWindow) error {
 	if len(windows) == 0 {
 		return nil
 	}
@@ -576,14 +585,14 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 	}
 
 	for _, window := range windows {
-		if !window.end.After(window.start) {
+		if !window.EndTime.After(window.StartTime) {
 			continue
 		}
 
-		entryIDAOn := fmt.Sprintf("route:%s:A->B:on:%d", link.ID, window.start.UnixNano())
+		entryIDAOn := fmt.Sprintf("route:%s:A->B:on:%d", link.ID, window.StartTime.UnixNano())
 		if !s.scheduledEntryIDs[entryIDAOn] {
 			routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
-			actionAOn := s.newSetRouteAction(entryIDAOn, sbi.AgentID(agentAID), window.start, routeA)
+			actionAOn := s.newSetRouteAction(entryIDAOn, sbi.AgentID(agentAID), window.StartTime, routeA)
 			if err := s.CDPI.SendCreateEntry(agentAID, actionAOn); err != nil {
 				return fmt.Errorf("failed to send SetRoute for node A: %w", err)
 			}
@@ -594,10 +603,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			s.scheduledEntryIDs[entryIDAOn] = true
 		}
 
-		entryIDBOn := fmt.Sprintf("route:%s:B->A:on:%d", link.ID, window.start.UnixNano())
+		entryIDBOn := fmt.Sprintf("route:%s:B->A:on:%d", link.ID, window.StartTime.UnixNano())
 		if !s.scheduledEntryIDs[entryIDBOn] {
 			routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
-			actionBOn := s.newSetRouteAction(entryIDBOn, sbi.AgentID(agentBID), window.start, routeB)
+			actionBOn := s.newSetRouteAction(entryIDBOn, sbi.AgentID(agentBID), window.StartTime, routeB)
 			if err := s.CDPI.SendCreateEntry(agentBID, actionBOn); err != nil {
 				return fmt.Errorf("failed to send SetRoute for node B: %w", err)
 			}
@@ -608,10 +617,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			s.scheduledEntryIDs[entryIDBOn] = true
 		}
 
-		entryIDAOff := fmt.Sprintf("route:%s:A->B:off:%d", link.ID, window.end.UnixNano())
+		entryIDAOff := fmt.Sprintf("route:%s:A->B:off:%d", link.ID, window.EndTime.UnixNano())
 		if !s.scheduledEntryIDs[entryIDAOff] {
 			routeA := s.newRouteEntryForNode(nodeBID, link.InterfaceA)
-			actionAOff := s.newDeleteRouteAction(entryIDAOff, sbi.AgentID(agentAID), window.end, routeA)
+			actionAOff := s.newDeleteRouteAction(entryIDAOff, sbi.AgentID(agentAID), window.EndTime, routeA)
 			if err := s.CDPI.SendCreateEntry(agentAID, actionAOff); err != nil {
 				return fmt.Errorf("failed to send DeleteRoute for node A: %w", err)
 			}
@@ -622,10 +631,10 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 			s.scheduledEntryIDs[entryIDAOff] = true
 		}
 
-		entryIDBOff := fmt.Sprintf("route:%s:B->A:off:%d", link.ID, window.end.UnixNano())
+		entryIDBOff := fmt.Sprintf("route:%s:B->A:off:%d", link.ID, window.EndTime.UnixNano())
 		if !s.scheduledEntryIDs[entryIDBOff] {
 			routeB := s.newRouteEntryForNode(nodeAID, link.InterfaceB)
-			actionBOff := s.newDeleteRouteAction(entryIDBOff, sbi.AgentID(agentBID), window.end, routeB)
+			actionBOff := s.newDeleteRouteAction(entryIDBOff, sbi.AgentID(agentBID), window.EndTime, routeB)
 			if err := s.CDPI.SendCreateEntry(agentBID, actionBOff); err != nil {
 				return fmt.Errorf("failed to send DeleteRoute for node B: %w", err)
 			}
@@ -637,8 +646,8 @@ func (s *Scheduler) scheduleRoutesForLink(ctx context.Context, link *core.Networ
 		}
 	}
 
-	start := windows[0].start
-	end := windows[len(windows)-1].end
+	start := windows[0].StartTime
+	end := windows[len(windows)-1].EndTime
 	s.log.Debug(ctx, "Scheduled route actions for link",
 		logging.String("link_id", link.ID),
 		logging.String("node_a", nodeAID),
@@ -733,6 +742,7 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 	// For each service request, find a path and schedule actions
 	for pq.Len() > 0 {
 		sr := pq.Pop()
+		s.ReleasePathCapacity(sr.ID)
 		if sr == nil || sr.SrcNodeID == "" || sr.DstNodeID == "" {
 			srID := "nil"
 			if sr != nil {
@@ -770,6 +780,48 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		}
 
 		// Schedule actions along the path
+		requiredBps := s.requiredBandwidthForSR(sr)
+		hasCapacity, constrainedLinks := s.CheckPathCapacity(path, requiredBps)
+		if !hasCapacity {
+			preempted, err := s.preemptConflictingSRs(ctx, sr, path, requiredBps, constrainedLinks)
+			if err != nil {
+				s.log.Warn(ctx, "Failed to preempt lower-priority service requests",
+					logging.String("sr_id", sr.ID),
+					logging.String("error", err.Error()),
+				)
+			} else if preempted {
+				s.log.Debug(ctx, "Preempted lower-priority service requests",
+					logging.String("sr_id", sr.ID),
+				)
+			}
+			if preempted {
+				hasCapacity, constrainedLinks = s.CheckPathCapacity(path, requiredBps)
+			}
+		}
+		if !hasCapacity {
+			s.log.Warn(ctx, "Insufficient bandwidth for service request",
+				logging.String("sr_id", sr.ID),
+				logging.String("constrained_links", strings.Join(constrainedLinks, ",")),
+			)
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (bandwidth)", logging.String("sr_id", sr.ID), logging.String("error", err.Error()))
+			}
+			s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
+			continue
+		}
+
+		if err := s.AllocatePathCapacity(path, sr.ID, requiredBps); err != nil {
+			s.log.Warn(ctx, "Failed to reserve bandwidth for service request",
+				logging.String("sr_id", sr.ID),
+				logging.String("error", err.Error()),
+			)
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (bandwidth alloc)", logging.String("sr_id", sr.ID), logging.String("error", err.Error()))
+			}
+			s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
+			continue
+		}
+
 		entrySeen := make(map[string]bool)
 		interval, entries, err := s.scheduleActionsForPath(ctx, path, sr.ID, entrySeen)
 		if err != nil {
@@ -777,6 +829,8 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 				logging.String("sr_id", sr.ID),
 				logging.String("error", err.Error()),
 			)
+			// Release allocated bandwidth before abandoning
+			s.ReleasePathCapacity(sr.ID)
 			// Mark as not provisioned if scheduling failed
 			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
 				s.log.Warn(ctx, "Failed to update service request status (scheduling failed)",
@@ -1250,6 +1304,226 @@ func (s *Scheduler) findLinkBetweenNodes(nodeAID, nodeBID string) (*core.Network
 	}
 
 	return nil, nil, nil, fmt.Errorf("no link found between %s and %s", nodeAID, nodeBID)
+}
+
+func (s *Scheduler) requiredBandwidthForSR(sr *model.ServiceRequest) uint64 {
+	if sr == nil {
+		return 1_000_000
+	}
+	var bps float64
+	for _, fr := range sr.FlowRequirements {
+		bps = math.Max(bps, fr.RequestedBandwidth)
+	}
+	if bps == 0 {
+		for _, fr := range sr.FlowRequirements {
+			bps = math.Max(bps, fr.MinBandwidth)
+		}
+	}
+	if bps == 0 {
+		bps = 1_000_000
+	}
+	return uint64(bps)
+}
+
+func (s *Scheduler) linkIDsForPath(path []string) ([]string, error) {
+	if len(path) < 2 {
+		return nil, fmt.Errorf("path must contain at least two nodes")
+	}
+	linkIDs := make([]string, 0, len(path)-1)
+	for i := 0; i < len(path)-1; i++ {
+		a, b := path[i], path[i+1]
+		link, _, _, err := s.findLinkBetweenNodes(a, b)
+		if err != nil {
+			return nil, err
+		}
+		linkIDs = append(linkIDs, link.ID)
+	}
+	return linkIDs, nil
+}
+
+func (s *Scheduler) CheckPathCapacity(path []string, requiredBps uint64) (bool, []string) {
+	linkIDs, err := s.linkIDsForPath(path)
+	if err != nil {
+		return false, nil
+	}
+	constrained := make([]string, 0)
+	for _, linkID := range linkIDs {
+		avail, err := s.State.GetAvailableBandwidth(linkID)
+		if err != nil {
+			return false, []string{linkID}
+		}
+		unlimited := false
+		if avail == 0 {
+			if linkInfo, err := s.State.GetLink(linkID); err == nil {
+				if linkInfo.MaxBandwidthBps == 0 {
+					unlimited = true
+				}
+			}
+		}
+		if !unlimited && avail < requiredBps {
+			constrained = append(constrained, linkID)
+		}
+	}
+	return len(constrained) == 0, constrained
+}
+
+func (s *Scheduler) AllocatePathCapacity(path []string, srID string, bps uint64) error {
+	if len(path) < 2 || bps == 0 {
+		return nil
+	}
+	linkIDs, err := s.linkIDsForPath(path)
+	if err != nil {
+		return err
+	}
+	reserved := make(map[string]uint64, len(linkIDs))
+	for _, linkID := range linkIDs {
+		if err := s.State.ReserveBandwidth(linkID, bps); err != nil {
+			for rid, amount := range reserved {
+				_ = s.State.ReleaseBandwidth(rid, amount)
+			}
+			return err
+		}
+		reserved[linkID] = bps
+	}
+	s.bandwidthReservations[srID] = reserved
+	return nil
+}
+
+func (s *Scheduler) ReleasePathCapacity(srID string) {
+	reserved, ok := s.bandwidthReservations[srID]
+	if !ok {
+		return
+	}
+	for linkID, bps := range reserved {
+		if err := s.State.ReleaseBandwidth(linkID, bps); err != nil {
+			s.log.Warn(context.Background(), "Release bandwidth failed",
+				logging.String("link_id", linkID),
+				logging.String("sr_id", srID),
+				logging.String("error", err.Error()),
+			)
+		}
+	}
+	delete(s.bandwidthReservations, srID)
+}
+
+func (s *Scheduler) preemptConflictingSRs(ctx context.Context, incoming *model.ServiceRequest, path []string, requiredBps uint64, constrainedLinks []string) (bool, error) {
+	if incoming == nil || len(constrainedLinks) == 0 {
+		return false, nil
+	}
+	candidates := s.collectPreemptionCandidates(incoming.Priority, constrainedLinks)
+	if len(candidates) == 0 {
+		return false, nil
+	}
+
+	for _, candidate := range candidates {
+		reason := fmt.Sprintf("preempted by service request %s", incoming.ID)
+		if err := s.preemptServiceRequest(ctx, candidate, incoming.ID, constrainedLinks, reason); err != nil {
+			return false, err
+		}
+		if ok, _ := s.CheckPathCapacity(path, requiredBps); ok {
+			return true, nil
+		}
+	}
+
+	ok, _ := s.CheckPathCapacity(path, requiredBps)
+	return ok, nil
+}
+
+func (s *Scheduler) collectPreemptionCandidates(priority int32, constrainedLinks []string) []*model.ServiceRequest {
+	if len(constrainedLinks) == 0 {
+		return nil
+	}
+	linkSet := make(map[string]struct{}, len(constrainedLinks))
+	for _, linkID := range constrainedLinks {
+		linkSet[linkID] = struct{}{}
+	}
+
+	seen := make(map[string]struct{})
+	var result []*model.ServiceRequest
+
+	for srID, reserved := range s.bandwidthReservations {
+		if _, ok := seen[srID]; ok {
+			continue
+		}
+		intersects := false
+		for linkID := range reserved {
+			if _, ok := linkSet[linkID]; ok {
+				intersects = true
+				break
+			}
+		}
+		if !intersects {
+			continue
+		}
+		sr, err := s.State.GetServiceRequest(srID)
+		if err != nil || sr == nil {
+			continue
+		}
+		if sr.Priority >= priority {
+			continue
+		}
+		seen[srID] = struct{}{}
+		result = append(result, sr)
+	}
+
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		return result[i].ID < result[j].ID
+	})
+
+	return result
+}
+
+func (s *Scheduler) preemptServiceRequest(ctx context.Context, sr *model.ServiceRequest, preemptingID string, linkIDs []string, reason string) error {
+	if sr == nil {
+		return fmt.Errorf("service request is nil")
+	}
+
+	interval := s.currentProvisioningInterval(sr.ID)
+	s.ReleasePathCapacity(sr.ID)
+	entries := append([]scheduledEntryRef(nil), s.srEntries[sr.ID]...)
+	s.cleanupServiceRequestEntries(ctx, sr.ID, entries)
+	s.releaseStorageForSR(ctx, sr)
+	if err := s.updateServiceRequestStatus(ctx, sr.ID, false, interval); err != nil {
+		return err
+	}
+
+	s.recordPreemption(sr.ID, preemptionRecord{
+		PreemptedAt: s.Clock.Now(),
+		PreemptedBy: preemptingID,
+		LinkIDs:     append([]string(nil), linkIDs...),
+		Reason:      reason,
+	})
+
+	return nil
+}
+
+func (s *Scheduler) currentProvisioningInterval(srID string) *model.TimeInterval {
+	status, err := s.State.GetServiceRequestStatus(srID)
+	if err != nil {
+		return nil
+	}
+	if status.CurrentInterval == nil {
+		now := s.Clock.Now()
+		return &model.TimeInterval{
+			StartTime: now,
+			EndTime:   now,
+		}
+	}
+	interval := *status.CurrentInterval
+	if interval.EndTime.IsZero() {
+		interval.EndTime = s.Clock.Now()
+	}
+	return &interval
+}
+
+func (s *Scheduler) recordPreemption(srID string, record preemptionRecord) {
+	if srID == "" {
+		return
+	}
+	s.preemptionRecords[srID] = record
 }
 
 func findInterfaceByRef(interfacesByNode map[string][]*core.NetworkInterface, ref string) *core.NetworkInterface {
