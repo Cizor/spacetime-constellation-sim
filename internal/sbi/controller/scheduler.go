@@ -54,6 +54,12 @@ type Scheduler struct {
 	lastReplanAt map[string]time.Time
 	// minReplanInterval throttles ShouldReplan to avoid thrashing.
 	minReplanInterval time.Duration
+	// pathFinder allows injecting a path computation function.
+	pathFinder func(ctx context.Context, srcNodeID, dstNodeID string, start time.Time, horizon time.Duration) (*Path, error)
+	// replanHooks centralizes calls within the re-planning loop for easier testing.
+	replanHooks replanHooks
+	// replanRequests signals the re-planning loop to wake up outside of the ticker.
+	replanRequests chan struct{}
 }
 
 type preemptionRecord struct {
@@ -152,7 +158,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 	if log == nil {
 		log = logging.Noop()
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		State:                 state,
 		Clock:                 clock,
 		CDPI:                  cdpi,
@@ -169,6 +175,16 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		lastReplanAt:          make(map[string]time.Time),
 		minReplanInterval:     defaultReplanInterval,
 	}
+	scheduler.pathFinder = scheduler.FindMultiHopPath
+	scheduler.replanHooks = replanHooks{
+		RecomputeContactWindows: scheduler.RecomputeContactWindows,
+		ScheduleLinkBeams:       scheduler.ScheduleLinkBeams,
+		ScheduleLinkRoutes:      scheduler.ScheduleLinkRoutes,
+		ScheduleServiceRequests: scheduler.ScheduleServiceRequests,
+		ReplanActivePaths:       scheduler.replanActivePaths,
+	}
+	scheduler.replanRequests = make(chan struct{}, 1)
+	return scheduler
 }
 
 // SetReplanInterval configures the minimum interval between ShouldReplan triggers.
@@ -190,6 +206,14 @@ const (
 	defaultReplanInterval  = 15 * time.Second
 	betterWindowExtension  = 15 * time.Second
 )
+
+type replanHooks struct {
+	RecomputeContactWindows func(ctx context.Context, now, horizon time.Time)
+	ScheduleLinkBeams       func(ctx context.Context) error
+	ScheduleLinkRoutes      func(ctx context.Context) error
+	ScheduleServiceRequests func(ctx context.Context) error
+	ReplanActivePaths       func(ctx context.Context, now time.Time)
+}
 
 // RunInitialSchedule runs the initial scheduling pass, including link-driven
 // beam scheduling and route scheduling. This should be called once at scenario startup after
@@ -962,6 +986,143 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 	return nil
 }
 
+// RequestReplan signals the re-planning loop to wake up immediately.
+func (s *Scheduler) RequestReplan() {
+	if s == nil || s.replanRequests == nil {
+		return
+	}
+	select {
+	case s.replanRequests <- struct{}{}:
+	default:
+	}
+}
+
+// RunReplanningLoop runs the periodic re-planning cycle, including beam and route refreshes
+// as well as active path evaluations. The loop exits when the provided context is canceled.
+func (s *Scheduler) RunReplanningLoop(ctx context.Context, interval time.Duration) {
+	if s == nil || ctx == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = defaultReplanInterval
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.replanTick(ctx)
+		case <-s.replanRequests:
+			s.drainReplanRequests()
+			s.replanTick(ctx)
+		}
+	}
+}
+
+func (s *Scheduler) replanTick(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	now := s.Clock.Now()
+	horizon := now.Add(ContactHorizon)
+
+	if s.replanHooks.RecomputeContactWindows != nil {
+		s.replanHooks.RecomputeContactWindows(ctx, now, horizon)
+	}
+	if err := s.replanHooks.ScheduleLinkBeams(ctx); err != nil {
+		s.log.Warn(ctx, "Replanning failed to schedule link beams",
+			logging.String("error", err.Error()),
+		)
+	}
+	if err := s.replanHooks.ScheduleLinkRoutes(ctx); err != nil {
+		s.log.Warn(ctx, "Replanning failed to schedule link routes",
+			logging.String("error", err.Error()),
+		)
+	}
+	if err := s.replanHooks.ScheduleServiceRequests(ctx); err != nil {
+		s.log.Warn(ctx, "Replanning failed to schedule service requests",
+			logging.String("error", err.Error()),
+		)
+	}
+	if s.replanHooks.ReplanActivePaths != nil {
+		s.replanHooks.ReplanActivePaths(ctx, now)
+	}
+}
+
+func (s *Scheduler) drainReplanRequests() {
+	if s == nil || s.replanRequests == nil {
+		return
+	}
+	for {
+		select {
+		case <-s.replanRequests:
+		default:
+			return
+		}
+	}
+}
+
+func (s *Scheduler) replanActivePaths(ctx context.Context, now time.Time) {
+	if s == nil || len(s.activePaths) == 0 {
+		return
+	}
+	for srID := range s.activePaths {
+		if !s.ShouldReplan(srID, now) {
+			continue
+		}
+		s.replanActivePath(ctx, srID, now)
+	}
+}
+
+func (s *Scheduler) replanActivePath(ctx context.Context, srID string, now time.Time) {
+	if srID == "" {
+		return
+	}
+	ap := s.activePaths[srID]
+	if ap == nil || ap.Path == nil {
+		return
+	}
+	sr, err := s.State.GetServiceRequest(srID)
+	if err != nil || sr == nil || !sr.IsProvisionedNow {
+		return
+	}
+	if sr.SrcNodeID == "" || sr.DstNodeID == "" {
+		return
+	}
+
+	newPath, err := s.pathFinder(ctx, sr.SrcNodeID, sr.DstNodeID, now, ContactHorizon)
+	if err != nil {
+		s.log.Warn(ctx, "Replanning failed to compute a candidate path",
+			logging.String("sr_id", srID),
+			logging.String("error", err.Error()),
+		)
+		return
+	}
+	if newPath == nil {
+		s.log.Warn(ctx, "Replanning found no path to apply",
+			logging.String("sr_id", srID),
+		)
+		return
+	}
+	if s.pathsEqual(ap.Path, newPath) {
+		return
+	}
+	if err := s.UpdatePath(ctx, srID, newPath); err != nil {
+		s.log.Warn(ctx, "Failed to apply replanned path",
+			logging.String("sr_id", srID),
+			logging.String("error", err.Error()),
+		)
+		return
+	}
+	s.log.Info(ctx, "Replanned service request path",
+		logging.String("sr_id", srID),
+	)
+}
+
 func pathNodeSequence(path *Path) []string {
 	if path == nil || len(path.Hops) == 0 {
 		return nil
@@ -1171,6 +1332,21 @@ func (s *Scheduler) hopEqual(a, b PathHop) bool {
 		a.ToNodeID == b.ToNodeID &&
 		a.StartTime.Equal(b.StartTime) &&
 		a.EndTime.Equal(b.EndTime)
+}
+
+func (s *Scheduler) pathsEqual(a, b *Path) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if len(a.Hops) != len(b.Hops) {
+		return false
+	}
+	for i := range a.Hops {
+		if !s.hopEqual(a.Hops[i], b.Hops[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // ComputePathDiff identifies shared, removed, and added hops between two paths.

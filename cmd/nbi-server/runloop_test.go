@@ -49,6 +49,28 @@ func (f *fakeReplanScheduler) ScheduleServiceRequests(context.Context) error {
 	return nil
 }
 
+func (f *fakeReplanScheduler) RunReplanningLoop(ctx context.Context, interval time.Duration) {
+	if ctx == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			f.RecomputeContactWindows(ctx, now, now.Add(time.Second))
+			_ = f.ScheduleLinkBeams(ctx)
+			_ = f.ScheduleLinkRoutes(ctx)
+			_ = f.ScheduleServiceRequests(ctx)
+		}
+	}
+}
+
 func TestRunSimLoop_EventSchedulerAndReplan(t *testing.T) {
 	originalInterval := replanInterval
 	replanInterval = 40 * time.Millisecond
