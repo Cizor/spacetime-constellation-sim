@@ -268,6 +268,16 @@ func TestScenarioStateServiceRequestCRUD(t *testing.T) {
 	net := network.NewKnowledgeBase()
 	s := NewScenarioState(phys, net, logging.Noop())
 
+	if err := s.CreatePlatform(&model.PlatformDefinition{ID: "plat-1"}); err != nil {
+		t.Fatalf("CreatePlatform error: %v", err)
+	}
+	if err := s.CreateNode(&model.NetworkNode{ID: "nodeA", PlatformID: "plat-1"}, nil); err != nil {
+		t.Fatalf("CreateNode(nodeA) error: %v", err)
+	}
+	if err := s.CreateNode(&model.NetworkNode{ID: "nodeB", PlatformID: "plat-1"}, nil); err != nil {
+		t.Fatalf("CreateNode(nodeB) error: %v", err)
+	}
+
 	sr := &model.ServiceRequest{
 		ID:        "sr-1",
 		SrcNodeID: "nodeA",

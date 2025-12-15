@@ -27,6 +27,8 @@ type Path struct {
 	ID string
 	// Nodes captures the ordered nodes that form the path.
 	Nodes []string
+	// Latency is the total latency observed for this path while provisioned.
+	Latency time.Duration
 }
 
 type ServiceRequest struct {
@@ -41,6 +43,16 @@ type ServiceRequest struct {
 	Priority              int32
 	IsDisruptionTolerant  bool
 	AllowPartnerResources bool
+	// MessageSizeBytes describes the DTN message payload size for disruption-tolerant requests.
+	MessageSizeBytes uint64
+	// CreatedAt records when the service request was created.
+	CreatedAt time.Time
+
+	// Federation fields for cross-domain workloads.
+	CrossDomain      bool
+	SourceDomain     string
+	DestDomain       string
+	FederationToken  string
 
 	// Status fields updated by the scheduler when paths are provisioned.
 	// IsProvisionedNow indicates if the service request is currently provisioned

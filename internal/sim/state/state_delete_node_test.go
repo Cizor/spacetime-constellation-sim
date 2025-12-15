@@ -89,6 +89,9 @@ func TestDeleteNodeFailsWhenServiceRequestsPresent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateNode error: %v", err)
 	}
+	if err := s.CreateNode(&model.NetworkNode{ID: "other"}, nil); err != nil {
+		t.Fatalf("CreateNode(other) error: %v", err)
+	}
 
 	if err := s.CreateServiceRequest(&model.ServiceRequest{
 		ID:        "sr-keep-node",

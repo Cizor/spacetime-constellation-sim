@@ -100,6 +100,79 @@ func TestScenarioStateDomainValidation(t *testing.T) {
 	}
 }
 
+func TestScenarioStateCrossDomainServiceRequest(t *testing.T) {
+	state := newTestStateWithPlatform(t)
+	ensureNode(t, state, "node-left")
+	ensureNode(t, state, "node-right")
+
+	domainLeft := &model.SchedulingDomain{
+		DomainID: "dom-left",
+		Nodes:    []string{"node-left"},
+	}
+	domainRight := &model.SchedulingDomain{
+		DomainID: "dom-right",
+		Nodes:    []string{"node-right"},
+	}
+	if err := state.CreateDomain(domainLeft); err != nil {
+		t.Fatalf("CreateDomain(left) error = %v", err)
+	}
+	if err := state.CreateDomain(domainRight); err != nil {
+		t.Fatalf("CreateDomain(right) error = %v", err)
+	}
+
+	sr := &model.ServiceRequest{
+		ID:              "sr-cross",
+		SrcNodeID:       "node-left",
+		DstNodeID:       "node-right",
+		FederationToken: "tok",
+	}
+	if err := state.CreateServiceRequest(sr); err != nil {
+		t.Fatalf("CreateServiceRequest(cross) error = %v", err)
+	}
+	if !sr.CrossDomain {
+		t.Fatalf("CreateServiceRequest cross-domain flag = false, want true")
+	}
+	if sr.SourceDomain != domainLeft.DomainID {
+		t.Fatalf("SourceDomain = %s, want %s", sr.SourceDomain, domainLeft.DomainID)
+	}
+	if sr.DestDomain != domainRight.DomainID {
+		t.Fatalf("DestDomain = %s, want %s", sr.DestDomain, domainRight.DomainID)
+	}
+}
+
+func TestScenarioStateCrossDomainTokenRequired(t *testing.T) {
+	state := newTestStateWithPlatform(t)
+	ensureNode(t, state, "node-left")
+	ensureNode(t, state, "node-right")
+
+	domainLeft := &model.SchedulingDomain{
+		DomainID: "dom-left",
+		Nodes:    []string{"node-left"},
+	}
+	domainRight := &model.SchedulingDomain{
+		DomainID: "dom-right",
+		Nodes:    []string{"node-right"},
+	}
+	if err := state.CreateDomain(domainLeft); err != nil {
+		t.Fatalf("CreateDomain(left) error = %v", err)
+	}
+	if err := state.CreateDomain(domainRight); err != nil {
+		t.Fatalf("CreateDomain(right) error = %v", err)
+	}
+
+	sr := &model.ServiceRequest{
+		ID:        "sr-missing-token",
+		SrcNodeID: "node-left",
+		DstNodeID: "node-right",
+	}
+	sr.SourceDomain = "dom-left"
+	sr.DestDomain = "dom-right"
+
+	if err := state.CreateServiceRequest(sr); err == nil || !errors.Is(err, ErrDomainInvalid) {
+		t.Fatalf("CreateServiceRequest missing token error = %v, want %v", err, ErrDomainInvalid)
+	}
+}
+
 func TestScenarioStateDomainReassignment(t *testing.T) {
 	state := newTestStateWithPlatform(t)
 	ensureNode(t, state, "node-reassign")

@@ -1236,6 +1236,10 @@ func (s *ScenarioState) CreateServiceRequest(sr *model.ServiceRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.populateServiceRequestDomainsLocked(sr); err != nil {
+		return err
+	}
+
 	if _, exists := s.serviceRequests[sr.ID]; exists {
 		return ErrServiceRequestExists
 	}
@@ -2488,6 +2492,54 @@ func cloneDomain(domain *model.SchedulingDomain) *model.SchedulingDomain {
 		clone.Capabilities = nil
 	}
 	return &clone
+}
+
+// populateServiceRequestDomainsLocked ensures domain metadata is valid while holding s.mu.
+func (s *ScenarioState) populateServiceRequestDomainsLocked(sr *model.ServiceRequest) error {
+	if sr == nil {
+		return nil
+	}
+
+	sourceDomain := strings.TrimSpace(sr.SourceDomain)
+	destDomain := strings.TrimSpace(sr.DestDomain)
+
+	if sr.SrcNodeID != "" {
+		if s.physKB.GetNetworkNode(sr.SrcNodeID) == nil {
+			return fmt.Errorf("%w: %q", ErrNodeNotFound, sr.SrcNodeID)
+		}
+		if sourceDomain == "" {
+			sourceDomain = s.nodeDomains[sr.SrcNodeID]
+		}
+		if sourceDomain != "" {
+			if _, exists := s.domains[sourceDomain]; !exists {
+				return fmt.Errorf("%w: %q", ErrDomainNotFound, sourceDomain)
+			}
+		}
+	}
+
+	if sr.DstNodeID != "" {
+		if s.physKB.GetNetworkNode(sr.DstNodeID) == nil {
+			return fmt.Errorf("%w: %q", ErrNodeNotFound, sr.DstNodeID)
+		}
+		if destDomain == "" {
+			destDomain = s.nodeDomains[sr.DstNodeID]
+		}
+		if destDomain != "" {
+			if _, exists := s.domains[destDomain]; !exists {
+				return fmt.Errorf("%w: %q", ErrDomainNotFound, destDomain)
+			}
+		}
+	}
+
+	crossDomain := sourceDomain != "" && destDomain != "" && sourceDomain != destDomain
+	if crossDomain && sr.FederationToken == "" {
+		return fmt.Errorf("%w: federation token required for cross-domain request", ErrDomainInvalid)
+	}
+
+	sr.SourceDomain = sourceDomain
+	sr.DestDomain = destDomain
+	sr.CrossDomain = crossDomain
+	return nil
 }
 
 func (s *ScenarioState) nodeCoordinates(node *model.NetworkNode) (model.Coordinates, bool) {
