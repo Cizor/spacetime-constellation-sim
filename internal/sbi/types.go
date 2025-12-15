@@ -23,6 +23,8 @@ const (
 	ScheduledDeleteBeam
 	ScheduledSetRoute
 	ScheduledDeleteRoute
+	ScheduledStoreMessage
+	ScheduledForwardMessage
 	ScheduledSetSrPolicy    // stub for future behavior
 	ScheduledDeleteSrPolicy // stub for future behavior
 )
@@ -33,12 +35,12 @@ type ActionKind = ScheduledActionType
 
 // Backward compatibility constants
 const (
-	ActionKindUnknown       = ScheduledActionUnknown
-	ActionKindUpdateBeam    = ScheduledUpdateBeam
-	ActionKindDeleteBeam    = ScheduledDeleteBeam
-	ActionKindSetRoute      = ScheduledSetRoute
-	ActionKindDeleteRoute   = ScheduledDeleteRoute
-	ActionKindSetSrPolicy   = ScheduledSetSrPolicy
+	ActionKindUnknown        = ScheduledActionUnknown
+	ActionKindUpdateBeam     = ScheduledUpdateBeam
+	ActionKindDeleteBeam     = ScheduledDeleteBeam
+	ActionKindSetRoute       = ScheduledSetRoute
+	ActionKindDeleteRoute    = ScheduledDeleteRoute
+	ActionKindSetSrPolicy    = ScheduledSetSrPolicy
 	ActionKindDeleteSrPolicy = ScheduledDeleteSrPolicy
 )
 
@@ -53,6 +55,10 @@ func (t ScheduledActionType) String() string {
 		return "SetRoute"
 	case ScheduledDeleteRoute:
 		return "DeleteRoute"
+	case ScheduledStoreMessage:
+		return "StoreMessage"
+	case ScheduledForwardMessage:
+		return "ForwardMessage"
 	case ScheduledSetSrPolicy:
 		return "SetSrPolicy"
 	case ScheduledDeleteSrPolicy:
@@ -92,8 +98,14 @@ type BeamSpec struct {
 // For Scope 4, this is a stub that accepts SBI messages but doesn't
 // affect forwarding behavior yet.
 type SrPolicySpec struct {
-	PolicyID string
-	// TODO: add segment list, preferences, etc. in later scopes
+	PolicyID   string
+	Color      int32
+	HeadendID  string
+	Endpoints  []string
+	Segments   []model.Segment
+	Preference int32
+	BindingSID string
+	Path       []string
 }
 
 // ScheduledAction represents a single action scheduled for execution at a specific
@@ -114,9 +126,10 @@ type ScheduledAction struct {
 	Token     string // schedule_manipulation_token
 
 	// Payloads (only one should be non-nil / meaningful depending on Type)
-	Beam     *BeamSpec
-	Route    *model.RouteEntry // reuse existing RouteEntry type from model package
-	SrPolicy *SrPolicySpec
+	Beam        *BeamSpec
+	Route       *model.RouteEntry // reuse existing RouteEntry type from model package
+	SrPolicy    *SrPolicySpec
+	MessageSpec *DTNMessageSpec
 }
 
 // Validate checks that the ScheduledAction is well-formed.
@@ -146,9 +159,28 @@ func (a *ScheduledAction) Validate() error {
 		if a.SrPolicy == nil {
 			return fmt.Errorf("ScheduledAction with Type %v must have non-nil SrPolicy", a.Type)
 		}
+	case ScheduledStoreMessage, ScheduledForwardMessage:
+		if a.MessageSpec == nil {
+			return fmt.Errorf("ScheduledAction with Type %v must have non-nil MessageSpec", a.Type)
+		}
 	}
 
 	return nil
+}
+
+// DTNMessageSpec describes payload metadata for DTN storage/forward actions.
+type DTNMessageSpec struct {
+	ServiceRequestID string
+	MessageID        string
+	MessageSizeBytes uint64
+	StorageNodeID    string
+	StorageStart     time.Time
+	StorageDuration  time.Duration
+	StorageEnd       time.Time
+	DestinationNode  string
+	LinkID           string
+	NextHopNodeID    string
+	ExpiryTime       time.Time
 }
 
 // ActionMeta contains controller-side metadata for scheduled actions.
@@ -255,4 +287,3 @@ func (r *InMemoryAgentRegistry) Unregister(agentID AgentID) {
 	defer r.mu.Unlock()
 	delete(r.agents, agentID)
 }
-

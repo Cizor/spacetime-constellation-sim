@@ -1,61 +1,51 @@
 # Spacetime-Compatible Constellation Simulator (Go)
 
-A Go-based, API-compatible engine for modeling satellite constellations, ground infrastructure, and control-plane automation inspired by Aalyria Spacetime. Run it locally to experiment with constellations, schedule beams/routes, and expose telemetry without relying on a hosted service.
+A Go-native simulation engine that models satellite constellations, ground infrastructure, and scheduling logic inspired by Aalyria Spacetime. Combine the scheduler, SBI runtime, and telemetry services in a single repo so you can prototype high-fidelity constellation automation locally.
 
-## Key features
+## Highlights
 
 - **Entity modeling**
-  - Define platforms (orbital or static), attach network nodes, and assign interfaces.
-  - Maintain thread-safe knowledge bases (`kb.Platform`, `kb.NetworkNode`, `core.NetworkLink`) shared between simulation and APIs.
-
-- **Time-stepped simulation**
-  - `timectrl` drives the clock on a configurable tick interval with `Now()`/`SetTime()` hooks.
-  - Motion models update platform positions every tick (SGP4 for orbits, static for fixed platforms).
-  - Connectivity evaluates wired/wireless links each tick (geometry, horizon, occlusion) to keep a live view of potential/activity.
-
-- **Control-plane automation**
-  - SBI runtime sits inside `cmd/nbi-server`, registering CDPI + telemetry on the same gRPC server as the NBI services.
-  - Scheduler precomputes contact windows, normalizes beam/interface IDs, batches service requests by priority, tracks DTN storage, and logs conflict/power heuristics.
-  - Simulation loop runs `EventScheduler.RunDue()` each tick and periodically recomputes contact windows plus reruns service request planning.
-
-- **Northbound API**
-  - The gRPC server exposes both Aalyria-style NBI services (platforms, nodes, links, service requests, scenarios) and SBI services (`Scheduling`, `Telemetry`), all configurable with TLS.
-  - SBIRuntime wires telemetry clients, CDPI, and agents together so you can drive beams/routes through gRPC clients.
-
-- **Telemetry + observability**
-  - Interface-level metrics flow through the telemetry service, with foundations in place for future modem, intent, and observability enhancements.
-  - Structured logging and Prometheus-friendly metrics provide insight when running locally or in CI.
+  - Build platforms (orbital or static), attach network nodes/interfaces, and track links in thread-safe knowledge bases (kb.Platform, kb.NetworkNode, core.NetworkLink).
+  - Capture service requests, priorities, and metadata in internal/sim/state while keeping the motion/geometry loop separate.
+- **Scheduler + SBI runtime**
+  - Scheduler precomputes contact windows, assesses conflict/power/frequency rules, handles DTN store-and-forward, and emits structured scheduled actions.
+  - The SBI controller and agents run inside cmd/nbi-server, exposing CDPI actions (beams, routes, SR policies) plus telemetry hooks.
+- **Telemetry & observability**
+  - Instrumented telemetry clients gather interface, intent, and scheduler metrics.
+  - Exporters and tests exercise the telemetry service so you can connect Prometheus or custom dashboards.
 
 ## Getting started
 
-```bash
+`powershell
 git clone https://github.com/Cizor/spacetime-constellation-sim.git
 cd spacetime-constellation-sim
 
-# fetch dependencies
+# download dependencies
 go mod tidy
 
 # build the gRPC server
 go build ./cmd/nbi-server
 
-# run the server and point your gRPC client at $LISTEN_ADDRESS
-./cmd/nbi-server/nbi-server
-```
+# run the server
+cmd\nbi-server\nbi-server.exe
+`
 
-Inspect `cmd/nbi-server/README.md` (if available) or the docs in `docs/planning/` for sample scenarios and API usage. Run all tests with:
+The gRPC server listens for both NBI-style services (platforms, nodes, links, service requests) and SBI services (Scheduling, Telemetry). Check cmd/nbi-server/README.md for configuration knobs and TLS setup.
 
-```bash
+## Testing
+
+`
 go test ./...
-```
+`
 
-## Repository layout
+Unit and integration suites cover scheduler logic, agent behaviors, and telemetry interactions under the internal/sbi/ and internal/sim/state/ packages.
 
-- `cmd/nbi-server/`: Unified gRPC server hosting both NBI and SBI services.
-- `internal/sbi/`: SBI runtime, scheduler, controller, agent, and telemetry implementations.
-- `internal/sim/state/`: ScenarioState unifying Scope 1 and Scope 2 knowledge plus service request and DTN storage bookkeeping.
-- `core/`, `kb/`, `model/`, `timectrl/`: Motion/connectivity engine, knowledge bases, data models, and time controller utilities.
-- `docs/`, `docs/planning/`: Architectural docs, roadmaps, and requirements that describe what’s next.
+## Contributing
 
-## What’s next
+1. Open an issue describing the feature, bug, or doc change.
+2. Draft your changes in a feature branch following the existing Go formatting (gofmt/goimports).
+3. Add or adjust tests wherever behavior changes.
+4. Run go test ./... locally before submitting a PR.
+5. Reference the relevant README sections in your PR summary.
 
-Roadmap items include scheduler improvements (conflict handling, time-aware multi-hop paths, reactive re-planning), expanded telemetry (modem metrics, intents), and features like region-based requests and federation support. Use `docs/planning/` for the latest planning artifacts and to get involved in the work.
+Need help? Reach out via GitHub discussions or review the code in internal/sbi/ for the scheduler, controller, and telemetry layers.

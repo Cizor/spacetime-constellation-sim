@@ -38,6 +38,7 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 	}
 
 	scenarioState := state.NewScenarioState(physKB, netKB, logging.Noop())
+	telemetryState := state.NewTelemetryState()
 
 	// Create platforms
 	for _, id := range []string{"platform-A", "platform-B", "platform-C"} {
@@ -131,7 +132,7 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 		agentHandles[nodeID] = handle
 	}
 
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), telemetryState)
 	ctx := context.Background()
 
 	// Test ScheduleLinkBeams for multiple links

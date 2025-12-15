@@ -61,6 +61,10 @@ var (
 	ErrDomainNotFound = errors.New("domain not found")
 	// ErrDomainInvalid indicates the supplied domain definition is invalid.
 	ErrDomainInvalid = errors.New("invalid domain")
+	// ErrSrPolicyExists indicates a scheduled-routing policy already exists.
+	ErrSrPolicyExists = errors.New("sr policy already exists")
+	// ErrSrPolicyNotFound indicates a requested SR policy was not found.
+	ErrSrPolicyNotFound = errors.New("sr policy not found")
 	// ErrPlatformInUse indicates a platform is still referenced by nodes.
 	ErrPlatformInUse = errors.New("platform is referenced by nodes")
 	// ErrNodeInUse indicates a node is still referenced by other resources.
@@ -101,6 +105,8 @@ type ScenarioState struct {
 	domains map[string]*model.SchedulingDomain
 	// nodeDomains maps node -> domain ID.
 	nodeDomains map[string]string
+	// srPolicies stores the headend's SR policies keyed by policy ID.
+	srPolicies map[string]map[string]*model.SrPolicy
 	// regionMembership caches recent membership snapshots, keyed by region ID.
 	regionMembership map[string]*regionMembershipEntry
 	// regionMembershipTTL controls how long cached membership is considered fresh.
@@ -259,6 +265,7 @@ func NewScenarioState(phys *kb.KnowledgeBase, net *network.KnowledgeBase, log lo
 		regions:                make(map[string]*model.Region),
 		domains:                make(map[string]*model.SchedulingDomain),
 		nodeDomains:            make(map[string]string),
+		srPolicies:             make(map[string]map[string]*model.SrPolicy),
 		regionMembership:       make(map[string]*regionMembershipEntry),
 		regionMembershipTTL:    defaultRegionMembershipTTL,
 		expiryEvents:           make(map[string]string),
@@ -1112,6 +1119,120 @@ func (s *ScenarioState) RemoveRoute(nodeID string, destinationCIDR string) error
 	}
 
 	s.updateMetricsLocked()
+	return nil
+}
+
+func cloneSrPolicy(src *model.SrPolicy) *model.SrPolicy {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	cp.Endpoints = append([]string(nil), src.Endpoints...)
+	cp.Segments = append([]model.Segment(nil), src.Segments...)
+	return &cp
+}
+
+// InstallSrPolicy stores a policy copy for the specified headend node.
+func (s *ScenarioState) InstallSrPolicy(nodeID string, policy *model.SrPolicy) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: node ID is empty", ErrNodeInvalid)
+	}
+	if policy == nil {
+		return errors.New("policy must not be nil")
+	}
+	if policy.PolicyID == "" {
+		return errors.New("policy ID is required")
+	}
+	if policy.HeadendNodeID == "" || policy.HeadendNodeID != nodeID {
+		return fmt.Errorf("%w: headend mismatch", ErrNodeInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.physKB.GetNetworkNode(nodeID) == nil {
+		return ErrNodeNotFound
+	}
+
+	for _, endpoint := range policy.Endpoints {
+		if s.physKB.GetNetworkNode(endpoint) == nil {
+			return fmt.Errorf("%w: endpoint %s", ErrNodeNotFound, endpoint)
+		}
+	}
+
+	if _, ok := s.srPolicies[nodeID]; !ok {
+		s.srPolicies[nodeID] = make(map[string]*model.SrPolicy)
+	}
+	if _, exists := s.srPolicies[nodeID][policy.PolicyID]; exists {
+		return fmt.Errorf("%w: %s", ErrSrPolicyExists, policy.PolicyID)
+	}
+
+	s.srPolicies[nodeID][policy.PolicyID] = cloneSrPolicy(policy)
+	return nil
+}
+
+// GetSrPolicies returns clones of the policies stored for the headend node.
+func (s *ScenarioState) GetSrPolicies(nodeID string) []*model.SrPolicy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	policies, ok := s.srPolicies[nodeID]
+	if !ok {
+		return nil
+	}
+	result := make([]*model.SrPolicy, 0, len(policies))
+	for _, policy := range policies {
+		result = append(result, cloneSrPolicy(policy))
+	}
+	return result
+}
+
+// GetSrPolicy returns the specified SR policy stored for the headend node.
+func (s *ScenarioState) GetSrPolicy(nodeID, policyID string) (*model.SrPolicy, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: node ID is empty", ErrNodeInvalid)
+	}
+	if policyID == "" {
+		return nil, fmt.Errorf("%w: policy ID is empty", ErrSrPolicyNotFound)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	policies, ok := s.srPolicies[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrSrPolicyNotFound, policyID)
+	}
+	policy, exists := policies[policyID]
+	if !exists || policy == nil {
+		return nil, fmt.Errorf("%w: %s", ErrSrPolicyNotFound, policyID)
+	}
+	return cloneSrPolicy(policy), nil
+}
+
+// RemoveSrPolicy deletes the stored policy for the headend node.
+func (s *ScenarioState) RemoveSrPolicy(nodeID, policyID string) error {
+	if nodeID == "" {
+		return fmt.Errorf("%w: node ID is empty", ErrNodeInvalid)
+	}
+	if policyID == "" {
+		return fmt.Errorf("%w: policy ID is empty", ErrSrPolicyNotFound)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	policies, ok := s.srPolicies[nodeID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrSrPolicyNotFound, policyID)
+	}
+	if _, exists := policies[policyID]; !exists {
+		return fmt.Errorf("%w: %s", ErrSrPolicyNotFound, policyID)
+	}
+	delete(policies, policyID)
+	if len(policies) == 0 {
+		delete(s.srPolicies, nodeID)
+	}
 	return nil
 }
 

@@ -92,7 +92,7 @@ func NewSBIRuntimeWithServers(
 	}
 
 	// Create scheduler
-	scheduler := controller.NewScheduler(state, clock, cdpiServer, log)
+	scheduler := controller.NewScheduler(state, clock, cdpiServer, log, telemetryState)
 
 	// Create agents for each node
 	// Note: Streams will be created in StartAgents when we have the gRPC connection
@@ -160,7 +160,7 @@ func NewSBIRuntime(state *sim.ScenarioState, clock sbi.EventScheduler, conn *grp
 	cdpiServer := controller.NewCDPIServer(state, clock, log)
 
 	// Create scheduler
-	scheduler := controller.NewScheduler(state, clock, cdpiServer, log)
+	scheduler := controller.NewScheduler(state, clock, cdpiServer, log, telemetryState)
 
 	// Create agents for each node
 	// Note: Streams will be created in StartAgents when we have the gRPC connection
@@ -290,4 +290,3 @@ func (r *SBIRuntime) Close() error {
 	// The caller is responsible for closing the connection
 	return nil
 }
-

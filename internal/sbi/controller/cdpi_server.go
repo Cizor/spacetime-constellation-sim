@@ -379,6 +379,16 @@ func (s *CDPIServer) SendDeleteEntry(agentID, entryID string) error {
 	}
 }
 
+func (s *CDPIServer) hasAgent(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	s.agentsMu.RLock()
+	defer s.agentsMu.RUnlock()
+	_, ok := s.agents[agentID]
+	return ok
+}
+
 // buildFinalizeMessage builds a FinalizeRequest message with token and seqno.
 func (s *CDPIServer) buildFinalizeMessage(h *AgentHandle, cutoff time.Time) (*schedulingpb.ReceiveRequestsMessageFromController, error) {
 	seqNo := h.NextSeqNo()
@@ -600,4 +610,3 @@ func generateToken() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-

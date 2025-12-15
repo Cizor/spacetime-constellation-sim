@@ -51,11 +51,23 @@ type ModemMetrics struct {
 	Timestamp time.Time
 }
 
+// IntentMetrics captures per-ServiceRequest telemetry information.
+type IntentMetrics struct {
+	ServiceRequestID    string
+	IsProvisioned       bool
+	ProvisionedDuration time.Duration
+	TotalDuration       time.Duration
+	FulfillmentRate     float64
+	AverageLatency      time.Duration
+	BytesTransferred    uint64
+}
+
 // TelemetryState is a concurrency-safe store for interface metrics.
 type TelemetryState struct {
 	mu    sync.RWMutex
 	byIf  map[string]*InterfaceMetrics // key: "nodeID/interfaceID"
 	modem map[string]*ModemMetrics     // key: "nodeID/interfaceID"
+	intent map[string]*IntentMetrics
 }
 
 // NewTelemetryState creates a new TelemetryState instance.
@@ -63,6 +75,7 @@ func NewTelemetryState() *TelemetryState {
 	return &TelemetryState{
 		byIf:  make(map[string]*InterfaceMetrics),
 		modem: make(map[string]*ModemMetrics),
+		intent: make(map[string]*IntentMetrics),
 	}
 }
 
@@ -145,6 +158,38 @@ func (t *TelemetryState) UpdateModemMetrics(m *ModemMetrics) error {
 	return nil
 }
 
+// UpdateIntentMetrics stores intent metrics for a service request.
+func (t *TelemetryState) UpdateIntentMetrics(metrics *IntentMetrics) error {
+	if metrics == nil {
+		return errors.New("intent metrics is nil")
+	}
+	if metrics.ServiceRequestID == "" {
+		return errors.New("service request ID is required")
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cp := *metrics
+	t.intent[metrics.ServiceRequestID] = &cp
+	return nil
+}
+
+// GetIntentMetrics retrieves intent metrics for a given service request.
+func (t *TelemetryState) GetIntentMetrics(srID string) *IntentMetrics {
+	if srID == "" {
+		return nil
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	m, ok := t.intent[srID]
+	if !ok || m == nil {
+		return nil
+	}
+	cp := *m
+	return &cp
+}
 // GetModemMetrics retrieves modem metrics for an interface.
 func (t *TelemetryState) GetModemMetrics(nodeID, ifaceID string) (*ModemMetrics, error) {
 	key := telemetryKey(nodeID, ifaceID)

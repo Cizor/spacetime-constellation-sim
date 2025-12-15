@@ -71,6 +71,10 @@ func (f *fakeCDPIServerForScheduler) SendDeleteEntry(agentID, entryID string) er
 	return f.CDPIServer.SendDeleteEntry(agentID, entryID)
 }
 
+func (f *fakeCDPIServerForScheduler) hasAgent(agentID string) bool {
+	return f.CDPIServer.hasAgent(agentID)
+}
+
 // setupSchedulerTest creates a minimal test scenario with:
 // - Two nodes (node-A, node-B)
 // - Two interfaces (if-A, if-B)
@@ -107,6 +111,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *fakeCDPIServerForScheduler, 
 	}
 
 	scenarioState := state.NewScenarioState(physKB, netKB, logging.Noop())
+	telemetryState := state.NewTelemetryState()
 
 	// Create a fake clock
 	T0 := time.Unix(1000, 0)
@@ -117,7 +122,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *fakeCDPIServerForScheduler, 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
 
 	// Create scheduler
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), telemetryState)
 
 	// Create platform and nodes
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{
@@ -229,7 +234,7 @@ func TestScheduler_ScheduleLinkBeams_NoPotentialLinks(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
 
 	ctx := context.Background()
 	err := scheduler.ScheduleLinkBeams(ctx)

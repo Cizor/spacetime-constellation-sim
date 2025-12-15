@@ -65,6 +65,8 @@ type ServiceRequest struct {
 	LastProvisionedAt time.Time
 	// LastUnprovisionedAt records when the request was last marked as not provisioned.
 	LastUnprovisionedAt time.Time
+	// SrPolicyID points to an optional SR policy that should govern this request.
+	SrPolicyID string
 }
 
 type ServiceRequestStatus struct {

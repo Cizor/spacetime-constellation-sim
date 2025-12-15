@@ -104,7 +104,7 @@ func TestScheduler_ServiceRequestStatusUpdates(t *testing.T) {
 	fakeClock := &fakeClockForTest{now: T0}
 	clock := sbi.NewEventScheduler(fakeClock)
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, clock)
-	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log)
+	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log, state.NewTelemetryState())
 
 	// Register agents in CDPI server (required for SendCreateEntry to work)
 	// Create minimal agent handles with fake streams
@@ -209,7 +209,7 @@ func TestScheduler_ServiceRequestStatusNoPath(t *testing.T) {
 	T0 := time.Unix(1000, 0)
 	clock := sbi.NewFakeEventScheduler(T0)
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, clock)
-	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log)
+	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log, state.NewTelemetryState())
 
 	// Run scheduler (no path should be found)
 	ctx := context.Background()
@@ -288,7 +288,7 @@ func TestScheduler_PreemptsLowerPriorityServiceRequests(t *testing.T) {
 	fakeClock := &fakeClockForTest{now: T0}
 	clock := sbi.NewEventScheduler(fakeClock)
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, clock)
-	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log)
+	scheduler := NewScheduler(scenarioState, clock, fakeCDPI, log, state.NewTelemetryState())
 
 	agentA := &AgentHandle{
 		AgentID:  "nodeA",

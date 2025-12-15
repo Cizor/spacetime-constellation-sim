@@ -36,8 +36,11 @@ type DTNHop struct {
 	LinkID          string
 	StartTime       time.Time
 	EndTime         time.Time
+	StorageNodeID   string
 	StorageAt       string
+	StorageStart    time.Time
 	StorageDuration time.Duration
+	StorageEnd      time.Time
 }
 
 // DTNPath captures the store-and-forward path taken by a message.
@@ -531,10 +534,16 @@ func (s *Scheduler) FindDTNPath(ctx context.Context, srcNodeID, dstNodeID string
 	storageSet := make(map[string]struct{})
 	var storageNode string
 	var storageDuration time.Duration
+	var storageStart time.Time
+	var storageEnd time.Time
 	for _, edge := range edgePath {
 		if edge.LinkID == "" {
-			storageNode = edge.From.NodeID
+			if storageNode == "" {
+				storageNode = edge.From.NodeID
+				storageStart = edge.From.Time
+			}
 			storageDuration += edge.To.Time.Sub(edge.From.Time)
+			storageEnd = edge.To.Time
 			storageSet[storageNode] = struct{}{}
 			continue
 		}
@@ -544,12 +553,17 @@ func (s *Scheduler) FindDTNPath(ctx context.Context, srcNodeID, dstNodeID string
 			LinkID:          edge.LinkID,
 			StartTime:       edge.From.Time,
 			EndTime:         edge.To.Time,
+			StorageNodeID:   storageNode,
 			StorageAt:       storageNode,
+			StorageStart:    storageStart,
 			StorageDuration: storageDuration,
+			StorageEnd:      storageEnd,
 		}
 		path.Hops = append(path.Hops, hop)
 		storageNode = ""
 		storageDuration = 0
+		storageStart = time.Time{}
+		storageEnd = time.Time{}
 	}
 
 	if len(path.Hops) == 0 {
