@@ -30,6 +30,7 @@ type Scheduler struct {
 	Clock sbi.EventScheduler
 	CDPI  cdpiClient
 	log   logging.Logger
+	Telemetry *state.TelemetryState
 
 	// scheduledEntryIDs tracks entry IDs we've already scheduled to avoid duplicates.
 	// This provides idempotency for ScheduleLinkBeams.
@@ -38,6 +39,7 @@ type Scheduler struct {
 	storageReservations map[string]float64
 	// contactWindows stores sampled visibility windows per link.
 	contactWindows map[string][]ContactWindow
+	contactCache   *ContactWindowCache
 	// srEntries tracks the entries created for each ServiceRequest to support cleanup.
 	srEntries map[string][]scheduledEntryRef
 	// linkEntries tracks entries created per link for cleanup.
@@ -155,7 +157,7 @@ type ActivePath struct {
 }
 
 // NewScheduler creates a new Scheduler with the given dependencies.
-func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdpiClient, log logging.Logger) *Scheduler {
+func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdpiClient, log logging.Logger, telemetry *state.TelemetryState) *Scheduler {
 	if log == nil {
 		log = logging.Noop()
 	}
@@ -164,9 +166,11 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		Clock:                 clock,
 		CDPI:                  cdpi,
 		log:                   log,
+		Telemetry:             telemetry,
 		scheduledEntryIDs:     make(map[string]bool),
 		storageReservations:   make(map[string]float64),
 		contactWindows:        make(map[string][]ContactWindow),
+		contactCache:          NewContactWindowCache(0),
 		srEntries:             make(map[string][]scheduledEntryRef),
 		linkEntries:           make(map[string][]scheduledEntryRef),
 		bandwidthReservations: make(map[string]map[string]uint64),
@@ -326,6 +330,7 @@ func (s *Scheduler) PrecomputeContactWindows(ctx context.Context, now, horizon t
 		windows = s.computeContactWindows(now, horizon)
 	}
 	s.contactWindows = windows
+	s.cacheContactWindows(windows)
 	s.log.Debug(ctx, "Precomputed contact windows",
 		logging.Int("window_count", len(windows)),
 		logging.String("horizon", horizon.Format(time.RFC3339)),
@@ -453,12 +458,44 @@ func (s *Scheduler) ensureContactWindows(ctx context.Context) {
 	if len(s.contactWindows) > 0 {
 		return
 	}
+	if cached := s.loadContactWindowsFromCache(); cached != nil {
+		s.contactWindows = cached
+		return
+	}
 	now := s.Clock.Now()
 	horizon := now.Add(ContactHorizon)
 	if _, err := s.PrecomputeContactWindows(ctx, now, horizon); err != nil {
 		s.log.Warn(ctx, "Failed to compute contact windows for service requests",
 			logging.String("error", err.Error()),
 		)
+	}
+}
+
+func (s *Scheduler) loadContactWindowsFromCache() map[string][]ContactWindow {
+	if s == nil || s.contactCache == nil {
+		return nil
+	}
+	windows := make(map[string][]ContactWindow)
+	for _, link := range s.State.ListLinks() {
+		if link == nil {
+			continue
+		}
+		if cached, ok := s.contactCache.Get(link.ID); ok && len(cached) > 0 {
+			windows[link.ID] = cached
+		}
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+	return windows
+}
+
+func (s *Scheduler) cacheContactWindows(windows map[string][]ContactWindow) {
+	if s == nil || s.contactCache == nil {
+		return
+	}
+	for linkID, win := range windows {
+		s.contactCache.UpdateWindows(linkID, win)
 	}
 }
 
@@ -1395,7 +1432,11 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 		latest = earliest.Add(ContactHorizon)
 	}
 
-	return &model.TimeInterval{StartTime: earliest, EndTime: latest}, entries, hopEntries, nil
+	return &model.TimeInterval{
+		StartTime: earliest,
+		EndTime:   latest,
+		Path:      s.modelPathFromSchedulerPath(path),
+	}, entries, hopEntries, nil
 }
 
 func (s *Scheduler) scheduleDTNActions(ctx context.Context, sr *model.ServiceRequest, hopIdx int, hop DTNHop, entries *[]scheduledEntryRef, hopEntries map[int][]scheduledEntryRef) error {
@@ -1592,7 +1633,7 @@ func (s *Scheduler) UpdatePath(ctx context.Context, srID string, newPath *Path) 
 	ap.Health = s.CheckPathHealth(newPath, s.Clock.Now())
 	s.syncActivePathEntries(srID)
 
-	interval := pathInterval(newPath)
+	interval := s.pathInterval(newPath)
 	if err := s.updateServiceRequestStatus(ctx, srID, true, interval); err != nil {
 		return fmt.Errorf("update service request status: %w", err)
 	}
@@ -1639,13 +1680,14 @@ func (s *Scheduler) releaseHopCapacity(ctx context.Context, srID string, hop Pat
 	}
 }
 
-func pathInterval(path *Path) *model.TimeInterval {
+func (s *Scheduler) pathInterval(path *Path) *model.TimeInterval {
 	if path == nil || len(path.Hops) == 0 {
 		return nil
 	}
 	return &model.TimeInterval{
 		StartTime: path.Hops[0].StartTime,
 		EndTime:   path.Hops[len(path.Hops)-1].EndTime,
+		Path:      s.modelPathFromSchedulerPath(path),
 	}
 }
 
@@ -2211,7 +2253,139 @@ func (s *Scheduler) updateServiceRequestStatus(ctx context.Context, srID string,
 		logging.String("provisioned", fmt.Sprintf("%v", provisioned)),
 	)
 
+	s.updateIntentMetrics(ctx, srID)
+
 	return nil
+}
+
+func (s *Scheduler) updateIntentMetrics(ctx context.Context, srID string) {
+	if s == nil || s.Telemetry == nil || srID == "" {
+		return
+	}
+	sr, err := s.State.GetServiceRequest(srID)
+	if err != nil || sr == nil {
+		return
+	}
+	metrics := s.computeIntentMetrics(sr)
+	if metrics == nil {
+		return
+	}
+	if err := s.Telemetry.UpdateIntentMetrics(metrics); err != nil {
+		s.log.Warn(ctx, "telemetry: failed to store intent metrics",
+			logging.String("sr_id", srID),
+			logging.String("error", err.Error()))
+	}
+}
+
+func (s *Scheduler) computeIntentMetrics(sr *model.ServiceRequest) *state.IntentMetrics {
+	if sr == nil || sr.ID == "" {
+		return nil
+	}
+	now := s.Clock.Now()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	createdAt := sr.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = now
+	}
+	totalDuration := now.Sub(createdAt)
+	if totalDuration < 0 {
+		totalDuration = 0
+	}
+	provisionedDuration := s.provisionedDuration(sr, now)
+	fulfillmentRate := 0.0
+	if totalDuration > 0 {
+		fulfillmentRate = float64(provisionedDuration) / float64(totalDuration)
+		if fulfillmentRate > 1 {
+			fulfillmentRate = 1
+		}
+	}
+	averageLatency := s.averageLatency(sr, provisionedDuration, now)
+	bytes := s.estimateBytesTransferred(sr, provisionedDuration)
+	return &state.IntentMetrics{
+		ServiceRequestID:    sr.ID,
+		IsProvisioned:       sr.IsProvisionedNow,
+		ProvisionedDuration: provisionedDuration,
+		TotalDuration:       totalDuration,
+		FulfillmentRate:     fulfillmentRate,
+		AverageLatency:      averageLatency,
+		BytesTransferred:    bytes,
+	}
+}
+
+func (s *Scheduler) provisionedDuration(sr *model.ServiceRequest, now time.Time) time.Duration {
+	if sr == nil {
+		return 0
+	}
+	var total time.Duration
+	for _, interval := range sr.ProvisionedIntervals {
+		duration := s.intervalDuration(interval, now)
+		total += duration
+	}
+	return total
+}
+
+func (s *Scheduler) intervalDuration(interval model.TimeInterval, now time.Time) time.Duration {
+	if interval.StartTime.IsZero() {
+		return 0
+	}
+	end := interval.EndTime
+	if end.IsZero() {
+		end = now
+	}
+	if end.Before(interval.StartTime) {
+		return 0
+	}
+	return end.Sub(interval.StartTime)
+}
+
+func (s *Scheduler) averageLatency(sr *model.ServiceRequest, provisionedDuration time.Duration, now time.Time) time.Duration {
+	if sr == nil || provisionedDuration <= 0 {
+		return 0
+	}
+	var weighted float64
+	var weight float64
+	for _, interval := range sr.ProvisionedIntervals {
+		duration := s.intervalDuration(interval, now)
+		if duration <= 0 || interval.Path == nil || interval.Path.Latency <= 0 {
+			continue
+		}
+		weighted += interval.Path.Latency.Seconds() * duration.Seconds()
+		weight += duration.Seconds()
+	}
+	if weight == 0 {
+		return 0
+	}
+	avgSeconds := weighted / weight
+	return time.Duration(avgSeconds * float64(time.Second))
+}
+
+func (s *Scheduler) estimateBytesTransferred(sr *model.ServiceRequest, duration time.Duration) uint64 {
+	if sr == nil || duration <= 0 {
+		return 0
+	}
+	bps := s.requiredBandwidthForSR(sr)
+	bytes := float64(bps) * duration.Seconds() / 8.0
+	if bytes <= 0 {
+		return 0
+	}
+	return uint64(math.Round(bytes))
+}
+
+func (s *Scheduler) modelPathFromSchedulerPath(path *Path) *model.Path {
+	if path == nil {
+		return nil
+	}
+	nodes := pathNodeSequence(path)
+	if len(nodes) == 0 {
+		return nil
+	}
+	return &model.Path{
+		ID:      strings.Join(nodes, "->"),
+		Nodes:   nodes,
+		Latency: path.TotalLatency,
+	}
 }
 
 // findLinkBetweenNodes finds the link and interfaces connecting two nodes.
