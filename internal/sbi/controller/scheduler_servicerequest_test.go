@@ -85,7 +85,7 @@ func TestScheduler_ScheduleServiceRequests_MultiHop(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), nil)
 
 	// Create platforms
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{ID: "platform-A", Name: "Platform A"}); err != nil {
@@ -328,9 +328,23 @@ func TestScheduler_ScheduleServiceRequests_NoPath(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), nil)
 
-	// Create a ServiceRequest between nodes that don't exist
+	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{
+		ID: "plat-standard",
+	}); err != nil {
+		t.Fatalf("CreatePlatform error: %v", err)
+	}
+	for _, nodeID := range []string{"node-A", "node-B"} {
+		if err := scenarioState.CreateNode(&model.NetworkNode{
+			ID:         nodeID,
+			PlatformID: "plat-standard",
+		}, nil); err != nil {
+			t.Fatalf("CreateNode(%s) error: %v", nodeID, err)
+		}
+	}
+
+	// Create a ServiceRequest between nodes that now exist
 	sr := &model.ServiceRequest{
 		ID:        "sr-1",
 		SrcNodeID: "node-A",

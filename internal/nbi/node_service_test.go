@@ -430,6 +430,9 @@ func TestNetworkNodeServiceDeleteFailedPreconditionForServiceRequest(t *testing.
 
 	nodeID := "node-with-sr"
 	ifaceID := addNodeWithInterface(t, state, nodeID)
+	if err := state.CreateNode(&model.NetworkNode{ID: "other"}, nil); err != nil {
+		t.Fatalf("CreateNode(other) error: %v", err)
+	}
 
 	if err := state.CreateServiceRequest(&model.ServiceRequest{
 		ID:        "sr-uses-node",
