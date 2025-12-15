@@ -16,17 +16,16 @@ A Go-native simulation engine that models satellite constellations, ground infra
 
 ## Getting started
 
-`powershell
 git clone https://github.com/Cizor/spacetime-constellation-sim.git
 cd spacetime-constellation-sim
 
-# download dependencies
+# Download dependencies
 go mod tidy
 
-# build the gRPC server
+# Build the gRPC server
 go build ./cmd/nbi-server
 
-# run the server
+# Run the server
 cmd\nbi-server\nbi-server.exe
 `
 
