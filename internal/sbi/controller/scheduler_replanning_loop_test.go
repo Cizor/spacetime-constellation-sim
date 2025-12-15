@@ -96,7 +96,7 @@ func newTestScheduler(t *testing.T) *Scheduler {
 	netKB := core.NewKnowledgeBase()
 	tc := timectrl.NewTimeController(time.Now(), time.Second, timectrl.Accelerated)
 	clock := sbi.NewEventScheduler(tc)
-	state := state.NewScenarioState(physKB, netKB, logging.Noop())
+	scenarioState := state.NewScenarioState(physKB, netKB, logging.Noop())
 
-	return NewScheduler(state, clock, nil, logging.Noop())
+	return NewScheduler(scenarioState, clock, nil, logging.Noop(), state.NewTelemetryState())
 }

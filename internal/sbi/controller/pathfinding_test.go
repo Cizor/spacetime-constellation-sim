@@ -20,6 +20,7 @@ func setupPathfindingScheduler(t *testing.T) (*Scheduler, string, time.Time) {
 	netKB := core.NewKnowledgeBase()
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
+	telemetryState := state.NewTelemetryState()
 
 	trx := &core.TransceiverModel{
 		ID: "trx-path",
@@ -70,7 +71,7 @@ func setupPathfindingScheduler(t *testing.T) (*Scheduler, string, time.Time) {
 
 	now := time.Unix(1_000, 0)
 	clock := sbi.NewFakeEventScheduler(now)
-	scheduler := NewScheduler(scenarioState, clock, newFakeCDPIServerForScheduler(scenarioState, clock), log)
+	scheduler := NewScheduler(scenarioState, clock, newFakeCDPIServerForScheduler(scenarioState, clock), log, telemetryState)
 	return scheduler, link.ID, now
 }
 
@@ -263,6 +264,7 @@ func setupThreeNodeScheduler(t *testing.T, storageCapacity uint64) (*Scheduler, 
 	netKB := core.NewKnowledgeBase()
 	log := logging.Noop()
 	scenarioState := state.NewScenarioState(physKB, netKB, log)
+	telemetryState := state.NewTelemetryState()
 
 	trx := &core.TransceiverModel{
 		ID: "trx-path",
@@ -336,7 +338,7 @@ func setupThreeNodeScheduler(t *testing.T, storageCapacity uint64) (*Scheduler, 
 
 	now := time.Unix(1_000, 0)
 	clock := sbi.NewFakeEventScheduler(now)
-	scheduler := NewScheduler(scenarioState, clock, newFakeCDPIServerForScheduler(scenarioState, clock), log)
+	scheduler := NewScheduler(scenarioState, clock, newFakeCDPIServerForScheduler(scenarioState, clock), log, telemetryState)
 	return scheduler, map[string]string{
 		"linkAB": linkAB.ID,
 		"linkBC": linkBC.ID,

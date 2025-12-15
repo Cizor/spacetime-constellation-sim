@@ -26,10 +26,10 @@ type cdpiClient interface {
 // It coordinates between ScenarioState (links, nodes), EventScheduler (time),
 // and CDPIServer (sending actions to agents).
 type Scheduler struct {
-	State *state.ScenarioState
-	Clock sbi.EventScheduler
-	CDPI  cdpiClient
-	log   logging.Logger
+	State     *state.ScenarioState
+	Clock     sbi.EventScheduler
+	CDPI      cdpiClient
+	log       logging.Logger
 	Telemetry *state.TelemetryState
 
 	// scheduledEntryIDs tracks entry IDs we've already scheduled to avoid duplicates.
@@ -44,6 +44,10 @@ type Scheduler struct {
 	srEntries map[string][]scheduledEntryRef
 	// linkEntries tracks entries created per link for cleanup.
 	linkEntries map[string][]scheduledEntryRef
+	// linkToServiceRequests maps links to active service requests that reference them.
+	linkToServiceRequests map[string]map[string]struct{}
+	// srToLinks maps service requests to the links used in their active path.
+	srToLinks map[string]map[string]struct{}
 	// bandwidthReservations tracks how much bandwidth each SR reserved per link.
 	bandwidthReservations map[string]map[string]uint64
 	// preemptionRecords stores which SRs were preempted, why, and when.
@@ -58,10 +62,14 @@ type Scheduler struct {
 	minReplanInterval time.Duration
 	// pathFinder allows injecting a path computation function.
 	pathFinder func(ctx context.Context, srcNodeID, dstNodeID string, start time.Time, horizon time.Duration) (*Path, error)
+	// pathWorkerCount controls how many goroutines ComputePathsParallel uses.
+	pathWorkerCount int
 	// replanHooks centralizes calls within the re-planning loop for easier testing.
 	replanHooks replanHooks
 	// replanRequests signals the re-planning loop to wake up outside of the ticker.
 	replanRequests chan struct{}
+	// incrementalReplan hook allows tests to intercept incremental replan calls.
+	incrementalReplan func(ctx context.Context, srID string)
 }
 
 type preemptionRecord struct {
@@ -131,9 +139,10 @@ func (pq *PriorityQueue) sortLocked() {
 
 // scheduledEntryRef captures a CDPI entry that we may need to clean up later.
 type scheduledEntryRef struct {
-	entryID string
-	agentID string
-	hopIdx  int
+	entryID  string
+	agentID  string
+	hopIdx   int
+	policyID string
 }
 
 // PathHealth describes the health of an active path.
@@ -173,12 +182,15 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		contactCache:          NewContactWindowCache(0),
 		srEntries:             make(map[string][]scheduledEntryRef),
 		linkEntries:           make(map[string][]scheduledEntryRef),
+		linkToServiceRequests: make(map[string]map[string]struct{}),
+		srToLinks:             make(map[string]map[string]struct{}),
 		bandwidthReservations: make(map[string]map[string]uint64),
 		preemptionRecords:     make(map[string]preemptionRecord),
 		powerAllocations:      make(map[string]string),
 		activePaths:           make(map[string]*ActivePath),
 		lastReplanAt:          make(map[string]time.Time),
 		minReplanInterval:     defaultReplanInterval,
+		pathWorkerCount:       1,
 	}
 	scheduler.pathFinder = scheduler.FindMultiHopPath
 	scheduler.replanHooks = replanHooks{
@@ -189,6 +201,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		ReplanActivePaths:       scheduler.replanActivePaths,
 	}
 	scheduler.replanRequests = make(chan struct{}, 1)
+	scheduler.incrementalReplan = func(ctx context.Context, srID string) {}
 	return scheduler
 }
 
@@ -628,15 +641,6 @@ func (s *Scheduler) agentIDForLink(link *core.NetworkLink) (string, error) {
 	return agentID, nil
 }
 
-// hasAgent checks if an agent is registered with the CDPI server.
-// This is a helper method that accesses CDPI's internal state.
-func (s *CDPIServer) hasAgent(agentID string) bool {
-	s.agentsMu.RLock()
-	defer s.agentsMu.RUnlock()
-	_, exists := s.agents[agentID]
-	return exists
-}
-
 // ScheduleLinkRoutes implements static single-hop route scheduling:
 // - For each potential link, determine visibility intervals [T_on, T_off]
 // - Schedule ScheduledSetRoute actions at T_on for both endpoints
@@ -881,6 +885,126 @@ func (s *Scheduler) pathFromDTNPath(dtnPath *DTNPath) *Path {
 	return path
 }
 
+func (s *Scheduler) regionNodeIDs(ctx context.Context, regionID string) ([]string, error) {
+	if regionID == "" {
+		return nil, fmt.Errorf("region ID is empty")
+	}
+	nodes, err := s.State.GetNodesInRegion(regionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("region %s has no nodes", regionID)
+	}
+	return nodes, nil
+}
+
+func selectBetterPath(current, candidate *Path) *Path {
+	if candidate == nil {
+		return current
+	}
+	if current == nil {
+		return candidate
+	}
+	if len(candidate.Hops) < len(current.Hops) {
+		return candidate
+	}
+	if len(candidate.Hops) > len(current.Hops) {
+		return current
+	}
+	if candidate.TotalLatency < current.TotalLatency {
+		return candidate
+	}
+	if candidate.ValidFrom.Before(current.ValidFrom) {
+		return candidate
+	}
+	return current
+}
+
+func (s *Scheduler) FindRegionToNodePath(ctx context.Context, regionID, dstNodeID string, startTime time.Time, horizon time.Duration) (*Path, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if dstNodeID == "" {
+		return nil, fmt.Errorf("destination node ID is empty")
+	}
+
+	nodes, err := s.regionNodeIDs(ctx, regionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var best *Path
+	for _, src := range nodes {
+		path, err := s.FindMultiHopPath(ctx, src, dstNodeID, startTime, horizon)
+		if err != nil {
+			continue
+		}
+		best = selectBetterPath(best, path)
+	}
+	if best == nil {
+		return nil, ErrPathNotFound
+	}
+	return best, nil
+}
+
+func (s *Scheduler) FindNodeToRegionPath(ctx context.Context, srcNodeID, regionID string, startTime time.Time, horizon time.Duration) (*Path, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if srcNodeID == "" {
+		return nil, fmt.Errorf("source node ID is empty")
+	}
+
+	nodes, err := s.regionNodeIDs(ctx, regionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var best *Path
+	for _, dst := range nodes {
+		path, err := s.FindMultiHopPath(ctx, srcNodeID, dst, startTime, horizon)
+		if err != nil {
+			continue
+		}
+		best = selectBetterPath(best, path)
+	}
+	if best == nil {
+		return nil, ErrPathNotFound
+	}
+	return best, nil
+}
+
+func (s *Scheduler) FindRegionPath(ctx context.Context, srcRegionID, dstRegionID string, startTime time.Time, horizon time.Duration) (*Path, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	srcNodes, err := s.regionNodeIDs(ctx, srcRegionID)
+	if err != nil {
+		return nil, err
+	}
+	dstNodes, err := s.regionNodeIDs(ctx, dstRegionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var best *Path
+	for _, src := range srcNodes {
+		for _, dst := range dstNodes {
+			path, err := s.FindMultiHopPath(ctx, src, dst, startTime, horizon)
+			if err != nil {
+				continue
+			}
+			best = selectBetterPath(best, path)
+		}
+	}
+	if best == nil {
+		return nil, ErrPathNotFound
+	}
+	return best, nil
+}
+
 // agentIDForNode determines which agent should receive actions for a node.
 // For Scope 4, we use a simple mapping: agent_id equals node_id.
 func (s *Scheduler) agentIDForNode(nodeID string) (string, error) {
@@ -944,7 +1068,29 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		var dtnPath *DTNPath
 		var err error
 
-		if sr.IsDisruptionTolerant {
+		policyPath, policyErr := s.policyPathForServiceRequest(ctx, sr)
+		if policyErr != nil {
+			s.log.Warn(ctx, "SR policy path invalid for service request",
+				logging.String("sr_id", sr.ID),
+				logging.String("policy_id", sr.SrPolicyID),
+				logging.String("error", policyErr.Error()),
+			)
+			if err := s.updateServiceRequestStatus(ctx, sr.ID, false, nil); err != nil {
+				s.log.Warn(ctx, "Failed to update service request status (policy)", logging.String("sr_id", sr.ID), logging.String("error", err.Error()))
+			}
+			s.cleanupServiceRequestEntries(ctx, sr.ID, prevEntries)
+			continue
+		}
+		if policyPath != nil {
+			path = policyPath
+			s.log.Debug(ctx, "Using SR policy-defined path for service request",
+				logging.String("sr_id", sr.ID),
+				logging.String("policy_id", sr.SrPolicyID),
+				logging.Int("path_length", len(path.Hops)),
+			)
+		}
+
+		if policyPath == nil && sr.IsDisruptionTolerant {
 			msgSize := s.messageSizeBytes(sr)
 			dtnPath, err = s.FindDTNPath(ctx, sr.SrcNodeID, sr.DstNodeID, msgSize, s.Clock.Now())
 			if err == nil {
@@ -1076,6 +1222,16 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 			s.releaseStorageForSR(ctx, sr)
 			// Continue with other service requests
 			continue
+		}
+
+		policyEntries, policyErr := s.scheduleSrPolicyActions(ctx, sr, path)
+		if policyErr != nil {
+			s.log.Warn(ctx, "Failed to schedule SR policy actions",
+				logging.String("sr_id", sr.ID),
+				logging.String("error", policyErr.Error()),
+			)
+		} else if len(policyEntries) > 0 {
+			entries = append(entries, policyEntries...)
 		}
 
 		// Clean up previous entries now that new ones are scheduled
@@ -1439,6 +1595,174 @@ func (s *Scheduler) schedulePathHops(ctx context.Context, sr *model.ServiceReque
 	}, entries, hopEntries, nil
 }
 
+func (s *Scheduler) scheduleSrPolicyActions(ctx context.Context, sr *model.ServiceRequest, path *Path) ([]scheduledEntryRef, error) {
+	if sr == nil || sr.SrPolicyID == "" || path == nil {
+		return nil, nil
+	}
+	policy, err := s.State.GetSrPolicy(sr.SrcNodeID, sr.SrPolicyID)
+	if err != nil {
+		return nil, err
+	}
+	spec := s.srPolicySpecFromModel(policy, path)
+	if spec == nil {
+		return nil, nil
+	}
+	agentID, err := s.agentIDForNode(spec.HeadendID)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]scheduledEntryRef, 0, 2)
+	setEntryID := fmt.Sprintf("sr:%s:policy:set:%s", sr.ID, spec.PolicyID)
+	onTime := path.ValidFrom
+	if onTime.IsZero() {
+		onTime = s.Clock.Now()
+	}
+	if err := s.sendSrPolicyEntry(agentID, setEntryID, sbi.ScheduledSetSrPolicy, onTime, spec); err != nil {
+		return nil, err
+	}
+	entries = append(entries, scheduledEntryRef{entryID: setEntryID, agentID: agentID, policyID: spec.PolicyID})
+
+	delEntryID := fmt.Sprintf("sr:%s:policy:del:%s", sr.ID, spec.PolicyID)
+	offTime := path.ValidUntil
+	if offTime.IsZero() {
+		offTime = onTime.Add(ContactHorizon)
+	}
+	if err := s.sendSrPolicyEntry(agentID, delEntryID, sbi.ScheduledDeleteSrPolicy, offTime, spec); err != nil {
+		return nil, err
+	}
+	entries = append(entries, scheduledEntryRef{entryID: delEntryID, agentID: agentID, policyID: spec.PolicyID})
+	return entries, nil
+}
+
+func (s *Scheduler) policyPathForServiceRequest(ctx context.Context, sr *model.ServiceRequest) (*Path, error) {
+	if s == nil || sr == nil || sr.SrPolicyID == "" {
+		return nil, nil
+	}
+	if sr.SrcNodeID == "" || sr.DstNodeID == "" {
+		return nil, fmt.Errorf("service request source and destination are required for SR policy path")
+	}
+	policy, err := s.State.GetSrPolicy(sr.SrcNodeID, sr.SrPolicyID)
+	if err != nil {
+		return nil, fmt.Errorf("srpolicy %s lookup failed: %w", sr.SrPolicyID, err)
+	}
+	path, err := s.ComputeSrPolicyPath(ctx, policy)
+	if err != nil {
+		return nil, fmt.Errorf("srpolicy %s path computation failed: %w", policy.PolicyID, err)
+	}
+	if path == nil || len(path.Hops) == 0 {
+		return nil, fmt.Errorf("srpolicy %s produced empty path", policy.PolicyID)
+	}
+	if path.Hops[0].FromNodeID != sr.SrcNodeID {
+		return nil, fmt.Errorf("srpolicy %s path starts at %s but SR src is %s", policy.PolicyID, path.Hops[0].FromNodeID, sr.SrcNodeID)
+	}
+	lastHop := path.Hops[len(path.Hops)-1]
+	if lastHop.ToNodeID != sr.DstNodeID {
+		return nil, fmt.Errorf("srpolicy %s path ends at %s but SR dst is %s", policy.PolicyID, lastHop.ToNodeID, sr.DstNodeID)
+	}
+	return path, nil
+}
+
+func (s *Scheduler) ComputeSrPolicyPath(ctx context.Context, policy *model.SrPolicy) (*Path, error) {
+	if policy == nil {
+		return nil, fmt.Errorf("sr policy is nil")
+	}
+	if policy.HeadendNodeID == "" {
+		return nil, fmt.Errorf("sr policy headend node is required")
+	}
+	if len(policy.Endpoints) == 0 {
+		return nil, fmt.Errorf("sr policy %s has no endpoints", policy.PolicyID)
+	}
+	currentStart := s.Clock.Now()
+	if currentStart.IsZero() {
+		currentStart = time.Now()
+	}
+	horizon := ContactHorizon
+	nodeSequence := []string{policy.HeadendNodeID}
+	for _, seg := range policy.Segments {
+		if seg.Type != "node" {
+			return nil, fmt.Errorf("sr policy %s contains unsupported segment type %s", policy.PolicyID, seg.Type)
+		}
+		if seg.NodeID == "" {
+			return nil, fmt.Errorf("sr policy %s has segment missing node ID", policy.PolicyID)
+		}
+		nodeSequence = append(nodeSequence, seg.NodeID)
+	}
+	finalEndpoint := policy.Endpoints[len(policy.Endpoints)-1]
+	if finalEndpoint == "" {
+		return nil, fmt.Errorf("sr policy %s endpoint is empty", policy.PolicyID)
+	}
+	if nodeSequence[len(nodeSequence)-1] != finalEndpoint {
+		nodeSequence = append(nodeSequence, finalEndpoint)
+	}
+
+	var combinedPath *Path
+	for i := 0; i < len(nodeSequence)-1; i++ {
+		from := nodeSequence[i]
+		to := nodeSequence[i+1]
+		segmentPath, err := s.FindMultiHopPath(ctx, from, to, currentStart, horizon)
+		if err != nil {
+			return nil, fmt.Errorf("sr policy %s failed to compute segment %d (%s->%s): %w", policy.PolicyID, i, from, to, err)
+		}
+		if segmentPath == nil || len(segmentPath.Hops) == 0 {
+			return nil, fmt.Errorf("sr policy %s produced empty path for segment %d", policy.PolicyID, i)
+		}
+		if combinedPath == nil {
+			combinedPath = &Path{
+				Hops:         append([]PathHop(nil), segmentPath.Hops...),
+				TotalLatency: segmentPath.TotalLatency,
+				ValidFrom:    segmentPath.ValidFrom,
+				ValidUntil:   segmentPath.ValidUntil,
+			}
+		} else {
+			combinedPath.Hops = append(combinedPath.Hops, segmentPath.Hops...)
+			if segmentPath.ValidFrom.Before(combinedPath.ValidFrom) {
+				combinedPath.ValidFrom = segmentPath.ValidFrom
+			}
+			if segmentPath.ValidUntil.After(combinedPath.ValidUntil) {
+				combinedPath.ValidUntil = segmentPath.ValidUntil
+			}
+			combinedPath.TotalLatency += segmentPath.TotalLatency
+		}
+		currentStart = segmentPath.ValidUntil
+	}
+	return combinedPath, nil
+}
+
+func (s *Scheduler) newSrPolicyAction(entryID string, agentID sbi.AgentID, actionType sbi.ScheduledActionType, when time.Time, spec *sbi.SrPolicySpec) *sbi.ScheduledAction {
+	if spec == nil {
+		return nil
+	}
+	return sbi.NewSrPolicyAction(entryID, agentID, actionType, when, spec, sbi.ActionMeta{})
+}
+
+func (s *Scheduler) sendSrPolicyEntry(agentID, entryID string, actionType sbi.ScheduledActionType, when time.Time, spec *sbi.SrPolicySpec) error {
+	action := s.newSrPolicyAction(entryID, sbi.AgentID(agentID), actionType, when, spec)
+	if action == nil {
+		return fmt.Errorf("invalid SR policy action %s", entryID)
+	}
+	return s.CDPI.SendCreateEntry(agentID, action)
+}
+
+func (s *Scheduler) srPolicySpecFromModel(policy *model.SrPolicy, path *Path) *sbi.SrPolicySpec {
+	if policy == nil {
+		return nil
+	}
+	spec := &sbi.SrPolicySpec{
+		PolicyID:   policy.PolicyID,
+		Color:      policy.Color,
+		HeadendID:  policy.HeadendNodeID,
+		Endpoints:  append([]string(nil), policy.Endpoints...),
+		Segments:   append([]model.Segment(nil), policy.Segments...),
+		Preference: policy.Preference,
+		BindingSID: policy.BindingSID,
+	}
+	if path != nil {
+		spec.Path = append([]string(nil), pathNodeSequence(path)...)
+	}
+	return spec
+}
+
 func (s *Scheduler) scheduleDTNActions(ctx context.Context, sr *model.ServiceRequest, hopIdx int, hop DTNHop, entries *[]scheduledEntryRef, hopEntries map[int][]scheduledEntryRef) error {
 	storageAgent, err := s.agentIDForNode(hop.StorageNodeID)
 	if err != nil {
@@ -1490,6 +1814,30 @@ func (s *Scheduler) recordActivePath(srID string, path *Path, entries []schedule
 	if srID == "" || path == nil {
 		return
 	}
+	s.removeActivePath(srID)
+
+	if s.linkToServiceRequests == nil {
+		s.linkToServiceRequests = make(map[string]map[string]struct{})
+	}
+	if s.srToLinks == nil {
+		s.srToLinks = make(map[string]map[string]struct{})
+	}
+
+	for _, hop := range path.Hops {
+		if hop.LinkID == "" {
+			continue
+		}
+		if _, ok := s.linkToServiceRequests[hop.LinkID]; !ok {
+			s.linkToServiceRequests[hop.LinkID] = make(map[string]struct{})
+		}
+		s.linkToServiceRequests[hop.LinkID][srID] = struct{}{}
+
+		if _, ok := s.srToLinks[srID]; !ok {
+			s.srToLinks[srID] = make(map[string]struct{})
+		}
+		s.srToLinks[srID][hop.LinkID] = struct{}{}
+	}
+
 	actionIDs := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.entryID != "" {
@@ -1511,7 +1859,49 @@ func (s *Scheduler) removeActivePath(srID string) {
 	if srID == "" {
 		return
 	}
+	if path, ok := s.activePaths[srID]; ok && path != nil {
+		for _, hop := range path.Path.Hops {
+			if hop.LinkID == "" {
+				continue
+			}
+			if linkMap, ok := s.linkToServiceRequests[hop.LinkID]; ok {
+				delete(linkMap, srID)
+				if len(linkMap) == 0 {
+					delete(s.linkToServiceRequests, hop.LinkID)
+				}
+			}
+		}
+	}
+	delete(s.srToLinks, srID)
 	delete(s.activePaths, srID)
+}
+
+func (s *Scheduler) IncrementalUpdate(ctx context.Context, linkID, reason string) error {
+	if s == nil {
+		return fmt.Errorf("scheduler is nil")
+	}
+	if linkID == "" {
+		return fmt.Errorf("link ID is required")
+	}
+	s.log.Debug(ctx, "Incremental update triggered",
+		logging.String("link_id", linkID),
+		logging.String("reason", reason),
+	)
+
+	srMap, ok := s.linkToServiceRequests[linkID]
+	if !ok || len(srMap) == 0 {
+		return nil
+	}
+
+	for srID := range srMap {
+		if srID == "" {
+			continue
+		}
+		if s.incrementalReplan != nil {
+			s.incrementalReplan(ctx, srID)
+		}
+	}
+	return nil
 }
 
 func (s *Scheduler) hopEqual(a, b PathHop) bool {
@@ -2519,6 +2909,55 @@ func (s *Scheduler) ReleasePathCapacity(srID string) {
 		}
 	}
 	delete(s.bandwidthReservations, srID)
+}
+
+func (s *Scheduler) ComputePathsParallel(ctx context.Context, srs []*model.ServiceRequest) []*Path {
+	if s == nil || len(srs) == 0 || s.pathFinder == nil {
+		return nil
+	}
+
+	workerCount := s.pathWorkerCount
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	type work struct {
+		index int
+		sr    *model.ServiceRequest
+	}
+
+	paths := make([]*Path, len(srs))
+	jobs := make(chan work)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				path, err := s.pathFinder(ctx, job.sr.SrcNodeID, job.sr.DstNodeID, s.Clock.Now(), ContactHorizon)
+				if err != nil {
+					s.log.Debug(ctx, "path computation failed",
+						logging.String("sr_id", job.sr.ID),
+						logging.String("error", err.Error()),
+					)
+				}
+				paths[job.index] = path
+			}
+		}()
+	}
+
+	for idx, sr := range srs {
+		if sr == nil {
+			continue
+		}
+		jobs <- work{index: idx, sr: sr}
+	}
+
+	close(jobs)
+	wg.Wait()
+
+	return paths
 }
 
 func (s *Scheduler) preemptConflictingSRs(ctx context.Context, incoming *model.ServiceRequest, path []string, requiredBps uint64, constrainedLinks []string) (bool, error) {
