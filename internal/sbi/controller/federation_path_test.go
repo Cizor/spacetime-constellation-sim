@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	network "github.com/signalsfoundry/constellation-simulator/core"
@@ -10,6 +12,23 @@ import (
 	"github.com/signalsfoundry/constellation-simulator/kb"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
+
+type testFederationClient struct {
+	reqs []FederationRequest
+}
+
+func (t *testFederationClient) RequestPathSegment(ctx context.Context, req FederationRequest) (*FederationResponse, error) {
+	if req.Token == "" {
+		return &FederationResponse{RequestID: req.RequestID, Status: FederationStatusError, Error: "missing token"}, nil
+	}
+	seg := &PathSegment{
+		DomainID:    req.DestDomain,
+		Path:        &model.Path{Nodes: []string{fmt.Sprintf("border-%s", req.DestDomain)}},
+		BorderNodes: []string{fmt.Sprintf("border-%s", req.DestDomain)},
+	}
+	t.reqs = append(t.reqs, req)
+	return &FederationResponse{RequestID: req.RequestID, PathSegment: seg, Status: FederationStatusOK}, nil
+}
 
 func TestFindFederatedPath_CrossDomain(t *testing.T) {
 	st := state.NewScenarioState(kb.NewKnowledgeBase(), network.NewKnowledgeBase(), logging.Noop())
@@ -43,7 +62,8 @@ func TestFindFederatedPath_CrossDomain(t *testing.T) {
 		DestDomain:      "dom-right",
 		FederationToken: "token",
 	}
-	path, err := FindFederatedPath(sr, st)
+	client := &testFederationClient{}
+	path, err := FindFederatedPathWithClient(context.Background(), sr, st, client)
 	if err != nil {
 		t.Fatalf("FindFederatedPath error = %v", err)
 	}
