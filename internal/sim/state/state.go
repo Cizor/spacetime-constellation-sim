@@ -2193,16 +2193,25 @@ func (s *ScenarioState) UpdateRegionMembership(regionID string) error {
 	now := s.now()
 
 	s.mu.Lock()
+	var (
+		prevMembers map[string]struct{}
+		entry       = s.regionMembership[regionID]
+		hook        RegionMembershipHook
+		left        []string
+		entered     []string
+	)
+	defer func() {
+		s.mu.Unlock()
+		if hook != nil && (len(left) > 0 || len(entered) > 0) {
+			hook(regionID, left, entered)
+		}
+	}()
 
-	var prevMembers map[string]struct{}
-	entry := s.regionMembership[regionID]
 	if entry != nil && len(entry.members) > 0 {
 		prevMembers = make(map[string]struct{}, len(entry.members))
 		for nodeID := range entry.members {
 			prevMembers[nodeID] = struct{}{}
 		}
-	} else {
-		prevMembers = nil
 	}
 
 	newMembers := make(map[string]struct{})
@@ -2217,8 +2226,8 @@ func (s *ScenarioState) UpdateRegionMembership(regionID string) error {
 		}
 	}
 
-	left := difference(prevMembers, newMembers)
-	entered := difference(newMembers, prevMembers)
+	left = difference(prevMembers, newMembers)
+	entered = difference(newMembers, prevMembers)
 
 	if entry == nil {
 		entry = &regionMembershipEntry{}
@@ -2226,11 +2235,7 @@ func (s *ScenarioState) UpdateRegionMembership(regionID string) error {
 	entry.members = newMembers
 	entry.updatedAt = now
 	s.regionMembership[regionID] = entry
-	hook := s.regionMembershipHook
-	s.mu.Unlock()
-	if hook != nil && (len(left) > 0 || len(entered) > 0) {
-		hook(regionID, left, entered)
-	}
+	hook = s.regionMembershipHook
 	return nil
 }
 
