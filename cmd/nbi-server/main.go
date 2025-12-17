@@ -17,6 +17,8 @@ import (
 	v1alpha "aalyria.com/spacetime/api/nbi/v1alpha"
 	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/nbi"
@@ -125,15 +127,18 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	}
 	defer observability.ShutdownWithTimeout(context.Background(), traceShutdown, log)
 
-	collector, err := observability.NewNBICollector(nil)
+	reg := prometheus.NewRegistry()
+	collector, err := observability.NewNBICollector(reg)
 	if err != nil {
 		return fmt.Errorf("init metrics collector: %w", err)
 	}
 
-	var metricsSrv *http.Server
-	if cfg.MetricsAddress != "" {
-		metricsSrv = serveMetrics(cfg.MetricsAddress, collector, log)
+	schedulerCollector, err := observability.NewSchedulerCollector(reg)
+	if err != nil {
+		return fmt.Errorf("init scheduler metrics collector: %w", err)
 	}
+
+	var metricsSrv *http.Server
 
 	physKB := kb.NewKnowledgeBase()
 	netKB := core.NewKnowledgeBase()
@@ -155,10 +160,28 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 
 	tc := timectrl.NewTimeController(time.Now().UTC(), cfg.TickInterval, timeMode(cfg))
 	eventScheduler := sbi.NewEventScheduler(tc)
+	var schedulerGetter func() *sbicontroller.Scheduler
 
 	telemetryState := sim.NewTelemetryState()
 	telemetryServer := sbicontroller.NewTelemetryServer(telemetryState, log)
 	cdpiServer := sbicontroller.NewCDPIServer(state, eventScheduler, log)
+
+	if cfg.MetricsAddress != "" {
+		metricsSrv = serveMetrics(
+			cfg.MetricsAddress,
+			reg,
+			log,
+			func() *sbicontroller.Scheduler {
+				if schedulerGetter == nil {
+					return nil
+				}
+				return schedulerGetter()
+			},
+			func() *sim.TelemetryState {
+				return telemetryState
+			},
+		)
+	}
 
 	server, err := buildGRPCServer(cfg, state, motion, collector, log, cdpiServer, telemetryServer)
 	if err != nil {
@@ -184,11 +207,18 @@ func run(ctx context.Context, cfg Config, log logging.Logger, lis net.Listener) 
 	}
 	defer conn.Close()
 
-	sbiRuntime, err := sbiruntime.NewSBIRuntimeWithServers(state, eventScheduler, telemetryState, telemetryServer, cdpiServer, conn, log)
+	sbiRuntime, err := sbiruntime.NewSBIRuntimeWithServers(state, eventScheduler, telemetryState, telemetryServer, cdpiServer, conn, schedulerCollector, log)
 	if err != nil {
 		return fmt.Errorf("initialise SBI runtime: %w", err)
 	}
 	defer sbiRuntime.Close()
+
+	schedulerGetter = func() *sbicontroller.Scheduler {
+		if sbiRuntime == nil {
+			return nil
+		}
+		return sbiRuntime.Scheduler
+	}
 
 	if err := sbiRuntime.StartAgents(ctx); err != nil {
 		return fmt.Errorf("start SBI agents: %w", err)
@@ -377,12 +407,60 @@ func syncNodePositions(phys *kb.KnowledgeBase, netKB *core.KnowledgeBase) {
 	}
 }
 
-func serveMetrics(addr string, collector *observability.NBICollector, log logging.Logger) *http.Server {
-	if collector == nil || addr == "" {
+func serveMetrics(
+	addr string,
+	gatherer prometheus.Gatherer,
+	log logging.Logger,
+	schedulerProvider func() *sbicontroller.Scheduler,
+	telemetryProvider func() *sim.TelemetryState,
+) *http.Server {
+	if gatherer == nil || addr == "" {
 		return nil
 	}
+
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", collector.Handler())
+	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
+
+	mux.HandleFunc("/debug/scheduler/state", func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]interface{}{
+			"timestamp": time.Now().UTC(),
+		}
+		if schedulerProvider != nil {
+			if scheduler := schedulerProvider(); scheduler != nil {
+				resp["scheduler"] = scheduler.SnapshotDebugState()
+			} else {
+				resp["scheduler_error"] = "scheduler not ready"
+			}
+		}
+		if telemetryProvider != nil {
+			if telemetry := telemetryProvider(); telemetry != nil {
+				resp["telemetry"] = map[string]interface{}{
+					"interfaces": telemetry.AggregateInterfaceMetricsByNode(),
+					"modems":     telemetry.AggregateModemMetricsByNode(),
+				}
+			}
+		}
+		writeJSONResponse(w, resp, log)
+	})
+
+	mux.HandleFunc("/debug/scheduler/decisions", func(w http.ResponseWriter, r *http.Request) {
+		if schedulerProvider == nil {
+			http.Error(w, "scheduler provider unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		scheduler := schedulerProvider()
+		if scheduler == nil {
+			http.Error(w, "scheduler not ready", http.StatusServiceUnavailable)
+			return
+		}
+		decisions, preemptions := scheduler.SnapshotDecisions()
+		resp := map[string]interface{}{
+			"timestamp":   time.Now().UTC(),
+			"decisions":   decisions,
+			"preemptions": preemptions,
+		}
+		writeJSONResponse(w, resp, log)
+	})
 
 	srv := &http.Server{
 		Addr:    addr,
@@ -395,8 +473,15 @@ func serveMetrics(addr string, collector *observability.NBICollector, log loggin
 		}
 	}()
 
-	log.Info(context.Background(), "serving Prometheus metrics", logging.String("addr", addr))
+	log.Info(context.Background(), "serving Prometheus metrics & debug endpoints", logging.String("addr", addr))
 	return srv
+}
+
+func writeJSONResponse(w http.ResponseWriter, data interface{}, log logging.Logger) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Warn(context.Background(), "debug endpoint encode failed", logging.String("error", err.Error()))
+	}
 }
 
 func loadTransceivers(log logging.Logger, netKB *core.KnowledgeBase, path string) {

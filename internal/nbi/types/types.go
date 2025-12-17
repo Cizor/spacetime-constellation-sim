@@ -755,7 +755,6 @@ func newDirectionalLink(src, dst string) *core.NetworkLink {
 		ID:         directionalLinkID(src, dst),
 		InterfaceA: src,
 		InterfaceB: dst,
-		Medium:     core.MediumWireless, // TODO: refine if/when NBI exposes link medium
 		IsUp:       true,
 		IsStatic:   true,
 	}
@@ -767,7 +766,6 @@ func newBidirectionalLink(a, b string) *core.NetworkLink {
 		ID:         combineLinkID(a, b),
 		InterfaceA: a,
 		InterfaceB: b,
-		Medium:     core.MediumWireless,
 		IsUp:       true,
 		IsStatic:   true,
 	}

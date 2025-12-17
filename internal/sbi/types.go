@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	geophys "aalyria.com/spacetime/nmts/v1/proto/types/geophys"
 	"github.com/signalsfoundry/constellation-simulator/model"
 )
 
@@ -91,7 +92,34 @@ type BeamSpec struct {
 	BandwidthHz float64
 	PowerDBw    float64
 
-	// TODO: extend with pointing angles / coordinates if needed later
+	// Target carries any pointing metadata provided by the controller.
+	Target *BeamTarget
+}
+
+// BeamTarget describes the explicit pointing target for a BeamSpec.
+type BeamTarget struct {
+	Cartesian   *BeamCartesianTarget
+	AzEl        *BeamAzElTarget
+	StateVector *BeamStateVectorTarget
+}
+
+// BeamCartesianTarget carries ECEF/WGS84 coordinates for a beam target.
+type BeamCartesianTarget struct {
+	Frame       geophys.CoordinateFrame
+	Coordinates model.Coordinates
+}
+
+// BeamAzElTarget stores azimuth/elevation degrees for directional pointing.
+type BeamAzElTarget struct {
+	AzimuthDeg   float64
+	ElevationDeg float64
+}
+
+// BeamStateVectorTarget captures a full 6DoF target state vector.
+type BeamStateVectorTarget struct {
+	Frame    geophys.CoordinateFrame
+	Position model.Coordinates
+	Velocity model.Motion
 }
 
 // SrPolicySpec describes an SR (Segment Routing) policy configuration.

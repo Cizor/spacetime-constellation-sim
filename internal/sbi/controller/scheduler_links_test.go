@@ -122,7 +122,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *fakeCDPIServerForScheduler, 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
 
 	// Create scheduler
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), telemetryState)
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), telemetryState, nil)
 
 	// Create platform and nodes
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{
@@ -234,7 +234,7 @@ func TestScheduler_ScheduleLinkBeams_NoPotentialLinks(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState(), nil)
 
 	ctx := context.Background()
 	err := scheduler.ScheduleLinkBeams(ctx)

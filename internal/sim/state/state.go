@@ -725,6 +725,7 @@ func (s *ScenarioState) CreateLinks(links ...*network.NetworkLink) error {
 	defer s.mu.Unlock()
 
 	for _, link := range links {
+		s.assignLinkMediumLocked(link)
 		s.initLinkBandwidthLocked(link)
 	}
 
@@ -742,6 +743,37 @@ func (s *ScenarioState) CreateLinks(links ...*network.NetworkLink) error {
 
 	s.updateMetricsLocked()
 	return nil
+
+}
+
+func (s *ScenarioState) assignLinkMediumLocked(link *network.NetworkLink) {
+	if link == nil || link.Medium != "" {
+		return
+	}
+	medium := s.linkMediumFromInterfacesLocked(link.InterfaceA)
+	if medium == "" {
+		medium = s.linkMediumFromInterfacesLocked(link.InterfaceB)
+	}
+	if medium == "" {
+		medium = network.MediumWireless
+	}
+	if medium != "" {
+		link.Medium = medium
+	}
+}
+
+func (s *ScenarioState) linkMediumFromInterfacesLocked(ifaceRef string) network.MediumType {
+	if ifaceRef == "" {
+		return ""
+	}
+	iface := s.netKB.GetNetworkInterface(ifaceRef)
+	if iface == nil {
+		return ""
+	}
+	if iface.Medium == network.MediumWired || iface.Medium == network.MediumWireless {
+		return iface.Medium
+	}
+	return ""
 }
 
 // ReserveBandwidth reserves bps bits per second on the specified link.
@@ -2341,7 +2373,7 @@ func (s *ScenarioState) UpdateRegionMembership(regionID string) error {
 			if node == nil {
 				continue
 			}
-			if coords, ok := s.nodeCoordinates(node); ok && regionContains(region, coords) {
+			if s.nodeInRegion(region, node) {
 				newMembers[node.ID] = struct{}{}
 			}
 		}
@@ -2421,7 +2453,7 @@ func (s *ScenarioState) GetNodesInRegion(regionID string) ([]string, error) {
 	}
 	var ids []string
 	for _, node := range s.physKB.ListNetworkNodes() {
-		if coords, ok := s.nodeCoordinates(node); ok && regionContains(region, coords) {
+		if s.nodeInRegion(region, node) {
 			ids = append(ids, node.ID)
 		}
 	}
@@ -2692,11 +2724,33 @@ func regionContains(region *model.Region, point model.Coordinates) bool {
 		return distanceMeters(region.Center, point) <= region.RadiusKm*metresPerKilometre
 	case model.RegionTypePolygon:
 		return pointInPolygon(point, region.Vertices)
-	case model.RegionTypeCountry:
-		return false // country membership not yet implemented
 	default:
 		return false
 	}
+}
+
+func (s *ScenarioState) nodeInRegion(region *model.Region, node *model.NetworkNode) bool {
+	if region == nil || node == nil {
+		return false
+	}
+
+	switch region.Type {
+	case model.RegionTypeCircle, model.RegionTypePolygon:
+		if coords, ok := s.nodeCoordinates(node); ok {
+			return regionContains(region, coords)
+		}
+		return false
+	case model.RegionTypeCountry:
+		regionCode := normalizeCountryCode(region.CountryCode)
+		nodeCode := normalizeCountryCode(node.CountryCode)
+		return regionCode != "" && nodeCode != "" && regionCode == nodeCode
+	default:
+		return false
+	}
+}
+
+func normalizeCountryCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
 }
 
 func distanceMeters(a, b model.Coordinates) float64 {

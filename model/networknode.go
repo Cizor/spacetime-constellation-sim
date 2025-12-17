@@ -38,6 +38,8 @@ type NetworkNode struct {
 	ID   string
 	Name string
 	Type string // free-form category, e.g. "ROUTER", "UT", etc.
+	// CountryCode stores an optional ISO 3166-1 alpha-2 code for region membership.
+	CountryCode string
 
 	// PlatformID links this node to a PlatformDefinition.
 	// Consumers can obtain the node's position by looking up the platform.

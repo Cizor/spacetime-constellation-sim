@@ -238,6 +238,7 @@ func TestScope4GoldenExampleScenario(t *testing.T) {
 		telemetryServer,
 		cdpiServer,
 		conn,
+		nil,
 		logging.Noop(),
 	)
 	if err != nil {

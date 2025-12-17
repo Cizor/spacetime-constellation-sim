@@ -536,6 +536,10 @@ func convertBeamSpecToUpdateBeam(beam *sbi.BeamSpec) *schedulingpb.UpdateBeam {
 		AntennaId: beam.InterfaceID,
 	}
 
+	if protoTarget := convertBeamTargetToProto(beam.Target); protoTarget != nil {
+		beamProto.Target = protoTarget
+	}
+
 	// Populate Endpoints with target node ID so agent can extract TargetNodeID
 	// For Scope 4, we use a simplified approach where the endpoint key is the target node ID
 	if beam.TargetNodeID != "" {
@@ -561,6 +565,51 @@ func convertBeamSpecToDeleteBeam(beam *sbi.BeamSpec) *schedulingpb.DeleteBeam {
 
 	return &schedulingpb.DeleteBeam{
 		Id: beamID,
+	}
+}
+
+func convertBeamTargetToProto(target *sbi.BeamTarget) *schedulingpb.BeamTarget {
+	if target == nil {
+		return nil
+	}
+
+	switch {
+	case target.AzEl != nil:
+		return &schedulingpb.BeamTarget{
+			Target: &schedulingpb.BeamTarget_AzEl{
+				AzEl: &schedulingpb.AzEl{
+					AzDeg: target.AzEl.AzimuthDeg,
+					ElDeg: target.AzEl.ElevationDeg,
+				},
+			},
+		}
+	case target.Cartesian != nil:
+		return &schedulingpb.BeamTarget{
+			Target: &schedulingpb.BeamTarget_Cartesian{
+				Cartesian: &schedulingpb.Cartesian{
+					ReferenceFrame: target.Cartesian.Frame,
+					XM:             target.Cartesian.Coordinates.X,
+					YM:             target.Cartesian.Coordinates.Y,
+					ZM:             target.Cartesian.Coordinates.Z,
+				},
+			},
+		}
+	case target.StateVector != nil:
+		return &schedulingpb.BeamTarget{
+			Target: &schedulingpb.BeamTarget_StateVector{
+				StateVector: &schedulingpb.StateVector{
+					ReferenceFrame: target.StateVector.Frame,
+					XM:             target.StateVector.Position.X,
+					YM:             target.StateVector.Position.Y,
+					ZM:             target.StateVector.Position.Z,
+					XDotMPerS:      target.StateVector.Velocity.X,
+					YDotMPerS:      target.StateVector.Velocity.Y,
+					ZDotMPerS:      target.StateVector.Velocity.Z,
+				},
+			},
+		}
+	default:
+		return nil
 	}
 }
 

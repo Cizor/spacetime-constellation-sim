@@ -151,7 +151,7 @@ func TestScheduler_LinkIntervals_BeamAndRouteScheduling(t *testing.T) {
 	fakeCDPI.agents["node-B"] = handleB
 	fakeCDPI.agentsMu.Unlock()
 
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState(), nil)
 
 	ctx := context.Background()
 
@@ -379,7 +379,7 @@ func TestScheduler_LinkIntervals_NoPotentialLinks(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState(), nil)
 
 	ctx := context.Background()
 
@@ -471,7 +471,7 @@ func TestScheduler_LinkIntervals_MalformedLink(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState(), nil)
 
 	ctx := context.Background()
 

@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"sync"
 
+	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
+	"github.com/signalsfoundry/constellation-simulator/internal/observability"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi/agent"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi/controller"
 	sim "github.com/signalsfoundry/constellation-simulator/internal/sim/state"
-	telemetrypb "aalyria.com/spacetime/api/telemetry/v1alpha"
-	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
 	"google.golang.org/grpc"
 )
 
@@ -25,7 +26,7 @@ type SBIRuntime struct {
 	Clock sbi.EventScheduler
 
 	// Telemetry components
-	TelemetryState *sim.TelemetryState
+	TelemetryState  *sim.TelemetryState
 	TelemetryServer *controller.TelemetryServer
 
 	// CDPI server
@@ -33,6 +34,9 @@ type SBIRuntime struct {
 
 	// Controller scheduler
 	Scheduler *controller.Scheduler
+
+	// Scheduler metrics (optional)
+	SchedulerMetrics *observability.SchedulerCollector
 
 	// Agents (one per node)
 	Agents []*agent.SimAgent
@@ -59,6 +63,7 @@ type SBIRuntime struct {
 //   - telemetryServer: pre-created telemetry server
 //   - cdpiServer: pre-created CDPI server
 //   - conn: gRPC client connection for agents to reach CDPI/Telemetry servers
+//   - schedulerMetrics: optional scheduler metrics collector
 //   - log: optional logger
 func NewSBIRuntimeWithServers(
 	state *sim.ScenarioState,
@@ -67,6 +72,7 @@ func NewSBIRuntimeWithServers(
 	telemetryServer *controller.TelemetryServer,
 	cdpiServer *controller.CDPIServer,
 	conn *grpc.ClientConn,
+	schedulerMetrics *observability.SchedulerCollector,
 	log logging.Logger,
 ) (*SBIRuntime, error) {
 	if state == nil {
@@ -92,7 +98,7 @@ func NewSBIRuntimeWithServers(
 	}
 
 	// Create scheduler
-	scheduler := controller.NewScheduler(state, clock, cdpiServer, log, telemetryState)
+	scheduler := controller.NewScheduler(state, clock, cdpiServer, log, telemetryState, schedulerMetrics)
 
 	// Create agents for each node
 	// Note: Streams will be created in StartAgents when we have the gRPC connection
@@ -118,17 +124,18 @@ func NewSBIRuntimeWithServers(
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &SBIRuntime{
-		State:          state,
-		Clock:          clock,
-		TelemetryState: telemetryState,
-		TelemetryServer: telemetryServer,
-		CDPI:          cdpiServer,
-		Scheduler:     scheduler,
-		Agents:        agents,
-		conn:          conn,
-		log:           log,
-		ctx:           ctx,
-		cancel:        cancel,
+		State:            state,
+		Clock:            clock,
+		TelemetryState:   telemetryState,
+		TelemetryServer:  telemetryServer,
+		CDPI:             cdpiServer,
+		Scheduler:        scheduler,
+		SchedulerMetrics: schedulerMetrics,
+		Agents:           agents,
+		conn:             conn,
+		log:              log,
+		ctx:              ctx,
+		cancel:           cancel,
 	}, nil
 }
 
@@ -160,7 +167,7 @@ func NewSBIRuntime(state *sim.ScenarioState, clock sbi.EventScheduler, conn *grp
 	cdpiServer := controller.NewCDPIServer(state, clock, log)
 
 	// Create scheduler
-	scheduler := controller.NewScheduler(state, clock, cdpiServer, log, telemetryState)
+	scheduler := controller.NewScheduler(state, clock, cdpiServer, log, telemetryState, nil)
 
 	// Create agents for each node
 	// Note: Streams will be created in StartAgents when we have the gRPC connection
@@ -186,17 +193,18 @@ func NewSBIRuntime(state *sim.ScenarioState, clock sbi.EventScheduler, conn *grp
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &SBIRuntime{
-		State:          state,
-		Clock:          clock,
-		TelemetryState: telemetryState,
-		TelemetryServer: telemetryServer,
-		CDPI:          cdpiServer,
-		Scheduler:     scheduler,
-		Agents:        agents,
-		conn:          conn,
-		log:           log,
-		ctx:           ctx,
-		cancel:        cancel,
+		State:            state,
+		Clock:            clock,
+		TelemetryState:   telemetryState,
+		TelemetryServer:  telemetryServer,
+		CDPI:             cdpiServer,
+		Scheduler:        scheduler,
+		SchedulerMetrics: nil,
+		Agents:           agents,
+		conn:             conn,
+		log:              log,
+		ctx:              ctx,
+		cancel:           cancel,
 	}, nil
 }
 

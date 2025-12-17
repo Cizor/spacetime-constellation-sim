@@ -50,6 +50,7 @@ type SimAgent struct {
 	telemetryMu       sync.Mutex
 	telemetryInterval time.Duration
 	bytesTx           map[string]uint64 // per-interface transmitted bytes (monotonic)
+	viaNodeMapping    map[string]string // optional mapping for Via addresses to node IDs
 	lastTick          time.Time         // last telemetry tick time
 
 	// Logging
@@ -88,6 +89,7 @@ func NewSimAgentWithConfig(agentID sbi.AgentID, nodeID string, state *state.Scen
 		srPolicies:        make(map[string]*sbi.SrPolicySpec),
 		telemetryInterval: cfg.Interval,
 		bytesTx:           make(map[string]uint64),
+		viaNodeMapping:    make(map[string]string),
 		lastTick:          time.Time{},
 		log:               log,
 	}
@@ -227,9 +229,9 @@ func (a *SimAgent) handleMessage(msg *schedulingpb.ReceiveRequestsMessageFromCon
 	case msg.GetCreateEntry() != nil:
 		return a.handleCreateEntry(requestID, msg.GetCreateEntry())
 	case msg.GetDeleteEntry() != nil:
-		return a.handleDeleteEntry(msg.GetDeleteEntry())
+		return a.handleDeleteEntry(requestID, msg.GetDeleteEntry())
 	case msg.GetFinalize() != nil:
-		return a.handleFinalize(msg.GetFinalize())
+		return a.handleFinalize(requestID, msg.GetFinalize())
 	default:
 		// Unknown message type - ignore for now
 		return nil
@@ -247,6 +249,7 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 			logging.String("agent_id", string(a.AgentID)),
 			logging.Any("request_id", requestID),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.InvalidArgument, "create entry missing token"))
 		return nil
 	}
 
@@ -266,6 +269,7 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 			logging.String("got_token", token),
 			logging.Any("request_id", requestID),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.PermissionDenied, "schedule manipulation token mismatch"))
 		a.mu.Unlock()
 		return nil
 	}
@@ -297,6 +301,7 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 			logging.Any("request_id", requestID),
 			logging.Any("error", err),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.Internal, fmt.Sprintf("failed to convert create entry: %v", err)))
 		return fmt.Errorf("failed to convert CreateEntryRequest: %w", err)
 	}
 
@@ -315,6 +320,7 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 			logging.String("action_type", action.Type.String()),
 			logging.Any("error", err),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.Internal, fmt.Sprintf("failed to handle scheduled action: %v", err)))
 		return err
 	}
 
@@ -330,14 +336,16 @@ func (a *SimAgent) handleCreateEntry(requestID int64, req *schedulingpb.CreateEn
 
 // handleDeleteEntry processes a DeleteEntryRequest message.
 // It cancels the previously scheduled action by EntryID.
-func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error {
+func (a *SimAgent) handleDeleteEntry(requestID int64, req *schedulingpb.DeleteEntryRequest) error {
 	// Validate token
 	token := req.GetScheduleManipulationToken()
 	if token == "" {
 		// Missing token - log and ignore
 		a.log.Warn(a.ctx, "agent: delete entry missing token",
 			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.InvalidArgument, "delete entry missing token"))
 		return nil
 	}
 
@@ -356,6 +364,7 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 			logging.String("expected_token", a.token),
 			logging.String("got_token", token),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.PermissionDenied, "schedule manipulation token mismatch"))
 		a.mu.Unlock()
 		return nil
 	}
@@ -383,7 +392,9 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 		a.mu.Unlock()
 		a.log.Error(a.ctx, "agent: delete entry empty entry_id",
 			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.InvalidArgument, "delete entry requires entry ID"))
 		return fmt.Errorf("DeleteEntryRequest has empty entry ID")
 	}
 	defer a.mu.Unlock()
@@ -393,18 +404,22 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 		// Cancel the scheduled event (using EntryID as event ID)
 		a.Scheduler.Cancel(entryID)
 		delete(a.pending, entryID)
-		_ = action // TODO: Send response if needed
+
+		// Notify controller that the action was cancelled before execution.
+		a.sendResponseForAction(action, status.New(codes.Canceled, "scheduled action cancelled"))
 
 		a.log.Info(a.ctx, "agent: delete entry cancelled",
 			logging.String("agent_id", string(a.AgentID)),
 			logging.String("entry_id", entryID),
 			logging.String("action_type", action.Type.String()),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.OK, "scheduled action cancelled"))
 	} else {
 		a.log.Debug(a.ctx, "agent: delete entry not found",
 			logging.String("agent_id", string(a.AgentID)),
 			logging.String("entry_id", entryID),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.NotFound, "entry not found"))
 	}
 
 	return nil
@@ -412,7 +427,7 @@ func (a *SimAgent) handleDeleteEntry(req *schedulingpb.DeleteEntryRequest) error
 
 // handleFinalize processes a FinalizeRequest message.
 // It drops any pending entries with When < cutoffTime.
-func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
+func (a *SimAgent) handleFinalize(requestID int64, req *schedulingpb.FinalizeRequest) error {
 	// Validate token
 	token := req.GetScheduleManipulationToken()
 	if token == "" {
@@ -420,6 +435,7 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 		a.log.Warn(a.ctx, "agent: finalize missing token",
 			logging.String("agent_id", string(a.AgentID)),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.InvalidArgument, "finalize missing token"))
 		return nil
 	}
 
@@ -438,6 +454,7 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 			logging.String("expected_token", a.token),
 			logging.String("got_token", token),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.PermissionDenied, "schedule manipulation token mismatch"))
 		a.mu.Unlock()
 		return nil
 	}
@@ -468,6 +485,7 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 			logging.String("agent_id", string(a.AgentID)),
 			logging.Any("error", err),
 		)
+		a.sendRequestResponse(requestID, status.New(codes.InvalidArgument, fmt.Sprintf("failed to extract cutoff time: %v", err)))
 		return fmt.Errorf("failed to extract cutoff time: %w", err)
 	}
 
@@ -490,6 +508,7 @@ func (a *SimAgent) handleFinalize(req *schedulingpb.FinalizeRequest) error {
 			logging.Any("cutoff_time", cutoffTime),
 		)
 	}
+	a.sendRequestResponse(requestID, status.New(codes.OK, "finalize processed"))
 
 	return nil
 }
@@ -592,11 +611,7 @@ func (a *SimAgent) extractTimeFromCreateEntry(req *schedulingpb.CreateEntryReque
 		return req.GetTime().AsTime(), nil
 	}
 	if req.GetTimeGpst() != nil {
-		// For Scope 4, we'll use a simple approach: treat GPST as relative to now
-		// In a real implementation, this would be relative to GPS epoch
-		// TODO: Implement proper GPST handling if needed
-		duration := req.GetTimeGpst().AsDuration()
-		return a.Scheduler.Now().Add(duration), nil
+		return gpsTimeFromDuration(req.GetTimeGpst().AsDuration()), nil
 	}
 	return time.Time{}, fmt.Errorf("CreateEntryRequest has no time field")
 }
@@ -607,11 +622,58 @@ func (a *SimAgent) extractTimeFromFinalize(req *schedulingpb.FinalizeRequest) (t
 		return req.GetUpTo().AsTime(), nil
 	}
 	if req.GetUpToGpst() != nil {
-		// Similar to extractTimeFromCreateEntry
-		duration := req.GetUpToGpst().AsDuration()
-		return a.Scheduler.Now().Add(duration), nil
+		return gpsTimeFromDuration(req.GetUpToGpst().AsDuration()), nil
 	}
 	return time.Time{}, fmt.Errorf("FinalizeRequest has no time field")
+}
+
+var gpsEpoch = time.Date(1980, time.January, 6, 0, 0, 0, 0, time.UTC)
+
+var gpsLeapSecondSchedule = []struct {
+	effective time.Time
+	offset    int
+}{
+	{time.Date(1980, time.January, 6, 0, 0, 0, 0, time.UTC), 0},
+	{time.Date(1981, time.July, 1, 0, 0, 0, 0, time.UTC), 1},
+	{time.Date(1982, time.July, 1, 0, 0, 0, 0, time.UTC), 2},
+	{time.Date(1983, time.July, 1, 0, 0, 0, 0, time.UTC), 3},
+	{time.Date(1985, time.July, 1, 0, 0, 0, 0, time.UTC), 4},
+	{time.Date(1988, time.January, 1, 0, 0, 0, 0, time.UTC), 5},
+	{time.Date(1990, time.January, 1, 0, 0, 0, 0, time.UTC), 6},
+	{time.Date(1991, time.January, 1, 0, 0, 0, 0, time.UTC), 7},
+	{time.Date(1992, time.July, 1, 0, 0, 0, 0, time.UTC), 8},
+	{time.Date(1993, time.July, 1, 0, 0, 0, 0, time.UTC), 9},
+	{time.Date(1994, time.July, 1, 0, 0, 0, 0, time.UTC), 10},
+	{time.Date(1996, time.January, 1, 0, 0, 0, 0, time.UTC), 11},
+	{time.Date(1997, time.July, 1, 0, 0, 0, 0, time.UTC), 12},
+	{time.Date(1999, time.January, 1, 0, 0, 0, 0, time.UTC), 13},
+	{time.Date(2006, time.January, 1, 0, 0, 0, 0, time.UTC), 14},
+	{time.Date(2009, time.January, 1, 0, 0, 0, 0, time.UTC), 15},
+	{time.Date(2012, time.July, 1, 0, 0, 0, 0, time.UTC), 16},
+	{time.Date(2015, time.July, 1, 0, 0, 0, 0, time.UTC), 17},
+	{time.Date(2017, time.January, 1, 0, 0, 0, 0, time.UTC), 18},
+}
+
+func gpsTimeFromDuration(duration time.Duration) time.Time {
+	gpsTime := gpsEpoch.Add(duration)
+	return gpsToUTC(gpsTime)
+}
+
+func gpsToUTC(gpsTime time.Time) time.Time {
+	offset := gpsLeapSecondsAt(gpsTime)
+	return gpsTime.Add(-time.Duration(offset) * time.Second)
+}
+
+func gpsLeapSecondsAt(gpsTime time.Time) int {
+	offset := 0
+	for _, entry := range gpsLeapSecondSchedule {
+		if gpsTime.Equal(entry.effective) || gpsTime.After(entry.effective) {
+			offset = entry.offset
+			continue
+		}
+		break
+	}
+	return offset
 }
 
 // convertUpdateBeamToBeamSpec converts an UpdateBeam proto to a BeamSpec.
@@ -622,19 +684,47 @@ func (a *SimAgent) convertUpdateBeamToBeamSpec(updateBeam *schedulingpb.UpdateBe
 		return nil, fmt.Errorf("UpdateBeam has no beam")
 	}
 
+	interfaceID := beam.GetAntennaId()
 	beamSpec := &sbi.BeamSpec{
-		NodeID:      a.NodeID, // Use agent's node ID
-		InterfaceID: beam.GetAntennaId(),
+		NodeID:      a.NodeID,
+		InterfaceID: interfaceID,
 	}
+	beamSpec.Target = convertBeamTargetProto(beam.GetTarget())
 
-	// Extract target information from beam endpoints
-	// For Scope 4, we'll use a simplified approach
-	// TODO: Extract proper target node/interface from beam.Endpoints or beam.Target
 	if len(beam.GetEndpoints()) > 0 {
 		// Use first endpoint as target (simplified)
 		for nodeID := range beam.GetEndpoints() {
 			beamSpec.TargetNodeID = nodeID
 			break
+		}
+		if len(beam.GetEndpoints()) > 1 {
+			a.log.Debug(a.ctx, "agent: multiple beam endpoints received",
+				logging.String("agent_id", string(a.AgentID)),
+				logging.String("interface_id", interfaceID),
+				logging.Int("endpoint_count", len(beam.GetEndpoints())),
+			)
+		}
+	}
+
+	if targetNode, targetIface, ok := a.findTargetForInterface(interfaceID); ok {
+		if beamSpec.TargetNodeID == "" {
+			beamSpec.TargetNodeID = targetNode
+		}
+		if targetIface != "" {
+			beamSpec.TargetIfID = targetIface
+		}
+	}
+
+	if beamSpec.TargetNodeID == "" {
+		a.log.Debug(a.ctx, "agent: update beam missing target node info",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("interface_id", interfaceID),
+		)
+	}
+
+	if beamSpec.TargetNodeID == "" {
+		if resolved := a.nodeIDFromBeamTarget(beamSpec.Target); resolved != "" {
+			beamSpec.TargetNodeID = resolved
 		}
 	}
 
@@ -650,13 +740,27 @@ func (a *SimAgent) convertDeleteBeamToBeamSpec(deleteBeam *schedulingpb.DeleteBe
 		return nil, fmt.Errorf("DeleteBeam has no beam ID")
 	}
 
-	// For Scope 4, we'll construct a minimal BeamSpec with just the beam ID
-	// The actual link lookup will happen in execute() via ApplyBeamDelete
-	// TODO: Look up beam from state to get interface info
+	interfaceID := extractInterfaceIDFromBeamID(beamID)
+	if interfaceID == "" {
+		return nil, fmt.Errorf("unable to derive interface ID from beam ID %q", beamID)
+	}
+
 	beamSpec := &sbi.BeamSpec{
-		NodeID: a.NodeID,
-		// InterfaceID and TargetIfID will need to be determined from the beam ID
-		// For now, we'll leave them empty and let ApplyBeamDelete handle it
+		NodeID:      a.NodeID,
+		InterfaceID: interfaceID,
+	}
+
+	if targetNode, targetIface, ok := a.findTargetForInterface(interfaceID); ok {
+		beamSpec.TargetNodeID = targetNode
+		beamSpec.TargetIfID = targetIface
+	}
+
+	if beamSpec.TargetNodeID == "" {
+		a.log.Debug(a.ctx, "agent: delete beam unable to resolve target node",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("interface_id", interfaceID),
+			logging.String("beam_id", beamID),
+		)
 	}
 
 	return beamSpec, nil
@@ -671,9 +775,10 @@ func (a *SimAgent) convertSetRouteToRouteEntry(setRoute *schedulingpb.SetRoute) 
 
 	// Via is the next hop address, but we need NextHopNodeID
 	// For Scope 4, we'll leave it empty if Via is not a node ID
-	// TODO: Map Via address to node ID if needed
-	if setRoute.GetVia() != "" {
-		// Try to use Via as node ID (simplified)
+	// Map Via to a known node ID when possible; otherwise fall back to the raw value.
+	if viaNode := a.lookupNodeForVia(setRoute.GetVia()); viaNode != "" {
+		route.NextHopNodeID = viaNode
+	} else if setRoute.GetVia() != "" {
 		route.NextHopNodeID = setRoute.GetVia()
 	}
 
@@ -689,6 +794,119 @@ func (a *SimAgent) convertDeleteRouteToRouteEntry(deleteRoute *schedulingpb.Dele
 	}
 
 	return route, nil
+}
+
+func convertBeamTargetProto(target *schedulingpb.BeamTarget) *sbi.BeamTarget {
+	if target == nil || target.GetTarget() == nil {
+		return nil
+	}
+
+	switch payload := target.GetTarget().(type) {
+	case *schedulingpb.BeamTarget_AzEl:
+		if az := payload.AzEl; az != nil {
+			return &sbi.BeamTarget{
+				AzEl: &sbi.BeamAzElTarget{
+					AzimuthDeg:   az.GetAzDeg(),
+					ElevationDeg: az.GetElDeg(),
+				},
+			}
+		}
+	case *schedulingpb.BeamTarget_Cartesian:
+		if cart := payload.Cartesian; cart != nil {
+			return &sbi.BeamTarget{
+				Cartesian: &sbi.BeamCartesianTarget{
+					Frame: cart.GetReferenceFrame(),
+					Coordinates: model.Coordinates{
+						X: cart.GetXM(),
+						Y: cart.GetYM(),
+						Z: cart.GetZM(),
+					},
+				},
+			}
+		}
+	case *schedulingpb.BeamTarget_StateVector:
+		if sv := payload.StateVector; sv != nil {
+			return &sbi.BeamTarget{
+				StateVector: &sbi.BeamStateVectorTarget{
+					Frame: sv.GetReferenceFrame(),
+					Position: model.Coordinates{
+						X: sv.GetXM(),
+						Y: sv.GetYM(),
+						Z: sv.GetZM(),
+					},
+					Velocity: model.Motion{
+						X: sv.GetXDotMPerS(),
+						Y: sv.GetYDotMPerS(),
+						Z: sv.GetZDotMPerS(),
+					},
+				},
+			}
+		}
+	}
+
+	return nil
+}
+
+const beamTargetMatchThresholdMeters = 1000.0
+
+func (a *SimAgent) nodeIDFromBeamTarget(target *sbi.BeamTarget) string {
+	if target == nil || a.State == nil {
+		return ""
+	}
+	coords, ok := beamTargetCoordinates(target)
+	if !ok {
+		return ""
+	}
+	phys := a.State.PhysicalKB()
+	if phys == nil {
+		return ""
+	}
+
+	best := ""
+	bestDist := math.MaxFloat64
+	for _, node := range a.State.ListNodes() {
+		if node == nil || node.PlatformID == "" {
+			continue
+		}
+		platform := phys.GetPlatform(node.PlatformID)
+		if platform == nil {
+			continue
+		}
+		nodeCoords := model.Coordinates{
+			X: platform.Coordinates.X,
+			Y: platform.Coordinates.Y,
+			Z: platform.Coordinates.Z,
+		}
+		if dist := coordinatesDistance(coords, nodeCoords); dist < bestDist {
+			bestDist = dist
+			best = node.ID
+		}
+	}
+
+	if bestDist <= beamTargetMatchThresholdMeters {
+		return best
+	}
+	return ""
+}
+
+func beamTargetCoordinates(target *sbi.BeamTarget) (model.Coordinates, bool) {
+	if target == nil {
+		return model.Coordinates{}, false
+	}
+	if target.Cartesian != nil {
+		return target.Cartesian.Coordinates, true
+	}
+	if target.StateVector != nil {
+		return target.StateVector.Position, true
+	}
+	return model.Coordinates{}, false
+}
+
+func coordinatesDistance(a, b model.Coordinates) float64 {
+	dx := a.X - b.X
+	dy := a.Y - b.Y
+	dz := a.Z - b.Z
+	return math.Sqrt(dx*dx + dy*dy + dz*dz)
 }
 
 func (a *SimAgent) convertProtoDTNMessageSpec(proto *schedulingpb.DTNMessageSpec) (*sbi.DTNMessageSpec, error) {
@@ -838,36 +1056,12 @@ func (a *SimAgent) execute(action *sbi.ScheduledAction) {
 		}
 	}
 
-	// Parse request ID from action
-	var requestID int64
-	if action.RequestID != "" {
-		// Try to parse as int64
-		_, _ = fmt.Sscanf(action.RequestID, "%d", &requestID)
-	}
-
-	// Send Response
-	response := &schedulingpb.ReceiveRequestsMessageToController{
-		Response: &schedulingpb.ReceiveRequestsMessageToController_Response{
-			RequestId: requestID,
-			Status:    responseStatus.Proto(),
-		},
-	}
-
 	// Remove from pending map
 	a.mu.Lock()
 	delete(a.pending, action.EntryID)
 	a.mu.Unlock()
 
-	// Send response (non-blocking, best-effort)
-	if a.Stream != nil {
-		if sendErr := a.Stream.Send(response); sendErr != nil {
-			a.log.Error(a.ctx, "agent: failed to send response",
-				logging.String("agent_id", string(a.AgentID)),
-				logging.String("entry_id", action.EntryID),
-				logging.Any("error", sendErr),
-			)
-		}
-	}
+	a.sendResponseForAction(action, responseStatus)
 }
 
 // Reset clears the agent's pending schedule and resets token/seqno.
@@ -912,9 +1106,11 @@ func (a *SimAgent) handleSetSrPolicy(spec *sbi.SrPolicySpec) {
 	cp := *spec
 	a.srPolicies[spec.PolicyID] = &cp
 
-	// TODO: Add proper logging
-	_ = a.AgentID
-	_ = a.NodeID
+	a.log.Info(a.ctx, "agent: stored sr policy",
+		logging.String("agent_id", string(a.AgentID)),
+		logging.String("node_id", a.NodeID),
+		logging.String("policy_id", spec.PolicyID),
+	)
 }
 
 // handleDeleteSrPolicy removes an SR policy from the agent's registry.
@@ -929,9 +1125,11 @@ func (a *SimAgent) handleDeleteSrPolicy(policyID string) {
 
 	delete(a.srPolicies, policyID)
 
-	// TODO: Add proper logging
-	_ = a.AgentID
-	_ = a.NodeID
+	a.log.Info(a.ctx, "agent: deleted sr policy",
+		logging.String("agent_id", string(a.AgentID)),
+		logging.String("node_id", a.NodeID),
+		logging.String("policy_id", policyID),
+	)
 }
 
 // DumpSrPolicies returns all SR policies currently stored on the agent.
@@ -1268,6 +1466,28 @@ func float64Ptr(f float64) *float64 {
 	return &f
 }
 
+// SetViaNodeMapping configures a map used to convert Via addresses into node IDs.
+func (a *SimAgent) SetViaNodeMapping(mapping map[string]string) {
+	if mapping == nil {
+		return
+	}
+	a.mu.Lock()
+	a.viaNodeMapping = make(map[string]string, len(mapping))
+	for via, node := range mapping {
+		a.viaNodeMapping[via] = node
+	}
+	a.mu.Unlock()
+}
+
+func (a *SimAgent) lookupNodeForVia(via string) string {
+	if via == "" {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.viaNodeMapping[via]
+}
+
 // getNodeIDFromInterfaceRef extracts the node ID from an interface reference.
 // Interface references can be in "node-ID/interface-ID" format or just "interface-ID".
 func (a *SimAgent) getNodeIDFromInterfaceRef(ifRef string) string {
@@ -1286,4 +1506,98 @@ func (a *SimAgent) getInterfaceIDFromRef(ifRef string) string {
 		return parts[1]
 	}
 	return ifRef
+}
+
+// parseRequestID attempts to convert the stored request ID string to an int64.
+func parseRequestID(requestID string) int64 {
+	if requestID == "" {
+		return 0
+	}
+	var parsed int64
+	if _, err := fmt.Sscanf(requestID, "%d", &parsed); err == nil {
+		return parsed
+	}
+	return 0
+}
+
+// sendResponseForAction sends a response for the given action status to the controller.
+func (a *SimAgent) sendResponseForAction(action *sbi.ScheduledAction, responseStatus *status.Status) {
+	if action == nil || responseStatus == nil {
+		return
+	}
+
+	response := &schedulingpb.ReceiveRequestsMessageToController{
+		Response: &schedulingpb.ReceiveRequestsMessageToController_Response{
+			RequestId: parseRequestID(action.RequestID),
+			Status:    responseStatus.Proto(),
+		},
+	}
+
+	if a.Stream == nil {
+		return
+	}
+
+	if sendErr := a.Stream.Send(response); sendErr != nil {
+		a.log.Error(a.ctx, "agent: failed to send response",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.String("entry_id", action.EntryID),
+			logging.Any("error", sendErr),
+		)
+	}
+}
+
+// sendRequestResponse sends a protocol response for a request that does not map to an action.
+func (a *SimAgent) sendRequestResponse(requestID int64, responseStatus *status.Status) {
+	if responseStatus == nil || a.Stream == nil {
+		return
+	}
+
+	resp := &schedulingpb.ReceiveRequestsMessageToController{
+		Response: &schedulingpb.ReceiveRequestsMessageToController_Response{
+			RequestId: requestID,
+			Status:    responseStatus.Proto(),
+		},
+	}
+
+	if err := a.Stream.Send(resp); err != nil {
+		a.log.Error(a.ctx, "agent: failed to send request response",
+			logging.String("agent_id", string(a.AgentID)),
+			logging.Any("request_id", requestID),
+			logging.Any("error", err),
+		)
+	}
+}
+
+// findTargetForInterface locates the peer node and interface for a local interface reference.
+func (a *SimAgent) findTargetForInterface(interfaceID string) (string, string, bool) {
+	if a.State == nil || interfaceID == "" || a.NodeID == "" {
+		return "", "", false
+	}
+	srcRef := fmt.Sprintf("%s/%s", a.NodeID, interfaceID)
+	for _, link := range a.State.ListLinks() {
+		if link == nil {
+			continue
+		}
+		if link.InterfaceA == srcRef && link.InterfaceB != "" {
+			return a.getNodeIDFromInterfaceRef(link.InterfaceB), a.getInterfaceIDFromRef(link.InterfaceB), true
+		}
+		if link.InterfaceB == srcRef && link.InterfaceA != "" {
+			return a.getNodeIDFromInterfaceRef(link.InterfaceA), a.getInterfaceIDFromRef(link.InterfaceA), true
+		}
+	}
+	return "", "", false
+}
+
+// extractInterfaceIDFromBeamID derives the local interface identifier from a Beam ID.
+func extractInterfaceIDFromBeamID(beamID string) string {
+	if beamID == "" {
+		return ""
+	}
+	if idx := strings.LastIndex(beamID, ":"); idx >= 0 {
+		beamID = beamID[idx+1:]
+	}
+	if idx := strings.LastIndex(beamID, "/"); idx >= 0 {
+		beamID = beamID[idx+1:]
+	}
+	return beamID
 }

@@ -261,6 +261,9 @@ func (s *Scheduler) FindMultiHopPath(ctx context.Context, srcNodeID, dstNodeID s
 		return nil, fmt.Errorf("horizon must be positive")
 	}
 
+	start := time.Now()
+	defer s.recordPathComputationDuration(time.Since(start))
+
 	endTime := startTime.Add(horizon)
 	graph, err := s.BuildTimeExpandedGraph(ctx, srcNodeID, dstNodeID, startTime, endTime)
 	if err != nil {
@@ -413,6 +416,9 @@ func (s *Scheduler) FindDTNPath(ctx context.Context, srcNodeID, dstNodeID string
 	if startTime.IsZero() && s.Clock != nil {
 		startTime = s.Clock.Now()
 	}
+
+	start := time.Now()
+	defer s.recordPathComputationDuration(time.Since(start))
 
 	endTime := startTime.Add(ContactHorizon)
 	graph, err := s.BuildTimeExpandedGraph(ctx, srcNodeID, dstNodeID, startTime, endTime)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
+	"github.com/signalsfoundry/constellation-simulator/internal/observability"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
 	"github.com/signalsfoundry/constellation-simulator/internal/sim/state"
 	"github.com/signalsfoundry/constellation-simulator/model"
@@ -31,6 +32,7 @@ type Scheduler struct {
 	CDPI      cdpiClient
 	log       logging.Logger
 	Telemetry *state.TelemetryState
+	Metrics   *observability.SchedulerCollector
 
 	// scheduledEntryIDs tracks entry IDs we've already scheduled to avoid duplicates.
 	// This provides idempotency for ScheduleLinkBeams.
@@ -166,7 +168,7 @@ type ActivePath struct {
 }
 
 // NewScheduler creates a new Scheduler with the given dependencies.
-func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdpiClient, log logging.Logger, telemetry *state.TelemetryState) *Scheduler {
+func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdpiClient, log logging.Logger, telemetry *state.TelemetryState, metrics *observability.SchedulerCollector) *Scheduler {
 	if log == nil {
 		log = logging.Noop()
 	}
@@ -176,6 +178,7 @@ func NewScheduler(state *state.ScenarioState, clock sbi.EventScheduler, cdpi cdp
 		CDPI:                  cdpi,
 		log:                   log,
 		Telemetry:             telemetry,
+		Metrics:               metrics,
 		scheduledEntryIDs:     make(map[string]bool),
 		storageReservations:   make(map[string]float64),
 		contactWindows:        make(map[string][]ContactWindow),
@@ -468,6 +471,7 @@ func (s *Scheduler) sendBeamEntry(linkID, agentID, interfaceID, entryID string, 
 }
 
 func (s *Scheduler) ensureContactWindows(ctx context.Context) {
+	defer s.updateContactWindowCacheMetrics()
 	if len(s.contactWindows) > 0 {
 		return
 	}
@@ -482,6 +486,14 @@ func (s *Scheduler) ensureContactWindows(ctx context.Context) {
 			logging.String("error", err.Error()),
 		)
 	}
+}
+
+// SetContactWindows allows injecting synthetic contact windows for testing.
+func (s *Scheduler) SetContactWindows(windows map[string][]ContactWindow) {
+	if s == nil {
+		return
+	}
+	s.contactWindows = windows
 }
 
 func (s *Scheduler) loadContactWindowsFromCache() map[string][]ContactWindow {
@@ -1042,11 +1054,15 @@ func (s *Scheduler) ScheduleServiceRequests(ctx context.Context) error {
 		logging.Int("sr_count", len(serviceRequests)),
 	)
 
+	s.updateQueuedRequests(len(serviceRequests))
+	defer s.updateQueuedRequests(0)
+
 	s.ensureContactWindows(ctx)
 
 	// For each service request, find a path and schedule actions
 	for pq.Len() > 0 {
 		sr := pq.Pop()
+		s.updateQueuedRequests(pq.Len())
 		if sr != nil {
 			s.removeActivePath(sr.ID)
 		}
@@ -3078,6 +3094,41 @@ func (s *Scheduler) recordPreemption(srID string, record preemptionRecord) {
 		return
 	}
 	s.preemptionRecords[srID] = record
+	s.incPreemptionMetric()
+}
+
+func (s *Scheduler) updateQueuedRequests(count int) {
+	if s == nil || s.Metrics == nil {
+		return
+	}
+	s.Metrics.SetQueuedRequests(count)
+}
+
+func (s *Scheduler) incPreemptionMetric() {
+	if s == nil || s.Metrics == nil {
+		return
+	}
+	s.Metrics.IncPreemptions()
+}
+
+func (s *Scheduler) recordPathComputationDuration(duration time.Duration) {
+	if s == nil || s.Metrics == nil {
+		return
+	}
+	s.Metrics.ObservePathComputation(duration)
+}
+
+func (s *Scheduler) updateContactWindowCacheMetrics() {
+	if s == nil || s.Metrics == nil || s.contactCache == nil {
+		return
+	}
+	hits, misses, _ := s.contactCache.Stats()
+	total := hits + misses
+	if total == 0 {
+		s.Metrics.SetContactWindowHitRatio(0)
+		return
+	}
+	s.Metrics.SetContactWindowHitRatio(float64(hits) / float64(total))
 }
 
 func findInterfaceByRef(interfacesByNode map[string][]*core.NetworkInterface, ref string) *core.NetworkInterface {
@@ -3137,6 +3188,111 @@ func splitQualifiedInterfaceID(ref string) (parent, local string) {
 		return parts[0], parts[1]
 	}
 	return "", ref
+}
+
+// SchedulerDebugState summarizes key controller state for debugging.
+type SchedulerDebugState struct {
+	ScheduledEntryCount   int   `json:"scheduled_entry_count"`
+	ActivePathCount       int   `json:"active_path_count"`
+	ServiceRequestOverall int   `json:"service_request_entries"`
+	LinkEntryOverall      int   `json:"link_entry_entries"`
+	PreemptionsRecorded   int   `json:"preemptions_recorded"`
+	ContactCacheHits      int64 `json:"contact_cache_hits"`
+	ContactCacheMisses    int64 `json:"contact_cache_misses"`
+	ContactCacheInvalids  int64 `json:"contact_cache_invalids"`
+}
+
+// SchedulerHopDetail describes a single hop inside a decision path.
+type SchedulerHopDetail struct {
+	From  string    `json:"from"`
+	To    string    `json:"to"`
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+// SchedulerDecision describes an active path decision for a service request.
+type SchedulerDecision struct {
+	ServiceRequestID string               `json:"service_request_id"`
+	Health           PathHealth           `json:"health"`
+	HopCount         int                  `json:"hop_count"`
+	ValidFrom        time.Time            `json:"valid_from"`
+	ValidUntil       time.Time            `json:"valid_until"`
+	LastUpdated      time.Time            `json:"last_updated"`
+	DetnCandidate    bool                 `json:"dtn_candidate"`
+	Hops             []SchedulerHopDetail `json:"hops"`
+}
+
+// SchedulerPreemptionInfo describes a preemption record emitted by the scheduler.
+type SchedulerPreemptionInfo struct {
+	ServiceRequestID string    `json:"service_request_id"`
+	PreemptedBy      string    `json:"preempted_by"`
+	Reason           string    `json:"reason"`
+	PreemptedAt      time.Time `json:"preempted_at"`
+	LinkIDs          []string  `json:"link_ids"`
+}
+
+// SnapshotDebugState returns a light-weight summary of the scheduler's internal state.
+func (s *Scheduler) SnapshotDebugState() SchedulerDebugState {
+	if s == nil {
+		return SchedulerDebugState{}
+	}
+	hits, misses, invalids := int64(0), int64(0), int64(0)
+	if s.contactCache != nil {
+		hits, misses, invalids = s.contactCache.Stats()
+	}
+	return SchedulerDebugState{
+		ScheduledEntryCount:   len(s.scheduledEntryIDs),
+		ActivePathCount:       len(s.activePaths),
+		ServiceRequestOverall: len(s.srEntries),
+		LinkEntryOverall:      len(s.linkEntries),
+		PreemptionsRecorded:   len(s.preemptionRecords),
+		ContactCacheHits:      hits,
+		ContactCacheMisses:    misses,
+		ContactCacheInvalids:  invalids,
+	}
+}
+
+// SnapshotDecisions returns the active path decisions and preemption records.
+func (s *Scheduler) SnapshotDecisions() ([]SchedulerDecision, []SchedulerPreemptionInfo) {
+	if s == nil {
+		return nil, nil
+	}
+	decisions := make([]SchedulerDecision, 0, len(s.activePaths))
+	for _, path := range s.activePaths {
+		decision := SchedulerDecision{
+			ServiceRequestID: path.ServiceRequestID,
+			Health:           path.Health,
+			LastUpdated:      path.LastUpdated,
+			DetnCandidate:    path.DTNPath != nil,
+		}
+		if path.Path != nil {
+			decision.HopCount = len(path.Path.Hops)
+			decision.ValidFrom = path.Path.ValidFrom
+			decision.ValidUntil = path.Path.ValidUntil
+			for _, hop := range path.Path.Hops {
+				decision.Hops = append(decision.Hops, SchedulerHopDetail{
+					From:  hop.FromNodeID,
+					To:    hop.ToNodeID,
+					Start: hop.StartTime,
+					End:   hop.EndTime,
+				})
+			}
+		}
+		decisions = append(decisions, decision)
+	}
+
+	preemptions := make([]SchedulerPreemptionInfo, 0, len(s.preemptionRecords))
+	for srID, record := range s.preemptionRecords {
+		preemptions = append(preemptions, SchedulerPreemptionInfo{
+			ServiceRequestID: srID,
+			PreemptedBy:      record.PreemptedBy,
+			Reason:           record.Reason,
+			PreemptedAt:      record.PreemptedAt,
+			LinkIDs:          append([]string(nil), record.LinkIDs...),
+		})
+	}
+
+	return decisions, preemptions
 }
 
 func localInterfaceID(ifID string) string {

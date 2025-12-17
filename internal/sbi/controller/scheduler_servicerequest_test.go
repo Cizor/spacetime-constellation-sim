@@ -85,7 +85,7 @@ func TestScheduler_ScheduleServiceRequests_MultiHop(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState(), nil)
 
 	// Create platforms
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{ID: "platform-A", Name: "Platform A"}); err != nil {
@@ -328,7 +328,7 @@ func TestScheduler_ScheduleServiceRequests_NoPath(t *testing.T) {
 	eventScheduler := sbi.NewEventScheduler(fakeClock)
 
 	fakeCDPI := newFakeCDPIServerForScheduler(scenarioState, eventScheduler)
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState())
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), state.NewTelemetryState(), nil)
 
 	if err := scenarioState.CreatePlatform(&model.PlatformDefinition{
 		ID: "plat-standard",

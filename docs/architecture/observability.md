@@ -22,6 +22,20 @@ Point Prometheus at the metrics endpoint exposed by the NBI binary, for example:
 - p95 latency per method: `histogram_quantile(0.95, sum(rate(nbi_request_duration_seconds_bucket[5m])) by (le,method))`
 - Scenario entity counts: `scenario_platforms`, `scenario_nodes`, `scenario_links`, `scenario_service_requests`
 
+### Scheduler observability
+- `scheduler_path_computation_duration_seconds` – histogram recorded each time the scheduler computes a new multi-hop path.
+- `scheduler_service_requests_queued` – gauge of pending service requests awaiting scheduling.
+- `scheduler_preemptions_total` – counter incremented whenever a lower-priority request is preempted.
+- `scheduler_contact_window_cache_hit_ratio` – gauge between 0 and 1 describing cache effectiveness.
+These metrics are registered via `internal/observability/scheduler_metrics.go` and served alongside the standard Prometheus registry. Use them to build dashboards that highlight planning latency, queue pressure, and cache behavior.
+
+### Debug endpoints and telemetry aggregation
+`cmd/nbi-server` now exposes `/debug/scheduler/state` and `/debug/scheduler/decisions` on the same port as `/metrics`. These endpoints return JSON containing:
+- scheduler snapshots (`Scheduler.SnapshotDebugState`, `Scheduler.SnapshotDecisions`) for inspection of current beams/routes and recent preemptions.
+- aggregated telemetry summaries produced by `TelemetryState.AggregateInterfaceMetricsByNode` and `TelemetryState.AggregateModemMetricsByNode`, so UI clients can see per-node throughput/SNR without re-aggregating.
+
+The telemetry aggregator functions compute node-level totals (interfaces up/down, bytes, average SNR) and modem summaries (counts, throughput, latest timestamp). They are safe for concurrent access and are used both by the `/debug` handlers and anywhere else you need fleet-wide views.
+
 ### Tracing
 The NBI gRPC server can emit OpenTelemetry traces for each RPC and a few key internal operations (scenario loads, platform/node/link/service request mutations). Tracing is optional and disabled by default.
 

@@ -132,7 +132,7 @@ func TestScheduler_MultipleLinks_BeamAndRouteScheduling(t *testing.T) {
 		agentHandles[nodeID] = handle
 	}
 
-	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), telemetryState)
+	scheduler := NewScheduler(scenarioState, eventScheduler, fakeCDPI, logging.Noop(), telemetryState, nil)
 	ctx := context.Background()
 
 	// Test ScheduleLinkBeams for multiple links

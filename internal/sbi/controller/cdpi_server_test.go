@@ -5,6 +5,7 @@ import (
 	"time"
 
 	schedulingpb "aalyria.com/spacetime/api/scheduling/v1alpha"
+	geophys "aalyria.com/spacetime/nmts/v1/proto/types/geophys"
 	"github.com/signalsfoundry/constellation-simulator/core"
 	"github.com/signalsfoundry/constellation-simulator/internal/logging"
 	"github.com/signalsfoundry/constellation-simulator/internal/sbi"
@@ -422,5 +423,73 @@ func TestCDPIServer_setAgentToken_UnknownAgentReturnsError(t *testing.T) {
 	// Verify error message mentions the agent ID
 	if err.Error() == "" {
 		t.Errorf("error message should not be empty")
+	}
+}
+
+func TestConvertBeamSpecToUpdateBeam_TargetMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		spec  *sbi.BeamSpec
+		check func(t *testing.T, beam *schedulingpb.Beam)
+	}{
+		{
+			name: "az_el",
+			spec: &sbi.BeamSpec{
+				InterfaceID: "iface",
+				Target: &sbi.BeamTarget{
+					AzEl: &sbi.BeamAzElTarget{
+						AzimuthDeg:   11.1,
+						ElevationDeg: 22.2,
+					},
+				},
+			},
+			check: func(t *testing.T, beam *schedulingpb.Beam) {
+				azEl := beam.GetTarget().GetAzEl()
+				if azEl == nil {
+					t.Fatalf("expected az/el target, got %+v", beam.GetTarget())
+				}
+				if azEl.GetAzDeg() != 11.1 || azEl.GetElDeg() != 22.2 {
+					t.Fatalf("unexpected az/el %v/%v", azEl.GetAzDeg(), azEl.GetElDeg())
+				}
+			},
+		},
+		{
+			name: "cartesian",
+			spec: &sbi.BeamSpec{
+				InterfaceID: "iface",
+				Target: &sbi.BeamTarget{
+					Cartesian: &sbi.BeamCartesianTarget{
+						Frame: geophys.CoordinateFrame_COORDINATE_FRAME_ECEF,
+						Coordinates: model.Coordinates{
+							X: 1,
+							Y: 2,
+							Z: 3,
+						},
+					},
+				},
+			},
+			check: func(t *testing.T, beam *schedulingpb.Beam) {
+				cart := beam.GetTarget().GetCartesian()
+				if cart == nil {
+					t.Fatalf("expected cartesian target, got %+v", beam.GetTarget())
+				}
+				if cart.GetXM() != 1 || cart.GetYM() != 2 || cart.GetZM() != 3 {
+					t.Fatalf("unexpected coordinates %v/%v/%v", cart.GetXM(), cart.GetYM(), cart.GetZM())
+				}
+				if cart.GetReferenceFrame() != geophys.CoordinateFrame_COORDINATE_FRAME_ECEF {
+					t.Fatalf("unexpected frame %v", cart.GetReferenceFrame())
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			update := convertBeamSpecToUpdateBeam(tc.spec)
+			if update == nil || update.Beam == nil {
+				t.Fatalf("convertBeamSpecToUpdateBeam returned nil")
+			}
+			tc.check(t, update.Beam)
+		})
 	}
 }

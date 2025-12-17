@@ -299,7 +299,7 @@ func TestAgent_DeleteEntry_CancelsScheduledAction(t *testing.T) {
 		Seqno:                     2,
 		Id:                        "entry-1",
 	}
-	if err := agent.handleDeleteEntry(deleteReq); err != nil {
+	if err := agent.handleDeleteEntry(456, deleteReq); err != nil {
 		t.Fatalf("handleDeleteEntry failed: %v", err)
 	}
 

@@ -97,7 +97,7 @@ func TestSimAgent_HandleFinalize_PrunePastEntriesKeepFuture(t *testing.T) {
 	}
 
 	// Handle FinalizeRequest
-	if err := agent.handleFinalize(req); err != nil {
+	if err := agent.handleFinalize(0, req); err != nil {
 		t.Fatalf("handleFinalize failed: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestSimAgent_HandleFinalize_CutoffBeforeAllEntriesNoPruning(t *testing.T) {
 	}
 
 	// Handle FinalizeRequest
-	if err := agent.handleFinalize(req); err != nil {
+	if err := agent.handleFinalize(0, req); err != nil {
 		t.Fatalf("handleFinalize failed: %v", err)
 	}
 
@@ -239,7 +239,7 @@ func TestSimAgent_HandleFinalize_CutoffAfterAllEntriesAllPruned(t *testing.T) {
 	}
 
 	// Handle FinalizeRequest
-	if err := agent.handleFinalize(req); err != nil {
+	if err := agent.handleFinalize(0, req); err != nil {
 		t.Fatalf("handleFinalize failed: %v", err)
 	}
 
@@ -250,4 +250,3 @@ func TestSimAgent_HandleFinalize_CutoffAfterAllEntriesAllPruned(t *testing.T) {
 	}
 	agent.mu.Unlock()
 }
-

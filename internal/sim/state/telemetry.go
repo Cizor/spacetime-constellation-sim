@@ -3,6 +3,7 @@ package state
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"time"
 )
@@ -64,17 +65,17 @@ type IntentMetrics struct {
 
 // TelemetryState is a concurrency-safe store for interface metrics.
 type TelemetryState struct {
-	mu    sync.RWMutex
-	byIf  map[string]*InterfaceMetrics // key: "nodeID/interfaceID"
-	modem map[string]*ModemMetrics     // key: "nodeID/interfaceID"
+	mu     sync.RWMutex
+	byIf   map[string]*InterfaceMetrics // key: "nodeID/interfaceID"
+	modem  map[string]*ModemMetrics     // key: "nodeID/interfaceID"
 	intent map[string]*IntentMetrics
 }
 
 // NewTelemetryState creates a new TelemetryState instance.
 func NewTelemetryState() *TelemetryState {
 	return &TelemetryState{
-		byIf:  make(map[string]*InterfaceMetrics),
-		modem: make(map[string]*ModemMetrics),
+		byIf:   make(map[string]*InterfaceMetrics),
+		modem:  make(map[string]*ModemMetrics),
 		intent: make(map[string]*IntentMetrics),
 	}
 }
@@ -148,6 +149,9 @@ func (t *TelemetryState) UpdateModemMetrics(m *ModemMetrics) error {
 	if m.InterfaceID == "" {
 		return errors.New("interface ID is required")
 	}
+	if m.Timestamp.IsZero() {
+		m.Timestamp = time.Now()
+	}
 	key := telemetryKey(m.NodeID, m.InterfaceID)
 
 	t.mu.Lock()
@@ -190,6 +194,7 @@ func (t *TelemetryState) GetIntentMetrics(srID string) *IntentMetrics {
 	cp := *m
 	return &cp
 }
+
 // GetModemMetrics retrieves modem metrics for an interface.
 func (t *TelemetryState) GetModemMetrics(nodeID, ifaceID string) (*ModemMetrics, error) {
 	key := telemetryKey(nodeID, ifaceID)
@@ -204,4 +209,128 @@ func (t *TelemetryState) GetModemMetrics(nodeID, ifaceID string) (*ModemMetrics,
 
 	copy := *m
 	return &copy, nil
+}
+
+// NodeInterfaceSummary captures aggregated interface metrics for a node.
+type NodeInterfaceSummary struct {
+	NodeID         string  `json:"node_id"`
+	InterfaceCount int     `json:"interface_count"`
+	InterfacesUp   int     `json:"interfaces_up"`
+	InterfacesDown int     `json:"interfaces_down"`
+	TotalBytesTx   uint64  `json:"total_bytes_tx"`
+	TotalBytesRx   uint64  `json:"total_bytes_rx"`
+	AverageSNRdB   float64 `json:"average_snr_db"`
+}
+
+// NodeModemSummary captures aggregated modem metrics for a node.
+type NodeModemSummary struct {
+	NodeID             string    `json:"node_id"`
+	ModemCount         int       `json:"modem_count"`
+	TotalThroughputBps uint64    `json:"total_throughput_bps"`
+	AverageSNRdB       float64   `json:"average_snr_db"`
+	LatestTimestamp    time.Time `json:"latest_timestamp"`
+}
+
+// AggregateInterfaceMetricsByNode groups interface metrics per node.
+func (t *TelemetryState) AggregateInterfaceMetricsByNode() map[string]NodeInterfaceSummary {
+	if t == nil {
+		return nil
+	}
+
+	type acc struct {
+		summary NodeInterfaceSummary
+		snrSum  float64
+		snrCnt  int
+	}
+
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	result := make(map[string]NodeInterfaceSummary)
+	temp := make(map[string]*acc)
+	for _, m := range t.byIf {
+		if m == nil {
+			continue
+		}
+		nodeID := m.NodeID
+		if nodeID == "" {
+			nodeID = "unknown"
+		}
+		entry, ok := temp[nodeID]
+		if !ok {
+			entry = &acc{}
+			entry.summary.NodeID = nodeID
+			temp[nodeID] = entry
+		}
+		entry.summary.InterfaceCount++
+		if m.Up {
+			entry.summary.InterfacesUp++
+		} else {
+			entry.summary.InterfacesDown++
+		}
+		entry.summary.TotalBytesTx += m.BytesTx
+		entry.summary.TotalBytesRx += m.BytesRx
+		if !math.IsNaN(m.SNRdB) {
+			entry.snrSum += m.SNRdB
+			entry.snrCnt++
+		}
+	}
+
+	for nodeID, aggregate := range temp {
+		if aggregate.snrCnt > 0 {
+			aggregate.summary.AverageSNRdB = aggregate.snrSum / float64(aggregate.snrCnt)
+		}
+		result[nodeID] = aggregate.summary
+	}
+	return result
+}
+
+// AggregateModemMetricsByNode groups modem metrics per node.
+func (t *TelemetryState) AggregateModemMetricsByNode() map[string]NodeModemSummary {
+	if t == nil {
+		return nil
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	type acc struct {
+		summary NodeModemSummary
+		snrSum  float64
+		snrCnt  int
+	}
+
+	temp := make(map[string]*acc)
+	for _, m := range t.modem {
+		if m == nil {
+			continue
+		}
+		nodeID := m.NodeID
+		if nodeID == "" {
+			nodeID = "unknown"
+		}
+		entry, ok := temp[nodeID]
+		if !ok {
+			entry = &acc{}
+			entry.summary.NodeID = nodeID
+			temp[nodeID] = entry
+		}
+		entry.summary.ModemCount++
+		entry.summary.TotalThroughputBps += m.ThroughputBps
+		if m.Timestamp.After(entry.summary.LatestTimestamp) {
+			entry.summary.LatestTimestamp = m.Timestamp
+		}
+		if !math.IsNaN(m.SNRdB) {
+			entry.snrSum += m.SNRdB
+			entry.snrCnt++
+		}
+	}
+
+	result := make(map[string]NodeModemSummary)
+	for nodeID, aggregate := range temp {
+		if aggregate.snrCnt > 0 {
+			aggregate.summary.AverageSNRdB = aggregate.snrSum / float64(aggregate.snrCnt)
+		}
+		result[nodeID] = aggregate.summary
+	}
+	return result
 }

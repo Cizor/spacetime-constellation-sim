@@ -17,10 +17,10 @@ func TestScenarioStateRegions(t *testing.T) {
 	if err := phys.AddPlatform(&model.PlatformDefinition{ID: "plat-far", Coordinates: model.Motion{X: 5_000, Y: 5_000, Z: 0}}); err != nil {
 		t.Fatalf("AddPlatform far: %v", err)
 	}
-	if err := phys.AddNetworkNode(&model.NetworkNode{ID: "node-inside", PlatformID: "plat-center"}); err != nil {
+	if err := phys.AddNetworkNode(&model.NetworkNode{ID: "node-inside", PlatformID: "plat-center", CountryCode: "US"}); err != nil {
 		t.Fatalf("AddNetworkNode inside: %v", err)
 	}
-	if err := phys.AddNetworkNode(&model.NetworkNode{ID: "node-polygon", PlatformID: "plat-far"}); err != nil {
+	if err := phys.AddNetworkNode(&model.NetworkNode{ID: "node-polygon", PlatformID: "plat-far", CountryCode: "CA"}); err != nil {
 		t.Fatalf("AddNetworkNode polygon: %v", err)
 	}
 	s := NewScenarioState(phys, nil, logging.Noop())
@@ -90,6 +90,19 @@ func TestScenarioStateRegions(t *testing.T) {
 	}
 	if len(polyNodes) != 1 || polyNodes[0] != "node-polygon" {
 		t.Fatalf("GetNodesInRegion(polygon) = %v, want [node-polygon]", polyNodes)
+	}
+	if !s.CheckRegionMembership("node-inside", country.ID) {
+		t.Fatalf("node-inside should belong to country")
+	}
+	if s.CheckRegionMembership("node-polygon", country.ID) {
+		t.Fatalf("node-polygon should not belong to country")
+	}
+	countryNodes, err := s.GetNodesInRegion(country.ID)
+	if err != nil {
+		t.Fatalf("GetNodesInRegion(country) = %v", err)
+	}
+	if len(countryNodes) != 1 || countryNodes[0] != "node-inside" {
+		t.Fatalf("GetNodesInRegion(country) = %v, want [node-inside]", countryNodes)
 	}
 	if nodes, err := s.GetNodesInRegion("missing"); !errors.Is(err, ErrRegionNotFound) {
 		t.Fatalf("GetNodesInRegion(missing) = (%v, %v), want ErrRegionNotFound", nodes, err)
